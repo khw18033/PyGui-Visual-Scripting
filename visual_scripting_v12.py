@@ -269,7 +269,6 @@ def run_loop():
                             if target_node_id in node_registry: next_node = node_registry[target_node_id]; break
                 if next_node: break 
             current_node = next_node
-        # ★ CPU 부하 감소 (0.01 -> 0.05)
         time.sleep(0.05) 
 
 def toggle_execution(sender, app_data):
@@ -283,9 +282,21 @@ def toggle_execution(sender, app_data):
         is_running = False
         dpg.set_item_label("btn_run", "RUN")
 
+# ★ [삭제 기능 수정 완료]
 def delete_selection(sender, app_data):
-    for link_id in dpg.get_selected_links("node_editor"): dpg.delete_item(link_id); del link_registry[link_id] if link_id in link_registry else None
-    for node_id in dpg.get_selected_nodes("node_editor"): dpg.delete_item(node_id); del node_registry[node_id] if node_id in node_registry else None
+    # Links
+    selected_links = dpg.get_selected_links("node_editor")
+    for link_id in selected_links:
+        dpg.delete_item(link_id)
+        if link_id in link_registry:
+            del link_registry[link_id]
+            
+    # Nodes
+    selected_nodes = dpg.get_selected_nodes("node_editor")
+    for node_id in selected_nodes:
+        dpg.delete_item(node_id)
+        if node_id in node_registry:
+            del node_registry[node_id]
 
 def link_cb(sender, app_data):
     src, dst = app_data[0], app_data[1] if len(app_data) == 2 else (app_data[1], app_data[2])
@@ -303,7 +314,6 @@ init_serial()
 dpg.create_context()
 with dpg.handler_registry(): dpg.add_key_press_handler(dpg.mvKey_Delete, callback=delete_selection)
 
-# ★ [핵심] 윈도우를 Primary로 설정하여 전체 화면 채우기
 with dpg.window(tag="PrimaryWindow"):
     with dpg.group(horizontal=True):
         dpg.add_button(label="START", callback=add_node_cb, user_data="START")
@@ -318,9 +328,8 @@ with dpg.window(tag="PrimaryWindow"):
     dpg.add_separator()
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
-dpg.create_viewport(title='PyGui V12 (Stable)', width=1000, height=700, vsync=True)
+dpg.create_viewport(title='PyGui V12 (Final Fix)', width=1000, height=700, vsync=True)
 dpg.setup_dearpygui()
-# ★ Primary Window 설정 적용
 dpg.set_primary_window("PrimaryWindow", True)
 dpg.show_viewport()
 dpg.start_dearpygui()
