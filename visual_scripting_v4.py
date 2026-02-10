@@ -17,10 +17,10 @@ def init_serial():
     try:
         # 라즈베리파이: '/dev/ttyACM0' 또는 '/dev/ttyUSB0'
         # 윈도우: 'COM3' 등
-        ser = serial.Serial('/dev/ttyACM0', 115200, timeout=1)
-        print("[시스템] 로봇(Arduino) 연결 성공: /dev/ttyACM0")
+        ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)
+        print("[시스템] 로봇 연결 성공")
     except Exception as e:
-        print(f"[시스템] ⚠️ 로봇 연결 실패 (시뮬레이션 모드): {e}")
+        print(f"[시스템] 로봇 연결 실패 (시뮬레이션 모드): {e}")
         ser = None
 
 # ================= [1. 기반 클래스] =================
@@ -206,7 +206,7 @@ class RobotMoveNode(BaseNode):
         z = self.fetch_input_data(self.in_z) or 0.0
 
         command = f"G0 X{x} Y{y} Z{z}\n"
-        print(f"🤖 [로봇 전송] {command.strip()}")
+        print(f"[로봇 전송] {command.strip()}")
 
         # 실제 시리얼 전송 (로봇이 연결되어 있다면)
         if ser and ser.is_open:
@@ -340,7 +340,7 @@ with dpg.window(label="Visual Scripting V4 (Robot Control)", width=1000, height=
         dpg.add_button(label="로봇 이동", callback=add_node_cb, user_data="ROBOT_MOVE")
         dpg.add_button(label="PRINT", callback=add_node_cb, user_data="PRINT")
         dpg.add_spacer(width=50)
-        dpg.add_button(label="▶ RUN", callback=execute_graph, width=150)
+        dpg.add_button(label="RUN", callback=execute_graph, width=150)
 
     dpg.add_separator()
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb):
