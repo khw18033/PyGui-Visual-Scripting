@@ -4,12 +4,15 @@ import os
 import socket
 import json
 import serial 
+import threading # [핵심] 연속 실행을 위해 추가
 from abc import ABC, abstractmethod
 
 # ================= [전역 설정] =================
 node_registry = {}
 link_registry = {}
 ser = None 
+is_running = False # [핵심] 실행 상태 플래그
+run_thread = None  # 쓰레드 저장 변수
 
 # ================= [0. MT4 로봇 연결 및 초기화] =================
 def init_serial():
@@ -19,12 +22,10 @@ def init_serial():
         ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)
         print("[시스템] MT4 로봇 연결 성공 (/dev/ttyUSB0)")
         
-        time.sleep(2) # 보드 리셋 대기
-        
+        time.sleep(2) 
         print("[MT4] 호밍(Homing) 시작... (G28)")
         ser.write(b"G28\n") 
         time.sleep(3) 
-        
         print("[MT4] 기본 위치로 이동 (200, 0, 120)")
         ser.write(b"G0 X200 Y0 Z120\n")
         
@@ -75,7 +76,6 @@ class StartNode(BaseNode):
             self.outputs[out_id] = "Flow"
 
     def execute(self):
-        # 시작 노드는 별도 로그 없이 조용히 흐름만 넘김
         return self.outputs
 
 class UDPReceiverNode(BaseNode):
@@ -112,29 +112,32 @@ class UDPReceiverNode(BaseNode):
     def execute(self):
         port = dpg.get_value(self.port_input)
         
+        # 포트 바인딩은 한 번만 시도
         if not self.is_bound:
             try:
                 self.sock.bind(('0.0.0.0', port))
                 self.is_bound = True
-                print(f"[UDP] 포트 {port} 바인딩 성공")
+                print(f"[UDP] 포트 {port} 열림 (대기중...)")
             except Exception as e:
-                print(f"[오류] 포트 바인딩 실패: {e}")
-                return self.outputs
+                # 이미 열려있으면 무시 (루프 돌 때 에러 방지)
+                if "Address already in use" in str(e):
+                    self.is_bound = True
+                else:
+                    print(f"[오류] 포트 바인딩: {e}")
+                    return self.outputs
 
         try:
+            # 4096 바이트 수신
             data, addr = self.sock.recvfrom(4096)
             decoded_data = data.decode()
-            
-            # 수신 로그는 너무 빠를 수 있으므로 필요시 주석 처리
-            # print(f"[UDP] 수신: {decoded_data} (from {addr[0]})")
             self.output_data[self.data_out_id] = decoded_data
         except BlockingIOError:
+            # 데이터 없으면 패스 (루프 계속 돎)
             self.output_data[self.data_out_id] = None 
         except Exception as e:
             print(f"[오류] UDP: {e}")
         return self.outputs
 
-# ★ [신규] Unity 제어 노드 (WASD 조작 데이터 처리 전용)
 class UnityControlNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Unity 제어 (WASD)")
@@ -143,18 +146,15 @@ class UnityControlNode(BaseNode):
 
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label=self.label):
-            # 1. 흐름 입력
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as in_flow:
                 dpg.add_text("입력 흐름")
             self.inputs[in_flow] = "Flow"
 
-            # 2. JSON 데이터 입력
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as d_in:
                 dpg.add_text("Unity 패킷 입력")
             self.inputs[d_in] = "Data"
             self.data_in_id = d_in
             
-            # 3. 좌표 출력 (로봇 제어 노드로 연결)
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_x:
                 dpg.add_text("목표 X")
             self.outputs[out_x] = "Data"; self.out_x = out_x
@@ -167,7 +167,6 @@ class UnityControlNode(BaseNode):
                 dpg.add_text("목표 Z")
             self.outputs[out_z] = "Data"; self.out_z = out_z
             
-            # 흐름 출력
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f_out:
                 dpg.add_text("출력 흐름")
             self.outputs[f_out] = "Flow"
@@ -177,13 +176,11 @@ class UnityControlNode(BaseNode):
         if raw_json:
             try:
                 parsed = json.loads(raw_json)
-                # Unity에서 오는 좌표 데이터를 추출
                 self.output_data[self.out_x] = parsed.get("x", 0)
                 self.output_data[self.out_y] = parsed.get("y", 0)
                 self.output_data[self.out_z] = parsed.get("z", 0)
-                # print(f"[Unity] 제어 좌표 수신: {parsed.get('x')}, {parsed.get('y')}, {parsed.get('z')}")
             except Exception:
-                pass # 데이터 형식이 안 맞으면 무시
+                pass 
         return self.outputs
 
 class JsonParseNode(BaseNode):
@@ -236,10 +233,9 @@ class JsonParseNode(BaseNode):
                 pass
         return self.outputs
 
-# ★ [수정] 로봇 제어 노드 (이름 변경: 이동 -> 제어)
 class RobotControlNode(BaseNode):
     def __init__(self, node_id):
-        super().__init__(node_id, "로봇 제어 (MT4)") # 이름 변경됨
+        super().__init__(node_id, "로봇 제어 (MT4)")
         self.in_x = None; self.in_y = None; self.in_z = None
         self.field_x = None; self.field_y = None; self.field_z = None
 
@@ -249,17 +245,14 @@ class RobotControlNode(BaseNode):
                 dpg.add_text("입력 흐름")
             self.inputs[in_flow] = "Flow"
 
-            # X 좌표
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as x_in:
                 self.field_x = dpg.add_input_float(label="X", width=80, default_value=200.0)
             self.inputs[x_in] = "Data"; self.in_x = x_in
             
-            # Y 좌표
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as y_in:
                 self.field_y = dpg.add_input_float(label="Y", width=80, default_value=0.0)
             self.inputs[y_in] = "Data"; self.in_y = y_in
 
-            # Z 좌표
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as z_in:
                 self.field_z = dpg.add_input_float(label="Z", width=80, default_value=120.0)
             self.inputs[z_in] = "Data"; self.in_z = z_in
@@ -292,9 +285,6 @@ class RobotControlNode(BaseNode):
             z = dpg.get_value(self.field_z)
 
         command = f"G0 X{x} Y{y} Z{z}\n"
-        # 너무 빠른 로그 출력 방지 (필요시 해제)
-        # print(f"[MT4] 전송: {command.strip()}")
-
         if ser and ser.is_open:
             ser.write(command.encode())
         
@@ -331,7 +321,7 @@ class PrintNode(BaseNode):
             print(f"[출력] 텍스트: {text}")
         return self.outputs
 
-# ================= [3. 팩토리 & 실행 엔진] =================
+# ================= [3. 팩토리 & 실행 엔진 (Thread 적용)] =================
 class NodeFactory:
     @staticmethod
     def create_node(node_type):
@@ -341,8 +331,8 @@ class NodeFactory:
         elif node_type == "PRINT": node = PrintNode(node_id)
         elif node_type == "UDP_RECV": node = UDPReceiverNode(node_id)
         elif node_type == "JSON_PARSE": node = JsonParseNode(node_id)
-        elif node_type == "UNITY_CONTROL": node = UnityControlNode(node_id) # 신규 추가
-        elif node_type == "ROBOT_CONTROL": node = RobotControlNode(node_id) # 이름 변경
+        elif node_type == "UNITY_CONTROL": node = UnityControlNode(node_id)
+        elif node_type == "ROBOT_CONTROL": node = RobotControlNode(node_id)
             
         if node:
             node.build_ui()
@@ -350,8 +340,12 @@ class NodeFactory:
             return node
         return None
 
-def execute_graph():
-    print("\n--- [실행 시작] ---")
+# ★ [핵심] 실제 루프를 돌리는 함수
+def run_loop():
+    global is_running
+    print("--- [실행 루프 시작] ---")
+    
+    # START 노드 찾기
     start_node = None
     for node in node_registry.values():
         if isinstance(node, StartNode):
@@ -359,25 +353,52 @@ def execute_graph():
             break
             
     if not start_node:
-        print("[오류] START 노드 없음")
+        print("[오류] START 노드가 없습니다.")
+        is_running = False
         return
 
-    current_node = start_node
-    while current_node:
-        outputs = current_node.execute()
-        next_node = None
-        for out_attr_id, out_type in outputs.items():
-            if out_type == "Flow":
-                for link in link_registry.values():
-                    if link['source'] == out_attr_id:
-                        target_node_id = dpg.get_item_parent(link['target'])
-                        if target_node_id in node_registry:
-                            next_node = node_registry[target_node_id]
-                        break
-            if next_node: break 
-        current_node = next_node
+    # ★ 무한 루프: is_running이 True인 동안 계속 돕니다
+    while is_running:
+        current_node = start_node
+        
+        # 한 사이클 실행 (Start -> UDP -> Unity -> Robot)
+        while current_node:
+            outputs = current_node.execute()
+            next_node = None
+            
+            # 다음 노드 찾기
+            for out_attr_id, out_type in outputs.items():
+                if out_type == "Flow":
+                    for link in link_registry.values():
+                        if link['source'] == out_attr_id:
+                            target_node_id = dpg.get_item_parent(link['target'])
+                            if target_node_id in node_registry:
+                                next_node = node_registry[target_node_id]
+                            break
+                if next_node: break 
+            
+            current_node = next_node
+        
+        # 너무 빠르면 CPU 과부하 방지 + 유니티 동기화 (0.05초 = 20FPS)
         time.sleep(0.05)
-    print("--- [실행 종료] ---")
+
+    print("--- [실행 루프 종료] ---")
+
+# ★ [핵심] 버튼 클릭 시 쓰레드 생성
+def toggle_execution(sender, app_data):
+    global is_running, run_thread
+    
+    if not is_running:
+        # 실행 시작
+        is_running = True
+        dpg.set_item_label("btn_run", "STOP (실행중)")
+        # 별도 쓰레드에서 루프 실행 (GUI 멈춤 방지)
+        run_thread = threading.Thread(target=run_loop, daemon=True)
+        run_thread.start()
+    else:
+        # 실행 종료
+        is_running = False
+        dpg.set_item_label("btn_run", "RUN (시작)")
 
 def delete_selection(sender, app_data):
     selected_links = dpg.get_selected_links("node_editor")
@@ -418,24 +439,24 @@ with dpg.font_registry():
 with dpg.handler_registry():
     dpg.add_key_press_handler(dpg.mvKey_Delete, callback=delete_selection)
 
-with dpg.window(label="Visual Scripting V5 (Unity Control)", width=1000, height=700):
+with dpg.window(label="Visual Scripting V5 (Continuous Mode)", width=1000, height=700):
     with dpg.group(horizontal=True):
         dpg.add_button(label="START", callback=add_node_cb, user_data="START")
         dpg.add_button(label="UDP 수신", callback=add_node_cb, user_data="UDP_RECV")
-        # 새로 추가된 Unity 제어 버튼
         dpg.add_button(label="Unity 제어", callback=add_node_cb, user_data="UNITY_CONTROL")
         dpg.add_button(label="로봇 제어", callback=add_node_cb, user_data="ROBOT_CONTROL")
         dpg.add_button(label="PRINT", callback=add_node_cb, user_data="PRINT")
         dpg.add_spacer(width=20)
         dpg.add_button(label="JSON 파서", callback=add_node_cb, user_data="JSON_PARSE")
         dpg.add_spacer(width=50)
-        dpg.add_button(label="RUN", callback=execute_graph, width=150)
+        # 태그를 달아서 라벨을 바꿀 수 있게 함
+        dpg.add_button(label="RUN (시작)", tag="btn_run", callback=toggle_execution, width=150)
 
     dpg.add_separator()
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb):
         pass
 
-dpg.create_viewport(title='PyGui Editor V5', width=1000, height=700)
+dpg.create_viewport(title='PyGui Editor V5 (Loop)', width=1000, height=700)
 dpg.setup_dearpygui()
 dpg.show_viewport()
 dpg.start_dearpygui()
