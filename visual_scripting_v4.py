@@ -163,8 +163,6 @@ class JsonParseNode(BaseNode):
             self.inputs[d_in] = "Data"
             self.data_in_id = d_in
             
-            dpg.add_separator()
-            
             # [기능 2] 좌표 출력 연결점 (Data Out)
             # X 좌표
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_x:
@@ -185,8 +183,6 @@ class JsonParseNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_g:
                 dpg.add_text("Gripper")
             self.outputs[out_g] = "Data"; self.out_g = out_g
-            
-            dpg.add_separator()
             
             # 흐름 출력
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f_out:
