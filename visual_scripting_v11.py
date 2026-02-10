@@ -312,9 +312,19 @@ def toggle_execution(sender, app_data):
         is_running = False
         dpg.set_item_label("btn_run", "RUN")
 
+# ★ [문법 수정 완료] delete_selection 함수를 올바르게 수정
 def delete_selection(sender, app_data):
-    for link_id in dpg.get_selected_links("node_editor"): dpg.delete_item(link_id); del link_registry[link_id] if link_id in link_registry else None
-    for node_id in dpg.get_selected_nodes("node_editor"): dpg.delete_item(node_id); del node_registry[node_id] if node_id in node_registry else None
+    # 링크 삭제
+    for link_id in dpg.get_selected_links("node_editor"):
+        dpg.delete_item(link_id)
+        if link_id in link_registry:
+            del link_registry[link_id]
+    
+    # 노드 삭제
+    for node_id in dpg.get_selected_nodes("node_editor"):
+        dpg.delete_item(node_id)
+        if node_id in node_registry:
+            del node_registry[node_id]
 
 def link_cb(sender, app_data):
     src, dst = app_data[0], app_data[1] if len(app_data) == 2 else (app_data[1], app_data[2])
@@ -331,7 +341,7 @@ def add_node_cb(sender, app_data, user_data):
 init_serial()
 dpg.create_context()
 with dpg.handler_registry(): dpg.add_key_press_handler(dpg.mvKey_Delete, callback=delete_selection)
-with dpg.window(label="Visual Scripting V11 (Lag Fix)", width=1000, height=700):
+with dpg.window(label="Visual Scripting V11 (Lag Fix & Error Fixed)", width=1000, height=700):
     with dpg.group(horizontal=True):
         dpg.add_button(label="START", callback=add_node_cb, user_data="START")
         dpg.add_button(label="UDP", callback=add_node_cb, user_data="UDP_RECV")
@@ -346,7 +356,7 @@ with dpg.window(label="Visual Scripting V11 (Lag Fix)", width=1000, height=700):
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
 # ★ [핵심] VSync 끄기 (반응성 극대화)
-dpg.create_viewport(title='PyGui V11 (Lag Fix)', width=1000, height=700, vsync=False)
+dpg.create_viewport(title='PyGui V11 (Ultra Performance)', width=1000, height=700, vsync=False)
 dpg.setup_dearpygui()
 dpg.show_viewport()
 dpg.start_dearpygui()

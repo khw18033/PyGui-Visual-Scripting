@@ -16,14 +16,16 @@ run_thread = None
 
 # Robot State
 current_pos = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0}
-target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': None} 
+target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': None} # 초기값 None
 
 # Config
 UNITY_IP = "192.168.50.63" 
 FEEDBACK_PORT = 5005
 SMOOTHING_FACTOR = 0.2  
 
-# ★ Gripper Settings
+# ★ [핵심] 그리퍼 속도 및 범위 설정
+# 속도: 0.2 (값을 키우면 빨라짐)
+# 범위: 30(최대 열림) ~ 65(최대 닫힘) -> 하드웨어 보호용
 GRIPPER_SPEED = 0.2 
 GRIPPER_MIN = 30.0
 GRIPPER_MAX = 70.0
@@ -236,9 +238,11 @@ class RobotControlNode(BaseNode):
         if tx is not None: target_goal['x'] = float(tx)
         if ty is not None: target_goal['y'] = float(ty)
         if tz is not None: target_goal['z'] = float(tz)
+        
+        # ★ [핵심 로직 변경] 들어온 값이 40이냐 60이냐에 따라 방향 결정
         if tg is not None: target_goal['gripper'] = float(tg)
-
-        # 1. XYZ Smoothing
+        
+        # 1. XYZ Smoothing (기존 유지)
         dx = target_goal['x'] - current_pos['x']
         dy = target_goal['y'] - current_pos['y']
         dz = target_goal['z'] - current_pos['z']
@@ -250,25 +254,36 @@ class RobotControlNode(BaseNode):
             next_y = current_pos['y'] + dy * SMOOTHING_FACTOR
             next_z = current_pos['z'] + dz * SMOOTHING_FACTOR
         
+        # Limit Check
         if not (LIMITS['min_x'] <= next_x <= LIMITS['max_x']): next_x = current_pos['x']
         if not (LIMITS['min_y'] <= next_y <= LIMITS['max_y']): next_y = current_pos['y']
         if not (LIMITS['min_z'] <= next_z <= LIMITS['max_z']): next_z = current_pos['z']
 
-        # 2. Gripper Directional Control
+        # 2. ★ Gripper Directional Control (방향 제어)
+        # Unity가 60(J)을 보내면 -> 닫는 방향(+)으로 조금 이동
+        # Unity가 40(U)을 보내면 -> 여는 방향(-)으로 조금 이동
+        # Unity가 None을 보내면 -> 현상 유지
+        
         received_g = target_goal['gripper']
         
         if received_g is None:
+            # 신호 없으면 멈춤
             next_g = current_pos['gripper']
         elif received_g > 50: 
+            # 50보다 큰 값(예: 60)이 오면 "닫아라" 명령으로 해석
             next_g = current_pos['gripper'] + GRIPPER_SPEED
         elif received_g < 50:
+            # 50보다 작은 값(예: 40)이 오면 "열어라" 명령으로 해석
             next_g = current_pos['gripper'] - GRIPPER_SPEED
         else:
+            # 애매한 값은 멈춤
             next_g = current_pos['gripper']
 
+        # 하드웨어 안전 범위 제한 (30 ~ 70)
         if next_g < GRIPPER_MIN: next_g = GRIPPER_MIN
         if next_g > GRIPPER_MAX: next_g = GRIPPER_MAX
 
+        # 상태 업데이트
         current_pos['x'] = next_x
         current_pos['y'] = next_y
         current_pos['z'] = next_z
@@ -279,6 +294,7 @@ class RobotControlNode(BaseNode):
         dpg.set_value(self.field_z, float(next_z))
         dpg.set_value(self.field_g, float(next_g))
 
+        # 3. 명령 전송
         cmd_move = f"G0 X{next_x:.1f} Y{next_y:.1f} Z{next_z:.1f}\n"
         cmd_grip = f"M3 S{int(next_g)}\n"
 
@@ -369,17 +385,11 @@ def toggle_execution(sender, app_data):
         is_running = False
         dpg.set_item_label("btn_run", "RUN")
 
-# ★ [수정 완료] 문법 오류가 있던 부분을 수정한 delete_selection 함수
 def delete_selection(sender, app_data):
     selected_links = dpg.get_selected_links("node_editor")
-    for link_id in selected_links: 
-        dpg.delete_item(link_id)
-        if link_id in link_registry: del link_registry[link_id]
-            
+    for link_id in selected_links: dpg.delete_item(link_id); del link_registry[link_id] if link_id in link_registry else None
     selected_nodes = dpg.get_selected_nodes("node_editor")
-    for node_id in selected_nodes: 
-        dpg.delete_item(node_id)
-        if node_id in node_registry: del node_registry[node_id]
+    for node_id in selected_nodes: dpg.delete_item(node_id); del node_registry[node_id] if node_id in node_registry else None
 
 def link_cb(sender, app_data):
     src, dst = app_data[0], app_data[1] if len(app_data) == 2 else (app_data[1], app_data[2])
@@ -396,7 +406,7 @@ def add_node_cb(sender, app_data, user_data):
 init_serial()
 dpg.create_context()
 with dpg.handler_registry(): dpg.add_key_press_handler(dpg.mvKey_Delete, callback=delete_selection)
-with dpg.window(label="Visual Scripting V10 (Fixed)", width=1000, height=700):
+with dpg.window(label="Visual Scripting V10 (Updated)", width=1000, height=700):
     with dpg.group(horizontal=True):
         dpg.add_button(label="START", callback=add_node_cb, user_data="START")
         dpg.add_button(label="UDP", callback=add_node_cb, user_data="UDP_RECV")
@@ -410,7 +420,7 @@ with dpg.window(label="Visual Scripting V10 (Fixed)", width=1000, height=700):
     dpg.add_separator()
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
-dpg.create_viewport(title='PyGui V10 (Control)', width=1000, height=700, vsync=False)
+dpg.create_viewport(title='PyGui V10 (Directional)', width=1000, height=700, vsync=False)
 dpg.setup_dearpygui()
 dpg.show_viewport()
 dpg.start_dearpygui()
