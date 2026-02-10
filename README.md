@@ -14,7 +14,7 @@
 
 * **Visual Programming:** 복잡한 파이썬 코드 없이 노드 연결만으로 로봇 제어 로직 설계
 * **Modular Architecture:** 통신(UDP), 파싱(JSON), 제어(Serial) 기능을 독립적인 노드로 모듈화
-* **Cross-Platform:** PC(Windows) 및 임베디드 환경(Raspberry Pi 4)에서 동일하게 동작
+* **Cross-Platform:** PC(Windows) 및 임베디드 환경(Raspberry Pi 5)에서 동일하게 동작
 
 ---
 
@@ -108,7 +108,7 @@ classDiagram
 ### Prerequisites
 
 * Python 3.8+
-* Raspberry Pi 4 (Recommended) or PC
+* Raspberry Pi 5 (Recommended) or PC
 
 ### Installation
 
