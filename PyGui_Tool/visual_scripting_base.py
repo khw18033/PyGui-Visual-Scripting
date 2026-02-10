@@ -124,4 +124,20 @@ with dpg.window(label="Visual Scripting Tool", width=800, height=600):
     # 1. 상단 툴바
     with dpg.group(horizontal=True):
         dpg.add_button(label="Add START", callback=add_node, user_data="START")
-        dpg.add_button(label
+        dpg.add_button(label="Add PRINT", callback=add_node, user_data="PRINT")
+        dpg.add_button(label="Add DELAY", callback=add_node, user_data="DELAY")
+        dpg.add_spacer(width=50)
+        dpg.add_button(label="RUN SCRIPT", callback=execute_graph, width=150)
+
+    dpg.add_separator()
+    dpg.add_text("Add nodes and connect dots. Press [Del] to remove links.")
+
+    # 2. 노드 에디터 영역
+    with dpg.node_editor(tag="node_editor", callback=link_callback, delink_callback=del_link_callback):
+        pass 
+
+dpg.create_viewport(title='PyGui Visual Scripting', width=800, height=600)
+dpg.setup_dearpygui()
+dpg.show_viewport()
+dpg.start_dearpygui()
+dpg.destroy_context()
