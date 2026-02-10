@@ -204,10 +204,10 @@ def del_link_cb(sender, app_data):
 def add_node_cb(sender, app_data, user_data):
     NodeFactory.create_node(user_data)
 
-# ================= [메인 루프] =================
+# ================= [메인 루프 (수정됨)] =================
 dpg.create_context()
 
-# 한글 폰트
+# 한글 폰트 설정
 font_path = "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"
 with dpg.font_registry():
     if os.path.exists(font_path):
@@ -220,12 +220,14 @@ with dpg.window(label="Visual Scripting Tool V2", width=900, height=700):
     with dpg.group(horizontal=True):
         dpg.add_button(label="START 추가", callback=add_node_cb, user_data="START")
         dpg.add_button(label="PRINT 추가", callback=add_node_cb, user_data="PRINT")
-        dpg.add_button(label="UDP 수신 추가", callback=add_node_cb, user_data="UDP_RECV") # 신기능
+        dpg.add_button(label="UDP 수신 추가", callback=add_node_cb, user_data="UDP_RECV")
         dpg.add_spacer(width=50)
         dpg.add_button(label="▶ 스크립트 실행", callback=execute_graph, width=150)
 
     dpg.add_separator()
-    with dpg.node_editor(callback=link_cb, delink_callback=del_link_cb):
+    
+    # [수정 포인트] tag="node_editor" 가 반드시 있어야 합니다!
+    with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb):
         pass
 
 dpg.create_viewport(title='PyGui Editor V2', width=900, height=700)
