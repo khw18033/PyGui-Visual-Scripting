@@ -115,7 +115,7 @@ with dpg.font_registry():
             dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
             dpg.add_font_range_hint(dpg.mvFontRangeHint_Korean)
         dpg.bind_font(kr_font)
-        print("[System] Korean font loaded.")
+        print("[System] 한글 폰트 로드 완료.")
     else:
         print(f"[System] Font not found: {font_path}")
 
@@ -123,11 +123,11 @@ with dpg.window(label="Visual Scripting Tool", width=800, height=600):
     
     # 1. 상단 툴바
     with dpg.group(horizontal=True):
-        dpg.add_button(label="Add START", callback=add_node, user_data="START")
-        dpg.add_button(label="Add PRINT", callback=add_node, user_data="PRINT")
-        dpg.add_button(label="Add DELAY", callback=add_node, user_data="DELAY")
+        dpg.add_button(label="START 노드 추가", callback=add_node, user_data="START")
+        dpg.add_button(label="PRINT 노드 추가", callback=add_node, user_data="PRINT")
+        dpg.add_button(label="DELAY 노드 추가", callback=add_node, user_data="DELAY")
         dpg.add_spacer(width=50)
-        dpg.add_button(label="RUN SCRIPT", callback=execute_graph, width=150)
+        dpg.add_button(label="스크립트 실행", callback=execute_graph, width=150)
 
     dpg.add_separator()
     dpg.add_text("Add nodes and connect dots. Press [Del] to remove links.")
