@@ -104,17 +104,17 @@ def manual_control_callback(sender, app_data, user_data):
         if axis == 'y': target_goal[axis] = max(LIMITS['min_y'], min(target_goal[axis], LIMITS['max_y']))
         if axis == 'z': target_goal[axis] = max(LIMITS['min_z'], min(target_goal[axis], LIMITS['max_z']))
 
-    # 2. ★ [핵심 수정] 수동 제어는 즉시 반응 (스무딩 건너뛰기 & 바로 전송)
-    # 버튼을 눌렀는데 RUN이 안 켜져 있어도 움직여야 하므로 여기서 직접 전송
+    # 2. 수동 제어는 즉시 반응 (스무딩 건너뛰기 & 바로 전송)
     current_pos.update(target_goal) # 현재 위치도 바로 갱신 (오차 누적 방지)
     
     send_robot_command_direct(target_goal['x'], target_goal['y'], target_goal['z'], target_goal['gripper'])
     
-    # UI 값도 갱신 (input field가 있다면)
-    dpg.set_value("input_x", int(target_goal['x']))
-    dpg.set_value("input_y", int(target_goal['y']))
-    dpg.set_value("input_z", int(target_goal['z']))
-    dpg.set_value("input_g", int(target_goal['gripper']))
+    # UI 값도 갱신
+    if dpg.does_item_exist("input_x"):
+        dpg.set_value("input_x", int(target_goal['x']))
+        dpg.set_value("input_y", int(target_goal['y']))
+        dpg.set_value("input_z", int(target_goal['z']))
+        dpg.set_value("input_g", int(target_goal['gripper']))
 
 def move_to_coord_callback(sender, app_data, user_data):
     # 입력창 값 가져오기
@@ -123,7 +123,7 @@ def move_to_coord_callback(sender, app_data, user_data):
     target_goal['z'] = float(dpg.get_value("input_z"))
     target_goal['gripper'] = float(dpg.get_value("input_g"))
     
-    # ★ 즉시 이동
+    # 즉시 이동
     current_pos.update(target_goal)
     send_robot_command_direct(target_goal['x'], target_goal['y'], target_goal['z'], target_goal['gripper'])
 
@@ -135,13 +135,14 @@ def homing_thread_func():
         time.sleep(15)
         ser.write(b"M20\r\n"); ser.write(b"G90\r\n"); ser.write(b"G1 F2000\r\n")
         
-        # ★ [핵심 수정] Homing 오차 제거 (강제 동기화)
+        # Homing 오차 제거 (강제 동기화)
         target_goal['x'] = 200.0; target_goal['y'] = 0.0; target_goal['z'] = 120.0
         target_goal['gripper'] = 40.0
-        current_pos.update(target_goal) # 현재 위치를 목표 위치와 완벽히 일치시킴
+        current_pos.update(target_goal)
         
         # UI 동기화
-        dpg.set_value("input_x", 200); dpg.set_value("input_y", 0); dpg.set_value("input_z", 120)
+        if dpg.does_item_exist("input_x"):
+            dpg.set_value("input_x", 200); dpg.set_value("input_y", 0); dpg.set_value("input_z", 120)
         
         cmd = f"G0 X200 Y0 Z120 F2000\r\n"
         ser.write(cmd.encode()); ser.write(b"M3 S40\r\n")
@@ -186,7 +187,7 @@ class ConstantNode(BaseNode):
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label=self.label):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                self.field_val = dpg.add_input_float(label="Value", width=60, default_value=1.0, step=0.1)
+                self.field_val = dpg.add_input_float(width=80, default_value=1.0, step=0.1) # Label removed for compact
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out:
                 dpg.add_text("Output"); self.outputs[out] = "Data"; self.out_val = out
     def execute(self):
@@ -205,8 +206,12 @@ class UDPReceiverNode(BaseNode):
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label=self.label):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as in_id: dpg.add_text("Flow In"); self.inputs[in_id] = "Flow"
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): self.port_input = dpg.add_input_int(label="Port", width=80, default_value=6000)
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): self.target_ip_input = dpg.add_input_text(label="Target IP", width=100, default_value="192.168.50.63")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
+                dpg.add_input_int(label="Port", width=80, default_value=6000, tag=f"port_{self.node_id}")
+                self.port_input = f"port_{self.node_id}"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
+                dpg.add_input_text(label="IP", width=100, default_value="192.168.50.63", tag=f"ip_{self.node_id}")
+                self.target_ip_input = f"ip_{self.node_id}"
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as d_out: dpg.add_text("JSON Out"); self.outputs[d_out] = "Data"; self.data_out_id = d_out 
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f_out: dpg.add_text("Flow Out"); self.outputs[f_out] = "Flow"
 
@@ -250,7 +255,7 @@ class UnityControlNode(BaseNode):
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label=self.label):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as in_flow: dpg.add_text("Flow In"); self.inputs[in_flow] = "Flow"
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as d_in: dpg.add_text("JSON Packet"); self.inputs[d_in] = "Data"; self.data_in_id = d_in
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as d_in: dpg.add_text("JSON"); self.inputs[d_in] = "Data"; self.data_in_id = d_in
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_x: dpg.add_text("Target X"); self.outputs[out_x] = "Data"; self.out_x = out_x
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_y: dpg.add_text("Target Y"); self.outputs[out_y] = "Data"; self.out_y = out_y
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_z: dpg.add_text("Target Z"); self.outputs[out_z] = "Data"; self.out_z = out_z
@@ -283,21 +288,44 @@ class RobotControlNode(BaseNode):
         with dpg.node(tag=self.node_id, parent="node_editor", label=self.label):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as in_flow: dpg.add_text("Flow In"); self.inputs[in_flow] = "Flow"
             
-            # ★ [수정] 너비 줄임 (width=60)
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as x_in: self.field_x = dpg.add_input_float(label="X", width=60, default_value=200.0); self.inputs[x_in] = "Data"; self.in_x = x_in
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as y_in: self.field_y = dpg.add_input_float(label="Y", width=60, default_value=0.0); self.inputs[y_in] = "Data"; self.in_y = y_in
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as z_in: self.field_z = dpg.add_input_float(label="Z", width=60, default_value=120.0); self.inputs[z_in] = "Data"; self.in_z = z_in
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as g_in: self.field_g = dpg.add_input_float(label="Grip", width=60, default_value=40.0); self.inputs[g_in] = "Data"; self.in_g = g_in
+            # ★ [수정] 컴팩트 UI 적용 (Label 분리 & Horizontal Group)
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as x_in:
+                with dpg.group(horizontal=True):
+                    dpg.add_text("X")
+                    self.field_x = dpg.add_input_float(width=50, default_value=200.0, step=0)
+                self.inputs[x_in] = "Data"; self.in_x = x_in
+                
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as y_in:
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Y")
+                    self.field_y = dpg.add_input_float(width=50, default_value=0.0, step=0)
+                self.inputs[y_in] = "Data"; self.in_y = y_in
+                
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as z_in:
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Z")
+                    self.field_z = dpg.add_input_float(width=50, default_value=120.0, step=0)
+                self.inputs[z_in] = "Data"; self.in_z = z_in
+                
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as g_in:
+                with dpg.group(horizontal=True):
+                    dpg.add_text("G")
+                    self.field_g = dpg.add_input_float(width=50, default_value=40.0, step=0)
+                self.inputs[g_in] = "Data"; self.in_g = g_in
 
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_separator()
 
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as s_in:
-                self.field_smooth = dpg.add_input_float(label="Smth", width=50, default_value=0.2, step=0.05, min_value=0.01, max_value=1.0)
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Smth")
+                    self.field_smooth = dpg.add_input_float(width=40, default_value=0.2, step=0.05, min_value=0.01, max_value=1.0)
                 self.inputs[s_in] = "Data"; self.in_smooth = s_in
             
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as gs_in:
-                self.field_g_speed = dpg.add_input_float(label="Spd", width=50, default_value=2.0, step=0.1, min_value=0.1, max_value=10.0)
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Spd ")
+                    self.field_g_speed = dpg.add_input_float(width=40, default_value=2.0, step=0.1, min_value=0.1, max_value=10.0)
                 self.inputs[gs_in] = "Data"; self.in_g_speed = gs_in
 
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f_out: dpg.add_text("Flow Out"); self.outputs[f_out] = "Flow"
@@ -329,7 +357,7 @@ class RobotControlNode(BaseNode):
 
         dx, dy, dz = target_goal['x'] - current_pos['x'], target_goal['y'] - current_pos['y'], target_goal['z'] - current_pos['z']
         
-        # 3. 로봇 이동 스무딩
+        # Smooth Move
         if abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5:
              next_x, next_y, next_z = target_goal['x'], target_goal['y'], target_goal['z']
         else:
@@ -341,7 +369,7 @@ class RobotControlNode(BaseNode):
         next_y = max(LIMITS['min_y'], min(next_y, LIMITS['max_y']))
         next_z = max(LIMITS['min_z'], min(next_z, LIMITS['max_z']))
 
-        # 4. 그리퍼 이동 (방향 제어)
+        # Gripper Move
         received_g = target_goal['gripper']
         if received_g is None: next_g = current_pos['gripper']
         elif received_g > 50: next_g = current_pos['gripper'] + gripper_speed
@@ -351,7 +379,7 @@ class RobotControlNode(BaseNode):
 
         current_pos.update({'x': next_x, 'y': next_y, 'z': next_z, 'gripper': next_g})
 
-        # 5. UI 업데이트
+        # Update UI
         if abs(self.cache_ui['x'] - next_x) > 0.1: dpg.set_value(self.field_x, next_x); self.cache_ui['x'] = next_x
         if abs(self.cache_ui['y'] - next_y) > 0.1: dpg.set_value(self.field_y, next_y); self.cache_ui['y'] = next_y
         if abs(self.cache_ui['z'] - next_z) > 0.1: dpg.set_value(self.field_z, next_z); self.cache_ui['z'] = next_z
@@ -462,7 +490,7 @@ my_ssid = get_wifi_ssid()
 
 with dpg.window(tag="PrimaryWindow"):
     
-    # ★ [대시보드 패널]
+    # ★ [대시보드]
     with dpg.group(horizontal=True):
         # 1. 상태창
         with dpg.child_window(width=250, height=130, border=True):
@@ -475,7 +503,7 @@ with dpg.window(tag="PrimaryWindow"):
             dpg.add_text("Network Interval", color=(150,150,150))
             dpg.add_text("0.0 ms", tag="dash_latency", color=(255,255,0))
 
-        # 2. 수동 제어 (즉시 반응)
+        # 2. 수동 제어
         with dpg.child_window(width=350, height=130, border=True):
             dpg.add_text("Manual Control (10mm)", color=(255,200,0))
             with dpg.group(horizontal=True):
@@ -544,7 +572,7 @@ while dpg.is_dearpygui_running():
         dpg.set_value("dash_status", dashboard_state["status"])
         dpg.set_value("dash_latency", f"{dashboard_state['latency']:.1f} ms")
     
-    # 노드 로직 실행 (RUN 상태일 때만)
+    # 노드 로직 실행
     if is_running and (current_time - last_logic_time > LOGIC_RATE):
         execute_graph_once()
         last_logic_time = current_time
