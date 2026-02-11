@@ -314,14 +314,14 @@ class RobotControlNode(BaseNode):
             # Smth, Spd 부분
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as s_in:
                 with dpg.group(horizontal=True):
-                    dpg.add_text("Smth")
-                    self.field_smooth = dpg.add_input_float(width=40, default_value=0.2, step=0.05)
+                    dpg.add_text("Smooth")
+                    self.field_smooth = dpg.add_input_float(width=60, default_value=0.2, step=0)
                 self.inputs[s_in] = "Data"; self.in_smooth = s_in
             
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as gs_in:
                 with dpg.group(horizontal=True):
-                    dpg.add_text("Spd ")
-                    self.field_g_speed = dpg.add_input_float(width=40, default_value=2.0, step=0.1)
+                    dpg.add_text("Gripper Speed")
+                    self.field_g_speed = dpg.add_input_float(width=60, default_value=2.0, step=0)
                 self.inputs[gs_in] = "Data"; self.in_g_speed = gs_in
 
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f_out:
