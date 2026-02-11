@@ -286,49 +286,47 @@ class RobotControlNode(BaseNode):
 
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label=self.label):
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as in_flow: dpg.add_text("Flow In"); self.inputs[in_flow] = "Flow"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as in_flow:
+                dpg.add_text("Flow In")
+                self.inputs[in_flow] = "Flow"
             
-            # ★ [수정] 컴팩트 UI 적용 (Label 분리 & Horizontal Group)
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as x_in:
-                with dpg.group(horizontal=True):
-                    dpg.add_text("X")
-                    self.field_x = dpg.add_input_float(width=50, default_value=200.0, step=0)
-                self.inputs[x_in] = "Data"; self.in_x = x_in
-                
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as y_in:
-                with dpg.group(horizontal=True):
-                    dpg.add_text("Y")
-                    self.field_y = dpg.add_input_float(width=50, default_value=0.0, step=0)
-                self.inputs[y_in] = "Data"; self.in_y = y_in
-                
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as z_in:
-                with dpg.group(horizontal=True):
-                    dpg.add_text("Z")
-                    self.field_z = dpg.add_input_float(width=50, default_value=120.0, step=0)
-                self.inputs[z_in] = "Data"; self.in_z = z_in
-                
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as g_in:
-                with dpg.group(horizontal=True):
-                    dpg.add_text("G")
-                    self.field_g = dpg.add_input_float(width=50, default_value=40.0, step=0)
-                self.inputs[g_in] = "Data"; self.in_g = g_in
+            # X, Y, Z, G 입력 부분
+            for axis, label, default_val, field_attr in [
+                ('x', "X", 200.0, 'field_x'),
+                ('y', "Y", 0.0, 'field_y'),
+                ('z', "Z", 120.0, 'field_z'),
+                ('g', "G", 40.0, 'field_g')
+            ]:
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as attr_id:
+                    with dpg.group(horizontal=True):
+                        dpg.add_text(label, color=(255, 255, 0)) # 가독성을 위해 노란색 추가
+                        setattr(self, field_attr, dpg.add_input_float(width=80, default_value=default_val, step=0))
+                    self.inputs[attr_id] = "Data"
+                    if axis == 'x': self.in_x = attr_id
+                    elif axis == 'y': self.in_y = attr_id
+                    elif axis == 'z': self.in_z = attr_id
+                    elif axis == 'g': self.in_g = attr_id
 
+            # ★ 문제의 구간: separator 대신 spacer 사용
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                dpg.add_separator()
+                dpg.add_spacer(height=5) # 구분선 대신 빈 공간 추가
 
+            # Smth, Spd 부분
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as s_in:
                 with dpg.group(horizontal=True):
                     dpg.add_text("Smth")
-                    self.field_smooth = dpg.add_input_float(width=40, default_value=0.2, step=0.05, min_value=0.01, max_value=1.0)
+                    self.field_smooth = dpg.add_input_float(width=40, default_value=0.2, step=0.05)
                 self.inputs[s_in] = "Data"; self.in_smooth = s_in
             
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as gs_in:
                 with dpg.group(horizontal=True):
                     dpg.add_text("Spd ")
-                    self.field_g_speed = dpg.add_input_float(width=40, default_value=2.0, step=0.1, min_value=0.1, max_value=10.0)
+                    self.field_g_speed = dpg.add_input_float(width=40, default_value=2.0, step=0.1)
                 self.inputs[gs_in] = "Data"; self.in_g_speed = gs_in
 
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f_out: dpg.add_text("Flow Out"); self.outputs[f_out] = "Flow"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f_out:
+                dpg.add_text("Flow Out")
+                self.outputs[f_out] = "Flow"
 
     def execute(self):
         global current_pos, target_goal
