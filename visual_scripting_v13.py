@@ -16,12 +16,12 @@ is_running = False
 current_pos = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0}
 target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': None} 
 
-# Config (Default values)
+# Config
 UNITY_IP = "192.168.50.63" 
 FEEDBACK_PORT = 5005
-DEFAULT_SMOOTHING = 0.2  
-DEFAULT_GRIPPER_SPEED = 2.0 
+SMOOTHING_FACTOR = 0.2  
 
+GRIPPER_SPEED = 2.0 
 GRIPPER_MIN = 30.0
 GRIPPER_MAX = 70.0
 
@@ -76,7 +76,6 @@ class StartNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_id: dpg.add_text("Flow Out"); self.outputs[out_id] = "Flow"
     def execute(self): return self.outputs
 
-# ★ [신규] 상수 노드 (값을 공급하는 역할)
 class ConstantNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Constant")
@@ -170,11 +169,10 @@ class RobotControlNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Robot Driver")
         self.in_x = None; self.in_y = None; self.in_z = None; self.in_g = None
-        # ★ [추가] 속도 제어용 입력핀
         self.in_smooth = None; self.in_g_speed = None
         
         self.field_x = None; self.field_y = None; self.field_z = None; self.field_g = None
-        self.field_smooth = None; self.field_g_speed = None # ★ [추가] UI 필드
+        self.field_smooth = None; self.field_g_speed = None 
         
         self.last_cmd = ""; self.cache_ui = {'x':0, 'y':0, 'z':0, 'g':0}
 
@@ -187,14 +185,14 @@ class RobotControlNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as z_in: self.field_z = dpg.add_input_float(label="Z", width=80, default_value=120.0); self.inputs[z_in] = "Data"; self.in_z = z_in
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as g_in: self.field_g = dpg.add_input_float(label="Grip", width=80, default_value=40.0); self.inputs[g_in] = "Data"; self.in_g = g_in
 
-            dpg.add_separator() # 구분선
+            # ★ [수정됨] 구분선(Separator)을 node_attribute 안에 안전하게 넣음
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_separator()
 
-            # ★ [추가] Smooth Input
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as s_in:
                 self.field_smooth = dpg.add_input_float(label="Smooth", width=60, default_value=0.2, step=0.05, min_value=0.01, max_value=1.0)
                 self.inputs[s_in] = "Data"; self.in_smooth = s_in
             
-            # ★ [추가] Gripper Speed Input
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as gs_in:
                 self.field_g_speed = dpg.add_input_float(label="Grip Spd", width=60, default_value=2.0, step=0.1, min_value=0.1, max_value=10.0)
                 self.inputs[gs_in] = "Data"; self.in_g_speed = gs_in
@@ -204,10 +202,8 @@ class RobotControlNode(BaseNode):
     def execute(self):
         global current_pos, target_goal
         
-        # 1. 좌표 및 그리퍼 목표값 가져오기
         tx, ty, tz, tg = self.fetch_input_data(self.in_x), self.fetch_input_data(self.in_y), self.fetch_input_data(self.in_z), self.fetch_input_data(self.in_g)
 
-        # 2. ★ 속도 설정값 가져오기 (연결된 노드가 없으면 UI 값 사용)
         link_smooth = self.fetch_input_data(self.in_smooth)
         if link_smooth is not None:
             smooth_factor = float(link_smooth)
@@ -222,7 +218,6 @@ class RobotControlNode(BaseNode):
         else:
             gripper_speed = dpg.get_value(self.field_g_speed)
 
-        # 안전 범위 제한
         smooth_factor = max(0.01, min(smooth_factor, 1.0))
         gripper_speed = max(0.1, min(gripper_speed, 10.0))
 
@@ -233,7 +228,6 @@ class RobotControlNode(BaseNode):
 
         dx, dy, dz = target_goal['x'] - current_pos['x'], target_goal['y'] - current_pos['y'], target_goal['z'] - current_pos['z']
         
-        # 3. 로봇 이동 로직 (Smooth Factor 적용)
         if abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5:
              next_x, next_y, next_z = target_goal['x'], target_goal['y'], target_goal['z']
         else:
@@ -245,7 +239,6 @@ class RobotControlNode(BaseNode):
         next_y = max(LIMITS['min_y'], min(next_y, LIMITS['max_y']))
         next_z = max(LIMITS['min_z'], min(next_z, LIMITS['max_z']))
 
-        # 4. 그리퍼 이동 로직 (Gripper Speed 적용)
         received_g = target_goal['gripper']
         if received_g is None: next_g = current_pos['gripper']
         elif received_g > 50: next_g = current_pos['gripper'] + gripper_speed
@@ -255,7 +248,6 @@ class RobotControlNode(BaseNode):
 
         current_pos.update({'x': next_x, 'y': next_y, 'z': next_z, 'gripper': next_g})
 
-        # Cache UI Update
         if abs(self.cache_ui['x'] - next_x) > 0.1: dpg.set_value(self.field_x, next_x); self.cache_ui['x'] = next_x
         if abs(self.cache_ui['y'] - next_y) > 0.1: dpg.set_value(self.field_y, next_y); self.cache_ui['y'] = next_y
         if abs(self.cache_ui['z'] - next_z) > 0.1: dpg.set_value(self.field_z, next_z); self.cache_ui['z'] = next_z
@@ -307,7 +299,7 @@ class NodeFactory:
         elif node_type == "UNITY_CONTROL": node = UnityControlNode(node_id)
         elif node_type == "ROBOT_CONTROL": node = RobotControlNode(node_id)
         elif node_type == "JSON_PARSE": node = JsonParseNode(node_id)
-        elif node_type == "CONSTANT": node = ConstantNode(node_id) # ★ Factory에 추가
+        elif node_type == "CONSTANT": node = ConstantNode(node_id)
         if node: node.build_ui(); node_registry[node_id] = node; return node
         return None
 
@@ -369,19 +361,19 @@ with dpg.window(tag="PrimaryWindow"):
         dpg.add_button(label="STATUS", callback=add_node_cb, user_data="PRINT")
         dpg.add_spacer(width=20)
         dpg.add_button(label="JSON", callback=add_node_cb, user_data="JSON_PARSE")
-        dpg.add_button(label="CONST", callback=add_node_cb, user_data="CONSTANT") # ★ 버튼 추가
+        dpg.add_button(label="CONST", callback=add_node_cb, user_data="CONSTANT")
         dpg.add_spacer(width=50)
         dpg.add_button(label="RUN", tag="btn_run", callback=toggle_execution, width=150)
     dpg.add_separator()
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
-dpg.create_viewport(title='PyGui V13 (Params Control)', width=1000, height=700, vsync=True)
+dpg.create_viewport(title='PyGui V13 (Speed Control)', width=1000, height=700, vsync=True)
 dpg.setup_dearpygui()
 dpg.set_primary_window("PrimaryWindow", True)
 dpg.show_viewport()
 
 last_logic_time = 0
-LOGIC_RATE = 0.03 # 33 FPS
+LOGIC_RATE = 0.03 
 
 while dpg.is_dearpygui_running():
     current_time = time.time()
