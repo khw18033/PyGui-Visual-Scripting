@@ -294,7 +294,7 @@ class KeyboardControlNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Keyboard (Pi)")
         self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None
-        self.move_speed = 3.0 # 이동 속도 (mm per frame)
+        self.move_speed = 1.5 # 이동 속도 (mm per frame)
 
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label="Keyboard Input (Pi)"):
@@ -769,7 +769,7 @@ dpg.set_primary_window("PrimaryWindow", True)
 dpg.show_viewport()
 
 last_logic_time = 0
-LOGIC_RATE = 0.03 
+LOGIC_RATE = 0.01
 
 # Main Loop
 while dpg.is_dearpygui_running():
