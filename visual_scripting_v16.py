@@ -37,7 +37,7 @@ SMOOTHING_FACTOR = 0.2
 
 GRIPPER_SPEED = 2.0 
 GRIPPER_MIN = 30.0
-GRIPPER_MAX = 70.0
+GRIPPER_MAX = 60.0
 
 LIMITS = {'min_x': 100, 'max_x': 280, 'min_y': -150, 'max_y': 150, 'min_z': 0, 'max_z': 180}
 
