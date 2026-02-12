@@ -386,10 +386,16 @@ class RobotControlNode(BaseNode):
 
         # Gripper Logic
         received_g = target_goal['gripper']
-        if received_g is None: next_g = current_pos['gripper']
-        elif received_g > 50: next_g = current_pos['gripper'] + gripper_speed
-        elif received_g < 50: next_g = current_pos['gripper'] - gripper_speed
-        else: next_g = current_pos['gripper']
+        # if received_g is None: next_g = current_pos['gripper']
+        # elif received_g > 50: next_g = current_pos['gripper'] + gripper_speed
+        # elif received_g < 50: next_g = current_pos['gripper'] - gripper_speed
+        # else: next_g = current_pos['gripper']
+
+        if received_g is None: 
+            next_g = current_pos['gripper']
+        else:
+            next_g = received_g
+            
         next_g = max(GRIPPER_MIN, min(next_g, GRIPPER_MAX)) 
 
         current_pos.update({'x': next_x, 'y': next_y, 'z': next_z, 'gripper': next_g})
