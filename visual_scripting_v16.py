@@ -395,7 +395,7 @@ class RobotControlNode(BaseNode):
             next_g = current_pos['gripper']
         else:
             next_g = received_g
-            
+
         next_g = max(GRIPPER_MIN, min(next_g, GRIPPER_MAX)) 
 
         current_pos.update({'x': next_x, 'y': next_y, 'z': next_z, 'gripper': next_g})
@@ -456,9 +456,13 @@ class PrintNode(BaseNode):
 class GraphNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Live Trajectory")
-        self.in_x = None; self.in_y = None; self.in_z = None; self.in_g = None
-        self.plot_x = deque(maxlen=200); self.plot_y = deque(maxlen=200)
-        self.plot_z = deque(maxlen=200); self.plot_t = deque(maxlen=200)
+        self.in_x = None; self.in_y = None; self.in_z = None
+        
+        # ★ [수정] 축별로 데이터를 따로 관리합니다.
+        self.buf_x = deque(maxlen=200); self.t_x = deque(maxlen=200)
+        self.buf_y = deque(maxlen=200); self.t_y = deque(maxlen=200)
+        self.buf_z = deque(maxlen=200); self.t_z = deque(maxlen=200)
+        
         self.counter = 0
 
     def build_ui(self):
@@ -483,27 +487,61 @@ class GraphNode(BaseNode):
                         dpg.add_line_series([], [], label="Z", tag=f"series_z_{self.node_id}")
 
     def execute(self):
+        self.counter += 1
+        
+        # 1. 입력 데이터 가져오기 (연결 안되면 None 반환)
         val_x = self.fetch_input_data(self.in_x)
         val_y = self.fetch_input_data(self.in_y)
         val_z = self.fetch_input_data(self.in_z)
-        
-        rx = float(val_x) if val_x is not None else current_pos['x']
-        ry = float(val_y) if val_y is not None else current_pos['y']
-        rz = float(val_z) if val_z is not None else current_pos['z']
 
-        self.counter += 1
-        self.plot_t.append(self.counter)
-        self.plot_x.append(rx)
-        self.plot_y.append(ry)
-        self.plot_z.append(rz)
+        # 2. X축 처리
+        if val_x is not None:
+            self.buf_x.append(float(val_x))
+            self.t_x.append(self.counter)
+            dpg.set_value(f"series_x_{self.node_id}", [list(self.t_x), list(self.buf_x)])
+        else:
+            # 연결 없으면 그래프 지우기
+            dpg.set_value(f"series_x_{self.node_id}", [[], []])
+            self.buf_x.clear(); self.t_x.clear()
 
-        dpg.set_value(f"series_x_{self.node_id}", [list(self.plot_t), list(self.plot_x)])
-        dpg.set_value(f"series_y_{self.node_id}", [list(self.plot_t), list(self.plot_y)])
-        dpg.set_value(f"series_z_{self.node_id}", [list(self.plot_t), list(self.plot_z)])
+        # 3. Y축 처리
+        if val_y is not None:
+            self.buf_y.append(float(val_y))
+            self.t_y.append(self.counter)
+            dpg.set_value(f"series_y_{self.node_id}", [list(self.t_y), list(self.buf_y)])
+        else:
+            dpg.set_value(f"series_y_{self.node_id}", [[], []])
+            self.buf_y.clear(); self.t_y.clear()
+
+        # 4. Z축 처리
+        if val_z is not None:
+            self.buf_z.append(float(val_z))
+            self.t_z.append(self.counter)
+            dpg.set_value(f"series_z_{self.node_id}", [list(self.t_z), list(self.buf_z)])
+        else:
+            dpg.set_value(f"series_z_{self.node_id}", [[], []])
+            self.buf_z.clear(); self.t_z.clear()
+
+        # 5. 축 범위 자동 조절 (Auto-Fit)
+        # 활성화된 데이터만 모아서 최대/최소 계산
+        all_values = []
+        if val_x is not None: all_values.extend(self.buf_x)
+        if val_y is not None: all_values.extend(self.buf_y)
+        if val_z is not None: all_values.extend(self.buf_z)
         
-        if len(self.plot_t) > 0:
-            dpg.set_axis_limits(f"xaxis_{self.node_id}", self.plot_t[0], self.plot_t[-1])
-            dpg.set_axis_limits(f"yaxis_{self.node_id}", min(min(self.plot_x), min(self.plot_y))-10, max(max(self.plot_x), max(self.plot_z))+10)
+        if all_values:
+            min_v, max_v = min(all_values), max(all_values)
+            padding = (max_v - min_v) * 0.1 if max_v != min_v else 10
+            dpg.set_axis_limits(f"yaxis_{self.node_id}", min_v - padding, max_v + padding)
+            
+            # X축(시간) 범위도 현재 데이터에 맞춤
+            all_times = []
+            if val_x is not None and self.t_x: all_times.extend([self.t_x[0], self.t_x[-1]])
+            if val_y is not None and self.t_y: all_times.extend([self.t_y[0], self.t_y[-1]])
+            if val_z is not None and self.t_z: all_times.extend([self.t_z[0], self.t_z[-1]])
+            
+            if all_times:
+                dpg.set_axis_limits(f"xaxis_{self.node_id}", min(all_times), max(all_times))
         
         return self.outputs
 
