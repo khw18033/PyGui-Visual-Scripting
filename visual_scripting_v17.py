@@ -289,18 +289,25 @@ class UnityControlNode(BaseNode):
             except: pass 
         return self.outputs
 
-# ★ [신규] 라즈베리파이 키보드 제어 노드
+# ★ [관성 적용] 부드러운 가속/감속이 추가된 키보드 노드
 class KeyboardControlNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Keyboard (Pi)")
         self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None
-        self.move_speed = 1.5 # 이동 속도 (mm per frame)
+        
+        # 설정값 (취향에 따라 조절 가능)
+        self.max_speed = 2.0   # 최대 속도 (mm/frame)
+        self.accel = 0.1       # 가속도: 키 누를 때 속도가 붙는 빠르기 (낮을수록 부드러운 출발)
+        self.decel = 0.15      # 감속도: 키 뗄 때 멈추는 빠르기 (낮을수록 많이 미끄러짐)
+        
+        # 현재 속도 저장소 (관성 유지용)
+        self.vel = {'x':0.0, 'y':0.0, 'z':0.0, 'g':0.0}
 
     def build_ui(self):
-        with dpg.node(tag=self.node_id, parent="node_editor", label="Keyboard Input (Pi)"):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Keyboard Input (Inertia)"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as in_flow: dpg.add_text("Flow In"); self.inputs[in_flow] = "Flow"
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                dpg.add_text("WASD: XY Move\nQE: Z Move\nU/J: Gripper", color=(150, 255, 150))
+                dpg.add_text("WASD / QE / UJ\n(Smooth Motion)", color=(150, 255, 255))
             
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_x: dpg.add_text("Target X"); self.outputs[out_x] = "Data"; self.out_x = out_x
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_y: dpg.add_text("Target Y"); self.outputs[out_y] = "Data"; self.out_y = out_y
@@ -311,32 +318,49 @@ class KeyboardControlNode(BaseNode):
     def execute(self):
         global manual_override_until
         
-        # 키보드 입력 감지
-        dx, dy, dz, dg = 0, 0, 0, 0
+        # 1. 입력 방향 감지 (-1, 0, 1)
+        dir_x, dir_y, dir_z, dir_g = 0, 0, 0, 0
         
-        # X/Y Move (WASD)
-        if dpg.is_key_down(dpg.mvKey_W): dx = 1  # X+
-        if dpg.is_key_down(dpg.mvKey_S): dx = -1 # X-
-        if dpg.is_key_down(dpg.mvKey_A): dy = 1  # Y+
-        if dpg.is_key_down(dpg.mvKey_D): dy = -1 # Y-
-        
-        # Z Move (QE)
-        if dpg.is_key_down(dpg.mvKey_Q): dz = 1  # Z+
-        if dpg.is_key_down(dpg.mvKey_E): dz = -1 # Z-
+        if dpg.is_key_down(dpg.mvKey_W): dir_x = 1
+        if dpg.is_key_down(dpg.mvKey_S): dir_x = -1
+        if dpg.is_key_down(dpg.mvKey_A): dir_y = 1
+        if dpg.is_key_down(dpg.mvKey_D): dir_y = -1
+        if dpg.is_key_down(dpg.mvKey_Q): dir_z = 1
+        if dpg.is_key_down(dpg.mvKey_E): dir_z = -1
+        if dpg.is_key_down(dpg.mvKey_J): dir_g = 1
+        if dpg.is_key_down(dpg.mvKey_U): dir_g = -1
 
-        # Gripper (UJ)
-        if dpg.is_key_down(dpg.mvKey_J): dg = 1  # Close
-        if dpg.is_key_down(dpg.mvKey_U): dg = -1 # Open
-
-        # 입력이 있을 때만 계산 및 수동 우선권 확보
-        if dx != 0 or dy != 0 or dz != 0 or dg != 0:
-            manual_override_until = time.time() + 0.5 # 키 누르는 동안 유니티 간섭 차단
+        # 입력이 있거나, 아직 속도가 남아있다면 (미끄러지는 중) 로직 실행
+        if (dir_x!=0 or dir_y!=0 or dir_z!=0 or dir_g!=0) or \
+           (abs(self.vel['x'])>0.01 or abs(self.vel['y'])>0.01 or abs(self.vel['z'])>0.01 or abs(self.vel['g'])>0.01):
             
-            # 현재 위치 기반으로 목표값 갱신
-            target_goal['x'] += dx * self.move_speed
-            target_goal['y'] += dy * self.move_speed
-            target_goal['z'] += dz * self.move_speed
-            target_goal['gripper'] += dg * 1.0 # 그리퍼 속도
+            manual_override_until = time.time() + 0.5 
+            
+            # 2. 속도 보간 (가속/감속 적용)
+            for axis, direction in [('x', dir_x), ('y', dir_y), ('z', dir_z), ('g', dir_g)]:
+                target_v = direction * self.max_speed
+                
+                # 그리퍼는 좀 느리게
+                if axis == 'g': target_v *= 0.5 
+                
+                # 속도 변화량 결정 (입력이 있으면 가속, 없으면 감속)
+                step = self.accel if direction != 0 else self.decel
+                
+                # 현재 속도를 목표 속도 쪽으로 부드럽게 이동 (Lerp 유사 효과)
+                if self.vel[axis] < target_v:
+                    self.vel[axis] = min(target_v, self.vel[axis] + step)
+                elif self.vel[axis] > target_v:
+                    self.vel[axis] = max(target_v, self.vel[axis] - step)
+                
+                # 거의 0이면 완전 정지
+                if direction == 0 and abs(self.vel[axis]) < step:
+                    self.vel[axis] = 0.0
+
+            # 3. 위치 업데이트 (현재 속도만큼 이동)
+            target_goal['x'] += self.vel['x']
+            target_goal['y'] += self.vel['y']
+            target_goal['z'] += self.vel['z']
+            target_goal['gripper'] += self.vel['g']
 
             # 범위 제한
             target_goal['x'] = max(LIMITS['min_x'], min(target_goal['x'], LIMITS['max_x']))
@@ -344,7 +368,7 @@ class KeyboardControlNode(BaseNode):
             target_goal['z'] = max(LIMITS['min_z'], min(target_goal['z'], LIMITS['max_z']))
             target_goal['gripper'] = max(GRIPPER_MIN, min(target_goal['gripper'], GRIPPER_MAX))
 
-        # 출력 데이터 설정 (항상 내보냄)
+        # 4. 데이터 출력
         self.output_data[self.out_x] = target_goal['x']
         self.output_data[self.out_y] = target_goal['y']
         self.output_data[self.out_z] = target_goal['z']
