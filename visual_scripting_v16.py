@@ -20,6 +20,9 @@ is_running = False
 current_pos = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0}
 target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0} 
 
+# ★ [핵심] 수동 조작 우선권 타이머 (이 시간까지는 유니티 신호 무시)
+manual_override_until = 0.0 
+
 # Dashboard State
 dashboard_state = {
     "status": "Idle",
@@ -38,6 +41,7 @@ SMOOTHING_FACTOR = 0.2
 
 GRIPPER_SPEED = 2.0 
 GRIPPER_MIN = 30.0
+# ★ [요청사항] 그리퍼 최대값 60으로 변경
 GRIPPER_MAX = 60.0
 
 LIMITS = {'min_x': 100, 'max_x': 280, 'min_y': -150, 'max_y': 150, 'min_z': 0, 'max_z': 180}
@@ -102,9 +106,15 @@ def send_robot_command_direct(x, y, z, g):
 
 # ================= [1. Dashboard Callbacks] =================
 def manual_control_callback(sender, app_data, user_data):
+    global manual_override_until
+    
+    # ★ [핵심] 수동 조작 시 1.5초간 유니티 신호 무시 (우선권 확보)
+    manual_override_until = time.time() + 1.5
+    
     axis, step = user_data
     
     if axis == 'gripper':
+        # 토글 방식: 50 이상이면 40(Open), 아니면 60(Close)
         val = 60.0 if target_goal['gripper'] < 50 else 40.0
         target_goal['gripper'] = val
         write_log(f"Manual: Gripper {'Close' if val > 50 else 'Open'}")
@@ -126,6 +136,11 @@ def manual_control_callback(sender, app_data, user_data):
         dpg.set_value("input_g", int(target_goal['gripper']))
 
 def move_to_coord_callback(sender, app_data, user_data):
+    global manual_override_until
+    
+    # ★ 직접 이동 시에도 2초간 유니티 무시
+    manual_override_until = time.time() + 2.0
+    
     target_goal['x'] = float(dpg.get_value("input_x"))
     target_goal['y'] = float(dpg.get_value("input_y"))
     target_goal['z'] = float(dpg.get_value("input_z"))
@@ -136,8 +151,11 @@ def move_to_coord_callback(sender, app_data, user_data):
     write_log(f"Direct Move: {target_goal['x']}, {target_goal['y']}, {target_goal['z']}")
 
 def homing_thread_func():
-    global ser
+    global ser, manual_override_until
     if ser:
+        # 호밍 중에는 유니티 간섭 완전 차단 (20초)
+        manual_override_until = time.time() + 20.0
+        
         dashboard_state["status"] = "HOMING..."
         write_log("System: Homing Started...")
         ser.write(b"$H\r\n")
@@ -250,6 +268,7 @@ class UDPReceiverNode(BaseNode):
                 self.output_data[self.data_out_id] = decoded
                 self.last_data_str = decoded
         
+        # Feedback Send (Unity로 현재 위치 전송)
         try:
             feedback_data = {"x": -current_pos['y']/1000.0, "y": current_pos['z']/1000.0, "z": current_pos['x']/1000.0, 
                              "gripper": current_pos['gripper'], "status": "Running"}
@@ -336,33 +355,30 @@ class RobotControlNode(BaseNode):
                 self.outputs[f_out] = "Flow"
 
     def execute(self):
-        global current_pos, target_goal
+        global current_pos, target_goal, manual_override_until
         
+        # 입력 데이터 가져오기
         tx, ty, tz, tg = self.fetch_input_data(self.in_x), self.fetch_input_data(self.in_y), self.fetch_input_data(self.in_z), self.fetch_input_data(self.in_g)
-
         link_smooth = self.fetch_input_data(self.in_smooth)
-        if link_smooth is not None:
-            smooth_factor = float(link_smooth); dpg.set_value(self.field_smooth, smooth_factor)
-        else:
-            smooth_factor = dpg.get_value(self.field_smooth)
-
         link_gs = self.fetch_input_data(self.in_g_speed)
-        if link_gs is not None:
-            gripper_speed = float(link_gs); dpg.set_value(self.field_g_speed, gripper_speed)
-        else:
-            gripper_speed = dpg.get_value(self.field_g_speed)
 
-        smooth_factor = max(0.01, min(smooth_factor, 1.0))
-        gripper_speed = max(0.1, min(gripper_speed, 10.0))
+        # UI 업데이트 (스무딩/속도)
+        if link_smooth is not None: dpg.set_value(self.field_smooth, float(link_smooth))
+        if link_gs is not None: dpg.set_value(self.field_g_speed, float(link_gs))
 
-        if tx is not None: target_goal['x'] = float(tx)
-        if ty is not None: target_goal['y'] = float(ty)
-        if tz is not None: target_goal['z'] = float(tz)
-        if tg is not None: target_goal['gripper'] = float(tg)
+        smooth_factor = max(0.01, min(dpg.get_value(self.field_smooth), 1.0))
+        gripper_speed = max(0.1, min(dpg.get_value(self.field_g_speed), 10.0))
 
+        # ★ [핵심 Fix] 수동 조작 타이머가 끝났을 때만 노드 입력(유니티)을 반영
+        if time.time() > manual_override_until:
+            if tx is not None: target_goal['x'] = float(tx)
+            if ty is not None: target_goal['y'] = float(ty)
+            if tz is not None: target_goal['z'] = float(tz)
+            if tg is not None: target_goal['gripper'] = float(tg)
+        
+        # 이동 로직 (Smoothing)
         dx, dy, dz = target_goal['x'] - current_pos['x'], target_goal['y'] - current_pos['y'], target_goal['z'] - current_pos['z']
         
-        # Smooth Move
         if abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5:
              next_x, next_y, next_z = target_goal['x'], target_goal['y'], target_goal['z']
         else:
@@ -370,50 +386,44 @@ class RobotControlNode(BaseNode):
             next_y = current_pos['y'] + dy * smooth_factor
             next_z = current_pos['z'] + dz * smooth_factor
         
+        # 범위 제한
         next_x = max(LIMITS['min_x'], min(next_x, LIMITS['max_x']))
         next_y = max(LIMITS['min_y'], min(next_y, LIMITS['max_y']))
         next_z = max(LIMITS['min_z'], min(next_z, LIMITS['max_z']))
 
-        # Gripper Move
+        # Gripper Logic
         received_g = target_goal['gripper']
         if received_g is None: next_g = current_pos['gripper']
         elif received_g > 50: next_g = current_pos['gripper'] + gripper_speed
         elif received_g < 50: next_g = current_pos['gripper'] - gripper_speed
         else: next_g = current_pos['gripper']
-        next_g = max(GRIPPER_MIN, min(next_g, GRIPPER_MAX))
+        next_g = max(GRIPPER_MIN, min(next_g, GRIPPER_MAX)) # Max 60 applied
 
         current_pos.update({'x': next_x, 'y': next_y, 'z': next_z, 'gripper': next_g})
 
-        # Update UI
+        # Update Node UI
         if abs(self.cache_ui['x'] - next_x) > 0.1: dpg.set_value(self.field_x, next_x); self.cache_ui['x'] = next_x
         if abs(self.cache_ui['y'] - next_y) > 0.1: dpg.set_value(self.field_y, next_y); self.cache_ui['y'] = next_y
         if abs(self.cache_ui['z'] - next_z) > 0.1: dpg.set_value(self.field_z, next_z); self.cache_ui['z'] = next_z
         if abs(self.cache_ui['g'] - next_g) > 0.1: dpg.set_value(self.field_g, next_g); self.cache_ui['g'] = next_g
 
+        # Send Command
         cmd_move = f"G0 X{next_x:.1f} Y{next_y:.1f} Z{next_z:.1f}\n"
         cmd_grip = f"M3 S{int(next_g)}\n"
         full_cmd = cmd_move + cmd_grip
         if full_cmd != self.last_cmd:
-            global ser # 전역 변수 ser를 수정하기 위해 가져옴
-            
+            global ser
             try:
-                # 연결이 정상일 때만 전송
                 if ser and ser.is_open:
                     ser.write(cmd_move.encode())
                     ser.write(cmd_grip.encode())
             except Exception as e:
-                # 1. 에러 발생 시 로그 출력
-                write_log(f"Error: Serial Disconnected ({e})")
-                
-                # 2. 대시보드 상태 'Offline'으로 변경
+                write_log(f"Error: Serial Write Failed ({e})")
                 dashboard_state["hw_link"] = "Offline"
-                
-                # 3. 고장난 연결 확실히 끊고 변수 비우기 (중요!)
-                if ser:
-                    try: ser.close()
+                if ser: 
+                    try: ser.close() 
                     except: pass
-                ser = None 
-            
+                ser = None
             self.last_cmd = full_cmd
         return self.outputs
     
@@ -444,7 +454,6 @@ class PrintNode(BaseNode):
         if msg != self.last_msg: dpg.set_value(self.input_field, msg); self.last_msg = msg
         return self.outputs
 
-# ★ [New Feature] Graph Node (Live Trajectory)
 class GraphNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Live Trajectory")
@@ -458,7 +467,6 @@ class GraphNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: 
                 dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
             
-            # Input Pins for Selectivity
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as ix: 
                 dpg.add_text("Input X", color=(100, 200, 255)); self.inputs[ix] = "Data"; self.in_x = ix
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as iy: 
@@ -466,7 +474,6 @@ class GraphNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as iz: 
                 dpg.add_text("Input Z", color=(100, 255, 100)); self.inputs[iz] = "Data"; self.in_z = iz
             
-            # Embedded Plot
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 with dpg.plot(label="Trajectory", height=150, width=250):
                     dpg.add_plot_legend()
@@ -477,7 +484,6 @@ class GraphNode(BaseNode):
                         dpg.add_line_series([], [], label="Z", tag=f"series_z_{self.node_id}")
 
     def execute(self):
-        # Fetch inputs, default to current_pos if not connected
         val_x = self.fetch_input_data(self.in_x)
         val_y = self.fetch_input_data(self.in_y)
         val_z = self.fetch_input_data(self.in_z)
@@ -492,19 +498,16 @@ class GraphNode(BaseNode):
         self.plot_y.append(ry)
         self.plot_z.append(rz)
 
-        # Update Plot Data
         dpg.set_value(f"series_x_{self.node_id}", [list(self.plot_t), list(self.plot_x)])
         dpg.set_value(f"series_y_{self.node_id}", [list(self.plot_t), list(self.plot_y)])
         dpg.set_value(f"series_z_{self.node_id}", [list(self.plot_t), list(self.plot_z)])
         
-        # Auto Fit
         if len(self.plot_t) > 0:
             dpg.set_axis_limits(f"xaxis_{self.node_id}", self.plot_t[0], self.plot_t[-1])
             dpg.set_axis_limits(f"yaxis_{self.node_id}", min(min(self.plot_x), min(self.plot_y))-10, max(max(self.plot_x), max(self.plot_z))+10)
         
         return self.outputs
 
-# ★ [New Feature] Logger Node (System Log)
 class LoggerNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "System Log")
@@ -514,15 +517,13 @@ class LoggerNode(BaseNode):
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label="System Log Viewer"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Update Signal"); self.inputs[flow] = "Flow"
-            
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 with dpg.child_window(width=250, height=150):
                     self.text_id = dpg.add_text("", color=(200, 200, 200), wrap=240)
 
     def execute(self):
-        # Update text only if buffer changed
         if len(system_log_buffer) != self.last_len or len(system_log_buffer) > 0:
-            log_str = "\n".join(list(system_log_buffer)[-10:]) # Show last 10 lines
+            log_str = "\n".join(list(system_log_buffer)[-10:]) 
             dpg.set_value(self.text_id, log_str)
             self.last_len = len(system_log_buffer)
         return self.outputs
@@ -539,8 +540,8 @@ class NodeFactory:
         elif node_type == "ROBOT_CONTROL": node = RobotControlNode(node_id)
         elif node_type == "JSON_PARSE": node = JsonParseNode(node_id)
         elif node_type == "CONSTANT": node = ConstantNode(node_id)
-        elif node_type == "GRAPH": node = GraphNode(node_id)  # New
-        elif node_type == "LOGGER": node = LoggerNode(node_id) # New
+        elif node_type == "GRAPH": node = GraphNode(node_id) 
+        elif node_type == "LOGGER": node = LoggerNode(node_id)
         
         if node: node.build_ui(); node_registry[node_id] = node; return node
         return None
@@ -564,7 +565,6 @@ def execute_graph_once():
             if next_node: break 
         current_node = next_node
     
-    # Independent Nodes (Logger / Graph often act as sinks)
     for node in node_registry.values():
         if isinstance(node, (GraphNode, LoggerNode)):
             node.execute()
@@ -599,20 +599,16 @@ def add_node_cb(sender, app_data, user_data):
 def auto_reconnect_thread():
     global ser
     while True:
-        # 연결이 끊겨있고(ser is None) + USB 장치가 꽂혀있다면(/dev/ttyUSB0)
         if ser is None and os.path.exists('/dev/ttyUSB0'):
             write_log("System: USB Detected. Attempting Reconnection...")
             try:
-                init_serial() # 기존 초기화 함수 재활용
+                init_serial() 
             except Exception as e:
                 write_log(f"System: Reconnection Failed - {e}")
-        
-        time.sleep(3) # 3초마다 검사
+        time.sleep(3) 
 
 # ================= [Main Setup] =================
 init_serial()
-
-# (프로그램 시작되자마자 감시 시작)
 threading.Thread(target=auto_reconnect_thread, daemon=True).start()
 
 dpg.create_context()
