@@ -20,7 +20,7 @@ is_running = False
 current_pos = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0}
 target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0} 
 
-# ★ [핵심] 수동 조작 우선권 타이머 (이 시간까지는 유니티 신호 무시)
+# ★ 수동 조작 우선권 타이머
 manual_override_until = 0.0 
 
 # Dashboard State
@@ -41,8 +41,7 @@ SMOOTHING_FACTOR = 0.2
 
 GRIPPER_SPEED = 2.0 
 GRIPPER_MIN = 30.0
-# ★ [요청사항] 그리퍼 최대값 60으로 변경
-GRIPPER_MAX = 60.0
+GRIPPER_MAX = 60.0 # 최대값 60
 
 LIMITS = {'min_x': 100, 'max_x': 280, 'min_y': -150, 'max_y': 150, 'min_z': 0, 'max_z': 180}
 
@@ -108,37 +107,33 @@ def send_robot_command_direct(x, y, z, g):
 def manual_control_callback(sender, app_data, user_data):
     global manual_override_until
     
-    # ★ [핵심] 수동 조작 시 1.5초간 유니티 신호 무시 (우선권 확보)
+    # ★ 수동 조작 시 유니티 신호 무시 (1.5초)
     manual_override_until = time.time() + 1.5
+    
+    # ★ 이동 전에 목표값을 '현재 실제 위치'로 강제 동기화 (튐 방지)
+    target_goal['x'] = current_pos['x']
+    target_goal['y'] = current_pos['y']
+    target_goal['z'] = current_pos['z']
+    target_goal['gripper'] = current_pos['gripper']
     
     axis, step = user_data
     
-    if axis == 'gripper':
-        # 토글 방식: 50 이상이면 40(Open), 아니면 60(Close)
-        val = 60.0 if target_goal['gripper'] < 50 else 40.0
-        target_goal['gripper'] = val
-        write_log(f"Manual: Gripper {'Close' if val > 50 else 'Open'}")
-    else:
-        target_goal[axis] = current_pos[axis] + step
-        # Limit Check
-        if axis == 'x': target_goal[axis] = max(LIMITS['min_x'], min(target_goal[axis], LIMITS['max_x']))
-        if axis == 'y': target_goal[axis] = max(LIMITS['min_y'], min(target_goal[axis], LIMITS['max_y']))
-        if axis == 'z': target_goal[axis] = max(LIMITS['min_z'], min(target_goal[axis], LIMITS['max_z']))
-        write_log(f"Manual: {axis.upper()} Moved to {target_goal[axis]:.1f}")
+    # ★ [변경] 모든 축(그리퍼 포함)에 대해 동일하게 step만큼 증감
+    target_goal[axis] = current_pos[axis] + step
+
+    # Limit Check
+    if axis == 'x': target_goal[axis] = max(LIMITS['min_x'], min(target_goal[axis], LIMITS['max_x']))
+    elif axis == 'y': target_goal[axis] = max(LIMITS['min_y'], min(target_goal[axis], LIMITS['max_y']))
+    elif axis == 'z': target_goal[axis] = max(LIMITS['min_z'], min(target_goal[axis], LIMITS['max_z']))
+    elif axis == 'gripper': target_goal[axis] = max(GRIPPER_MIN, min(target_goal[axis], GRIPPER_MAX))
+    
+    write_log(f"Manual: {axis.upper()} Moved to {target_goal[axis]:.1f}")
 
     current_pos.update(target_goal) 
     send_robot_command_direct(target_goal['x'], target_goal['y'], target_goal['z'], target_goal['gripper'])
-    
-    if dpg.does_item_exist("input_x"):
-        dpg.set_value("input_x", int(target_goal['x']))
-        dpg.set_value("input_y", int(target_goal['y']))
-        dpg.set_value("input_z", int(target_goal['z']))
-        dpg.set_value("input_g", int(target_goal['gripper']))
 
 def move_to_coord_callback(sender, app_data, user_data):
     global manual_override_until
-    
-    # ★ 직접 이동 시에도 2초간 유니티 무시
     manual_override_until = time.time() + 2.0
     
     target_goal['x'] = float(dpg.get_value("input_x"))
@@ -153,7 +148,6 @@ def move_to_coord_callback(sender, app_data, user_data):
 def homing_thread_func():
     global ser, manual_override_until
     if ser:
-        # 호밍 중에는 유니티 간섭 완전 차단 (20초)
         manual_override_until = time.time() + 20.0
         
         dashboard_state["status"] = "HOMING..."
@@ -268,7 +262,6 @@ class UDPReceiverNode(BaseNode):
                 self.output_data[self.data_out_id] = decoded
                 self.last_data_str = decoded
         
-        # Feedback Send (Unity로 현재 위치 전송)
         try:
             feedback_data = {"x": -current_pos['y']/1000.0, "y": current_pos['z']/1000.0, "z": current_pos['x']/1000.0, 
                              "gripper": current_pos['gripper'], "status": "Running"}
@@ -362,21 +355,21 @@ class RobotControlNode(BaseNode):
         link_smooth = self.fetch_input_data(self.in_smooth)
         link_gs = self.fetch_input_data(self.in_g_speed)
 
-        # UI 업데이트 (스무딩/속도)
+        # UI 업데이트
         if link_smooth is not None: dpg.set_value(self.field_smooth, float(link_smooth))
         if link_gs is not None: dpg.set_value(self.field_g_speed, float(link_gs))
 
         smooth_factor = max(0.01, min(dpg.get_value(self.field_smooth), 1.0))
         gripper_speed = max(0.1, min(dpg.get_value(self.field_g_speed), 10.0))
 
-        # ★ [핵심 Fix] 수동 조작 타이머가 끝났을 때만 노드 입력(유니티)을 반영
+        # 수동 조작 타이머가 끝났을 때만 노드 입력(유니티)을 반영
         if time.time() > manual_override_until:
             if tx is not None: target_goal['x'] = float(tx)
             if ty is not None: target_goal['y'] = float(ty)
             if tz is not None: target_goal['z'] = float(tz)
             if tg is not None: target_goal['gripper'] = float(tg)
         
-        # 이동 로직 (Smoothing)
+        # 이동 로직
         dx, dy, dz = target_goal['x'] - current_pos['x'], target_goal['y'] - current_pos['y'], target_goal['z'] - current_pos['z']
         
         if abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5:
@@ -397,7 +390,7 @@ class RobotControlNode(BaseNode):
         elif received_g > 50: next_g = current_pos['gripper'] + gripper_speed
         elif received_g < 50: next_g = current_pos['gripper'] - gripper_speed
         else: next_g = current_pos['gripper']
-        next_g = max(GRIPPER_MIN, min(next_g, GRIPPER_MAX)) # Max 60 applied
+        next_g = max(GRIPPER_MIN, min(next_g, GRIPPER_MAX)) 
 
         current_pos.update({'x': next_x, 'y': next_y, 'z': next_z, 'gripper': next_g})
 
@@ -634,7 +627,7 @@ with dpg.window(tag="PrimaryWindow"):
 
         # 2. 수동 제어
         with dpg.child_window(width=350, height=130, border=True):
-            dpg.add_text("Manual Control (10mm)", color=(255,200,0))
+            dpg.add_text("Manual Control (10mm, Grip 5)", color=(255,200,0))
             with dpg.group(horizontal=True):
                 dpg.add_button(label="X+", width=60, callback=manual_control_callback, user_data=('x', 10))
                 dpg.add_button(label="X-", width=60, callback=manual_control_callback, user_data=('x', -10))
@@ -645,7 +638,9 @@ with dpg.window(tag="PrimaryWindow"):
                 dpg.add_button(label="Z+", width=60, callback=manual_control_callback, user_data=('z', 10))
                 dpg.add_button(label="Z-", width=60, callback=manual_control_callback, user_data=('z', -10))
                 dpg.add_text("|", color=(100,100,100))
-                dpg.add_button(label="Gripper", width=70, callback=manual_control_callback, user_data=('gripper', 0))
+                # ★ 그리퍼 G+, G- 버튼으로 변경 (5씩 증감)
+                dpg.add_button(label="G+", width=60, callback=manual_control_callback, user_data=('gripper', 5))
+                dpg.add_button(label="G-", width=60, callback=manual_control_callback, user_data=('gripper', -5))
 
         # 3. 직접 이동 & 호밍
         with dpg.child_window(width=300, height=130, border=True):
