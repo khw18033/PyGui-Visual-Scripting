@@ -360,18 +360,19 @@ class RobotControlNode(BaseNode):
         self.field_x = None; self.field_y = None; self.field_z = None; self.field_g = None
         self.field_smooth = None; self.field_g_speed = None 
         self.last_cmd = ""; self.cache_ui = {'x':0, 'y':0, 'z':0, 'g':0}
+        
+        # ★ [추가] 명령 전송 속도 조절용 타이머
+        self.last_write_time = 0 
+        self.write_interval = 0.033  # 약 30 FPS (0.033초마다 전송)
 
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label=self.label):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as in_flow:
-                dpg.add_text("Flow In")
-                self.inputs[in_flow] = "Flow"
+                dpg.add_text("Flow In"); self.inputs[in_flow] = "Flow"
             
             for axis, label, default_val, field_attr in [
-                ('x', "X", 200.0, 'field_x'),
-                ('y', "Y", 0.0, 'field_y'),
-                ('z', "Z", 120.0, 'field_z'),
-                ('g', "G", 40.0, 'field_g')
+                ('x', "X", 200.0, 'field_x'), ('y', "Y", 0.0, 'field_y'),
+                ('z', "Z", 120.0, 'field_z'), ('g', "G", 40.0, 'field_g')
             ]:
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as attr_id:
                     with dpg.group(horizontal=True):
@@ -383,28 +384,25 @@ class RobotControlNode(BaseNode):
                     elif axis == 'z': self.in_z = attr_id
                     elif axis == 'g': self.in_g = attr_id
 
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                dpg.add_spacer(height=5) 
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_spacer(height=5) 
 
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as s_in:
                 with dpg.group(horizontal=True):
-                    dpg.add_text("Smth")
-                    self.field_smooth = dpg.add_input_float(width=60, default_value=0.2, step=0)
+                    dpg.add_text("Smth"); self.field_smooth = dpg.add_input_float(width=60, default_value=0.2, step=0)
                 self.inputs[s_in] = "Data"; self.in_smooth = s_in
             
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as gs_in:
                 with dpg.group(horizontal=True):
-                    dpg.add_text("Spd ")
-                    self.field_g_speed = dpg.add_input_float(width=60, default_value=2.0, step=0)
+                    dpg.add_text("Spd "); self.field_g_speed = dpg.add_input_float(width=60, default_value=2.0, step=0)
                 self.inputs[gs_in] = "Data"; self.in_g_speed = gs_in
 
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f_out:
-                dpg.add_text("Flow Out")
-                self.outputs[f_out] = "Flow"
+                dpg.add_text("Flow Out"); self.outputs[f_out] = "Flow"
 
     def execute(self):
         global current_pos, target_goal, manual_override_until
         
+        # 1. 데이터 수집 및 처리
         tx, ty, tz, tg = self.fetch_input_data(self.in_x), self.fetch_input_data(self.in_y), self.fetch_input_data(self.in_z), self.fetch_input_data(self.in_g)
         link_smooth = self.fetch_input_data(self.in_smooth)
         link_gs = self.fetch_input_data(self.in_g_speed)
@@ -414,15 +412,17 @@ class RobotControlNode(BaseNode):
 
         smooth_factor = max(0.01, min(dpg.get_value(self.field_smooth), 1.0))
 
-        # 수동 조작 타이머가 끝났을 때만 노드 입력(유니티 등)을 반영
+        # 수동 조작 타이머 체크
         if time.time() > manual_override_until:
             if tx is not None: target_goal['x'] = float(tx)
             if ty is not None: target_goal['y'] = float(ty)
             if tz is not None: target_goal['z'] = float(tz)
             if tg is not None: target_goal['gripper'] = float(tg)
         
+        # 스무딩 이동 로직
         dx, dy, dz = target_goal['x'] - current_pos['x'], target_goal['y'] - current_pos['y'], target_goal['z'] - current_pos['z']
         
+        # 미세 떨림 방지 (Deadzone)
         if abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5:
              next_x, next_y, next_z = target_goal['x'], target_goal['y'], target_goal['z']
         else:
@@ -430,42 +430,49 @@ class RobotControlNode(BaseNode):
             next_y = current_pos['y'] + dy * smooth_factor
             next_z = current_pos['z'] + dz * smooth_factor
         
+        # 범위 제한
         next_x = max(LIMITS['min_x'], min(next_x, LIMITS['max_x']))
         next_y = max(LIMITS['min_y'], min(next_y, LIMITS['max_y']))
         next_z = max(LIMITS['min_z'], min(next_z, LIMITS['max_z']))
 
         received_g = target_goal['gripper']
-        if received_g is None: 
-            next_g = current_pos['gripper']
-        else:
-            next_g = received_g
-
+        next_g = current_pos['gripper'] if received_g is None else received_g
         next_g = max(GRIPPER_MIN, min(next_g, GRIPPER_MAX)) 
 
+        # 상태 업데이트 (계산은 매 프레임 수행 - 부드러운 그래프를 위해)
         current_pos.update({'x': next_x, 'y': next_y, 'z': next_z, 'gripper': next_g})
 
+        # UI 갱신 (부하 줄이기 위해 값이 변했을 때만)
         if abs(self.cache_ui['x'] - next_x) > 0.1: dpg.set_value(self.field_x, next_x); self.cache_ui['x'] = next_x
         if abs(self.cache_ui['y'] - next_y) > 0.1: dpg.set_value(self.field_y, next_y); self.cache_ui['y'] = next_y
         if abs(self.cache_ui['z'] - next_z) > 0.1: dpg.set_value(self.field_z, next_z); self.cache_ui['z'] = next_z
         if abs(self.cache_ui['g'] - next_g) > 0.1: dpg.set_value(self.field_g, next_g); self.cache_ui['g'] = next_g
 
-        cmd_move = f"G0 X{next_x:.1f} Y{next_y:.1f} Z{next_z:.1f}\n"
-        cmd_grip = f"M3 S{int(next_g)}\n"
-        full_cmd = cmd_move + cmd_grip
-        if full_cmd != self.last_cmd:
-            global ser
-            try:
-                if ser and ser.is_open:
-                    ser.write(cmd_move.encode())
-                    ser.write(cmd_grip.encode())
-            except Exception as e:
-                write_log(f"Error: Serial Write Failed ({e})")
-                dashboard_state["hw_link"] = "Offline"
-                if ser: 
-                    try: ser.close() 
-                    except: pass
-                ser = None
-            self.last_cmd = full_cmd
+        # ★ [핵심 수정] 시리얼 전송 속도 제한 (Throttling)
+        # 로봇이 소화할 수 있게 0.033초(30Hz) 간격으로만 명령을 보냅니다.
+        current_time = time.time()
+        if current_time - self.last_write_time > self.write_interval:
+            cmd_move = f"G0 X{next_x:.1f} Y{next_y:.1f} Z{next_z:.1f}\n"
+            cmd_grip = f"M3 S{int(next_g)}\n"
+            full_cmd = cmd_move + cmd_grip
+            
+            # 명령이 바뀌었을 때만 전송
+            if full_cmd != self.last_cmd:
+                global ser
+                try:
+                    if ser and ser.is_open:
+                        ser.write(cmd_move.encode())
+                        ser.write(cmd_grip.encode())
+                        self.last_write_time = current_time # 전송 시간 기록
+                except Exception as e:
+                    write_log(f"Error: Serial Write Failed ({e})")
+                    dashboard_state["hw_link"] = "Offline"
+                    if ser: 
+                        try: ser.close() 
+                        except: pass
+                    ser = None
+                self.last_cmd = full_cmd
+                
         return self.outputs
     
 class JsonParseNode(BaseNode):
