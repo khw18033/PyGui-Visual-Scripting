@@ -5,6 +5,7 @@ import json
 import serial 
 import threading
 import subprocess 
+import os
 from abc import ABC, abstractmethod
 from collections import deque
 from datetime import datetime
@@ -393,10 +394,29 @@ class RobotControlNode(BaseNode):
         cmd_grip = f"M3 S{int(next_g)}\n"
         full_cmd = cmd_move + cmd_grip
         if full_cmd != self.last_cmd:
-            if ser and ser.is_open: ser.write(cmd_move.encode()); ser.write(cmd_grip.encode())
+            global ser # 전역 변수 ser를 수정하기 위해 가져옴
+            
+            try:
+                # 연결이 정상일 때만 전송
+                if ser and ser.is_open:
+                    ser.write(cmd_move.encode())
+                    ser.write(cmd_grip.encode())
+            except Exception as e:
+                # 1. 에러 발생 시 로그 출력
+                write_log(f"Error: Serial Disconnected ({e})")
+                
+                # 2. 대시보드 상태 'Offline'으로 변경
+                dashboard_state["hw_link"] = "Offline"
+                
+                # 3. 고장난 연결 확실히 끊고 변수 비우기 (중요!)
+                if ser:
+                    try: ser.close()
+                    except: pass
+                ser = None 
+            
             self.last_cmd = full_cmd
         return self.outputs
-
+    
 class JsonParseNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Simple Parser")
@@ -576,8 +596,25 @@ def del_link_cb(sender, app_data):
 def add_node_cb(sender, app_data, user_data):
     NodeFactory.create_node(user_data)
 
+def auto_reconnect_thread():
+    global ser
+    while True:
+        # 연결이 끊겨있고(ser is None) + USB 장치가 꽂혀있다면(/dev/ttyUSB0)
+        if ser is None and os.path.exists('/dev/ttyUSB0'):
+            write_log("System: USB Detected. Attempting Reconnection...")
+            try:
+                init_serial() # 기존 초기화 함수 재활용
+            except Exception as e:
+                write_log(f"System: Reconnection Failed - {e}")
+        
+        time.sleep(3) # 3초마다 검사
+
 # ================= [Main Setup] =================
 init_serial()
+
+# (프로그램 시작되자마자 감시 시작)
+threading.Thread(target=auto_reconnect_thread, daemon=True).start()
+
 dpg.create_context()
 with dpg.handler_registry(): dpg.add_key_press_handler(dpg.mvKey_Delete, callback=delete_selection)
 
