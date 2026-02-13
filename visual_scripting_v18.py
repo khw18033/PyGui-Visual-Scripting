@@ -288,22 +288,23 @@ class UnityControlNode(BaseNode):
             except: pass 
         return self.outputs
 
-# ★ [수정됨 v18] 10mm 단위 Step 이동 노드
+# ★ [수정됨] 그리퍼도 5단위 Step 이동 적용
 class KeyboardControlNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Keyboard (Pi)")
         self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None
         
-        # ★ 설정: 10mm씩 이동, 0.2초 쿨다운
-        self.step_size = 10.0
+        self.step_size = 10.0  # XYZ 이동 거리
+        self.grip_step = 5.0   # ★ 그리퍼 이동 거리 (5씩)
+        
         self.cooldown = 0.2
         self.last_input_time = 0.0
 
     def build_ui(self):
-        with dpg.node(tag=self.node_id, parent="node_editor", label="Keyboard Input (Step 10mm)"):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Keyboard Input (Step)"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as in_flow: dpg.add_text("Flow In"); self.inputs[in_flow] = "Flow"
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                dpg.add_text("WASD: XY\nQE: Z\nUJ: Grip", color=(255, 150, 150))
+                dpg.add_text("WASD: XY (10mm)\nQE: Z (10mm)\nUJ: Grip (5mm)", color=(255, 150, 150))
             
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_x: dpg.add_text("Target X"); self.outputs[out_x] = "Data"; self.out_x = out_x
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_y: dpg.add_text("Target Y"); self.outputs[out_y] = "Data"; self.out_y = out_y
@@ -315,33 +316,36 @@ class KeyboardControlNode(BaseNode):
         global manual_override_until
         current_time = time.time()
         
-        # 쿨다운이 지났을 때만 입력 받기
+        # 쿨다운 체크
         if current_time - self.last_input_time > self.cooldown:
             dx, dy, dz, dg = 0, 0, 0, 0
             
+            # XYZ 입력
             if dpg.is_key_down(dpg.mvKey_W): dx = 1
             if dpg.is_key_down(dpg.mvKey_S): dx = -1
             if dpg.is_key_down(dpg.mvKey_A): dy = 1
             if dpg.is_key_down(dpg.mvKey_D): dy = -1
             if dpg.is_key_down(dpg.mvKey_Q): dz = 1
             if dpg.is_key_down(dpg.mvKey_E): dz = -1
-            if dpg.is_key_down(dpg.mvKey_J): dg = 1  # Close (60)
-            if dpg.is_key_down(dpg.mvKey_U): dg = -1 # Open (40)
+            
+            # ★ 그리퍼 입력 (J: 닫기+, U: 열기-)
+            if dpg.is_key_down(dpg.mvKey_J): dg = 1  
+            if dpg.is_key_down(dpg.mvKey_U): dg = -1 
 
             if dx != 0 or dy != 0 or dz != 0 or dg != 0:
                 manual_override_until = time.time() + 0.5
-                self.last_input_time = current_time # 타이머 리셋
+                self.last_input_time = current_time 
                 
-                # ★ 10mm씩 Step 이동
+                # XYZ 이동 (10mm)
                 target_goal['x'] += dx * self.step_size
                 target_goal['y'] += dy * self.step_size
                 target_goal['z'] += dz * self.step_size
                 
-                # 그리퍼는 열기(40) / 닫기(60) 토글 느낌으로 처리
-                if dg == 1: target_goal['gripper'] = 60.0
-                elif dg == -1: target_goal['gripper'] = 40.0
+                # ★ 그리퍼 이동 (5씩 증감)
+                # 기존의 40/60 토글 로직을 삭제하고 더하기 방식으로 변경
+                target_goal['gripper'] += dg * self.grip_step
 
-                # 범위 제한
+                # 범위 제한 (XYZ + Gripper)
                 target_goal['x'] = max(LIMITS['min_x'], min(target_goal['x'], LIMITS['max_x']))
                 target_goal['y'] = max(LIMITS['min_y'], min(target_goal['y'], LIMITS['max_y']))
                 target_goal['z'] = max(LIMITS['min_z'], min(target_goal['z'], LIMITS['max_z']))
