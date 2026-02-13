@@ -364,7 +364,6 @@ class RobotControlNode(BaseNode):
         self.field_smooth = None; self.field_g_speed = None 
         self.last_cmd = ""; self.cache_ui = {'x':0, 'y':0, 'z':0, 'g':0}
         
-        # 전송 속도 제한 (30 FPS)
         self.last_write_time = 0 
         self.write_interval = 0.033 
 
@@ -412,7 +411,13 @@ class RobotControlNode(BaseNode):
         if link_smooth is not None: dpg.set_value(self.field_smooth, float(link_smooth))
         if link_gs is not None: dpg.set_value(self.field_g_speed, float(link_gs))
 
+        # 기본 스무딩 값 (UI 설정값)
         smooth_factor = max(0.01, min(dpg.get_value(self.field_smooth), 1.0))
+
+        # ★ [핵심 수정] 수동 조작(키보드/버튼) 중이면 스무딩 1.0 강제 적용
+        # 이유: Step 이동 시에는 미끄러지지 않고 즉시 목표 좌표로 꽂히는 게 유리함
+        if time.time() < manual_override_until:
+            smooth_factor = 1.0
 
         if time.time() > manual_override_until:
             if tx is not None: target_goal['x'] = float(tx)
