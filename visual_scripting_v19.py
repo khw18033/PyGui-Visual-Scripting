@@ -464,41 +464,90 @@ class NodeFactory:
 def save_graph(filename):
     if not filename.endswith(".json"): filename += ".json"
     filepath = os.path.join(SAVE_DIR, filename)
+    
     data = {"nodes": [], "links": []}
+    
+    # 1. 노드 저장
     for node_id, node in node_registry.items():
-        data["nodes"].append({"type": node.type_str, "id": node_id, "pos": dpg.get_item_pos(node_id), "settings": node.get_settings()})
+        # ★ [수정] 위치 값을 못 가져올 경우 [0,0]으로 기본값 설정 (안전장치)
+        pos = dpg.get_item_pos(node_id)
+        if pos is None: pos = [0, 0]
+
+        node_info = {
+            "type": node.type_str,
+            "id": node_id,
+            "pos": pos, 
+            "settings": node.get_settings()
+        }
+        data["nodes"].append(node_info)
+        
+    # 2. 링크 저장
     for link_id, link in link_registry.items():
-        src_node_id, dst_node_id = dpg.get_item_parent(link['source']), dpg.get_item_parent(link['target'])
+        src_attr, dst_attr = link['source'], link['target']
+        src_node_id = dpg.get_item_parent(src_attr)
+        dst_node_id = dpg.get_item_parent(dst_attr)
+        
         if src_node_id in node_registry and dst_node_id in node_registry:
-            src_idx = list(node_registry[src_node_id].outputs.keys()).index(link['source'])
-            dst_idx = list(node_registry[dst_node_id].inputs.keys()).index(link['target'])
-            data["links"].append({"src_node": src_node_id, "src_idx": src_idx, "dst_node": dst_node_id, "dst_idx": dst_idx})
+            src_node = node_registry[src_node_id]
+            dst_node = node_registry[dst_node_id]
+            
+            src_idx = list(src_node.outputs.keys()).index(src_attr)
+            dst_idx = list(dst_node.inputs.keys()).index(dst_attr)
+            
+            data["links"].append({
+                "src_node": src_node_id, "src_idx": src_idx,
+                "dst_node": dst_node_id, "dst_idx": dst_idx
+            })
+            
     try:
         with open(filepath, 'w') as f: json.dump(data, f, indent=4)
         write_log(f"Graph Saved: {filename}")
-    except Exception as e: write_log(f"Save Error: {e}")
+    except Exception as e:
+        write_log(f"Save Error: {e}")
 
 def load_graph(filename):
     if not filename.endswith(".json"): filename += ".json"
     filepath = os.path.join(SAVE_DIR, filename)
-    if not os.path.exists(filepath): write_log(f"File not found: {filename}"); return
     
+    if not os.path.exists(filepath):
+        write_log(f"File not found: {filename}")
+        return
+
+    # 1. 기존 삭제
     for link in list(link_registry.keys()): dpg.delete_item(link)
     for node in list(node_registry.keys()): dpg.delete_item(node)
     link_registry.clear(); node_registry.clear()
     
     try:
         with open(filepath, 'r') as f: data = json.load(f)
+        
+        # 2. 노드 생성
         for n_data in data["nodes"]:
             node = NodeFactory.create_node(n_data["type"], n_data["id"])
-            if node: dpg.set_item_pos(node.node_id, n_data["pos"]); node.load_settings(n_data.get("settings", {}))
+            if node:
+                # ★ [수정] pos 데이터가 유효할 때만 위치 설정 (안전장치)
+                pos = n_data.get("pos")
+                if pos and len(pos) == 2:
+                    dpg.set_item_pos(node.node_id, pos)
+                
+                node.load_settings(n_data.get("settings", {}))
+        
+        # 3. 링크 복원
         for l_data in data["links"]:
-            src_node = node_registry.get(l_data["src_node"]); dst_node = node_registry.get(l_data["dst_node"])
+            src_node = node_registry.get(l_data["src_node"])
+            dst_node = node_registry.get(l_data["dst_node"])
+            
             if src_node and dst_node:
-                link_id = dpg.add_node_link(list(src_node.outputs.keys())[l_data["src_idx"]], list(dst_node.inputs.keys())[l_data["dst_idx"]], parent="node_editor")
-                link_registry[link_id] = {'source': list(src_node.outputs.keys())[l_data["src_idx"]], 'target': list(dst_node.inputs.keys())[l_data["dst_idx"]]}
+                src_attr_id = list(src_node.outputs.keys())[l_data["src_idx"]]
+                dst_attr_id = list(dst_node.inputs.keys())[l_data["dst_idx"]]
+                
+                link_id = dpg.add_node_link(src_attr_id, dst_attr_id, parent="node_editor")
+                link_registry[link_id] = {'source': src_attr_id, 'target': dst_attr_id}
+                
         write_log(f"Graph Loaded: {filename}")
-    except Exception as e: write_log(f"Load Error: {e}")
+        
+    except Exception as e:
+        write_log(f"Load Error: {e}")
 
 # ================= [Execution Logic] =================
 def execute_graph_once():
