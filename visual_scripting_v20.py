@@ -523,7 +523,7 @@ class NodeFactory:
     def create_node(node_type, node_id=None):
         if node_id is None: node_id = dpg.generate_uuid()
         node = None
-        if node_type == "START": node = StartNode(node_id, "START")
+        if node_type == "START": node = StartNode(node_id)
         elif node_type == "CMD_ACTION": node = CommandActionNode(node_id)
         elif node_type == "LOGIC_IF": node = LogicIfNode(node_id)
         elif node_type == "LOGIC_LOOP": node = LogicLoopNode(node_id)
