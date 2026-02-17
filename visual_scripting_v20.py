@@ -644,6 +644,9 @@ threading.Thread(target=lambda: (time.sleep(1), update_file_list()), daemon=True
 dpg.create_context()
 with dpg.handler_registry(): dpg.add_key_press_handler(dpg.mvKey_Delete, callback=delete_selection)
 
+my_ip = get_local_ip()
+my_ssid = get_wifi_ssid()
+
 with dpg.window(tag="PrimaryWindow"):
     # [1번 줄] System Status | Manual Control | Direct Coord (v19 Restore)
     with dpg.group(horizontal=True):
