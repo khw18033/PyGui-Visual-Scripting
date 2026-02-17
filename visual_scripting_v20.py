@@ -152,7 +152,11 @@ class CommandActionNode(BaseNode):
         with dpg.node(tag=self.node_id, parent="node_editor", label="Command Action"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                self.combo_id = dpg.add_combo(items=["Move Relative (XYZ)", "Move Absolute (XYZ)", "Set Gripper", "Homing"], default_value="Move Relative (XYZ)", width=150)
+                # ★ [기능 추가] Grip Relative (증감) 모드 추가
+                self.combo_id = dpg.add_combo(
+                    items=["Move Relative (XYZ)", "Move Absolute (XYZ)", "Set Gripper (Abs)", "Grip Relative (Add)", "Homing"], 
+                    default_value="Move Relative (XYZ)", width=150
+                )
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as v1:
                 dpg.add_text("X / Grip"); self.field_v1 = dpg.add_input_float(width=60, default_value=0); self.inputs[v1] = "Data"; self.in_val1 = v1
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as v2:
@@ -173,8 +177,10 @@ class CommandActionNode(BaseNode):
             target_goal['x'] += v1; target_goal['y'] += v2; target_goal['z'] += v3; apply_limits_and_move()
         elif mode.startswith("Move Abs"):
             target_goal['x'] = v1; target_goal['y'] = v2; target_goal['z'] = v3; apply_limits_and_move()
-        elif mode.startswith("Set Grip"):
+        elif mode.startswith("Set Grip"): # 절대값 설정
             target_goal['gripper'] = v1; apply_limits_and_move()
+        elif mode.startswith("Grip Rel"): # ★ 상대값 더하기
+            target_goal['gripper'] += v1; apply_limits_and_move()
         elif mode == "Homing":
             threading.Thread(target=homing_thread_func, daemon=True).start()
         return self.out_flow
@@ -183,7 +189,7 @@ class CommandActionNode(BaseNode):
     def load_settings(self, data):
         dpg.set_value(self.combo_id, data.get("mode", "Move Relative (XYZ)"))
         dpg.set_value(self.field_v1, data.get("v1", 0)); dpg.set_value(self.field_v2, data.get("v2", 0)); dpg.set_value(self.field_v3, data.get("v3", 0))
-
+        
 class LogicIfNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Logic: IF", "LOGIC_IF")
