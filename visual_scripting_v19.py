@@ -61,6 +61,11 @@ def get_wifi_ssid():
     try: return subprocess.check_output(['iwgetid', '-r']).decode('utf-8').strip() or "Unknown"
     except: return "Unknown"
 
+def get_save_files():
+    """ 저장 폴더의 json 파일 목록 반환 """
+    if not os.path.exists(SAVE_DIR): return []
+    return [f for f in os.listdir(SAVE_DIR) if f.endswith(".json")]
+
 # ================= [0. Robot Init] =================
 def init_serial():
     global ser
@@ -85,12 +90,11 @@ def send_robot_command_direct(x, y, z, g):
         cmd_move = f"G0 X{x:.1f} Y{y:.1f} Z{z:.1f}\n"; cmd_grip = f"M3 S{int(g)}\n"
         ser.write(cmd_move.encode()); ser.write(cmd_grip.encode())
 
-# ================= [1. Dashboard Callbacks (Restored)] =================
+# ================= [1. Dashboard Callbacks] =================
 def manual_control_callback(sender, app_data, user_data):
     global manual_override_until
     manual_override_until = time.time() + 1.5
     
-    # 튐 방지 동기화
     target_goal['x'] = current_pos['x']; target_goal['y'] = current_pos['y']
     target_goal['z'] = current_pos['z']; target_goal['gripper'] = current_pos['gripper']
     
@@ -464,55 +468,29 @@ class NodeFactory:
 def save_graph(filename):
     if not filename.endswith(".json"): filename += ".json"
     filepath = os.path.join(SAVE_DIR, filename)
-    
     data = {"nodes": [], "links": []}
-    
-    # 1. 노드 저장
     for node_id, node in node_registry.items():
-        # ★ [수정] 위치 값을 못 가져올 경우 [0,0]으로 기본값 설정 (안전장치)
-        pos = dpg.get_item_pos(node_id)
-        if pos is None: pos = [0, 0]
-
-        node_info = {
-            "type": node.type_str,
-            "id": node_id,
-            "pos": pos, 
-            "settings": node.get_settings()
-        }
-        data["nodes"].append(node_info)
+        pos = dpg.get_item_pos(node_id) or [0, 0] # 안전장치
+        data["nodes"].append({"type": node.type_str, "id": node_id, "pos": pos, "settings": node.get_settings()})
         
-    # 2. 링크 저장
     for link_id, link in link_registry.items():
-        src_attr, dst_attr = link['source'], link['target']
-        src_node_id = dpg.get_item_parent(src_attr)
-        dst_node_id = dpg.get_item_parent(dst_attr)
-        
+        src_node_id, dst_node_id = dpg.get_item_parent(link['source']), dpg.get_item_parent(link['target'])
         if src_node_id in node_registry and dst_node_id in node_registry:
-            src_node = node_registry[src_node_id]
-            dst_node = node_registry[dst_node_id]
-            
-            src_idx = list(src_node.outputs.keys()).index(src_attr)
-            dst_idx = list(dst_node.inputs.keys()).index(dst_attr)
-            
-            data["links"].append({
-                "src_node": src_node_id, "src_idx": src_idx,
-                "dst_node": dst_node_id, "dst_idx": dst_idx
-            })
-            
+            src_idx = list(node_registry[src_node_id].outputs.keys()).index(link['source'])
+            dst_idx = list(node_registry[dst_node_id].inputs.keys()).index(link['target'])
+            data["links"].append({"src_node": src_node_id, "src_idx": src_idx, "dst_node": dst_node_id, "dst_idx": dst_idx})
     try:
         with open(filepath, 'w') as f: json.dump(data, f, indent=4)
         write_log(f"Graph Saved: {filename}")
-    except Exception as e:
-        write_log(f"Save Error: {e}")
+        update_file_list() # 저장 후 목록 갱신
+    except Exception as e: write_log(f"Save Error: {e}")
 
+# ★ [핵심 수정] ID 충돌 방지 로직이 적용된 Load 함수
 def load_graph(filename):
     if not filename.endswith(".json"): filename += ".json"
     filepath = os.path.join(SAVE_DIR, filename)
+    if not os.path.exists(filepath): write_log(f"File not found: {filename}"); return
     
-    if not os.path.exists(filepath):
-        write_log(f"File not found: {filename}")
-        return
-
     # 1. 기존 삭제
     for link in list(link_registry.keys()): dpg.delete_item(link)
     for node in list(node_registry.keys()): dpg.delete_item(node)
@@ -521,21 +499,35 @@ def load_graph(filename):
     try:
         with open(filepath, 'r') as f: data = json.load(f)
         
-        # 2. 노드 생성
+        # ID Remapping Table (Old ID -> New ID)
+        id_map = {} 
+
+        # 2. 노드 생성 (ID를 강제로 재사용하지 않고 새로 발급)
         for n_data in data["nodes"]:
-            node = NodeFactory.create_node(n_data["type"], n_data["id"])
+            # node_id에 None을 넣어 새 UUID 발급 유도
+            node = NodeFactory.create_node(n_data["type"], None) 
             if node:
-                # ★ [수정] pos 데이터가 유효할 때만 위치 설정 (안전장치)
+                # 구 ID와 신 ID 매핑 저장
+                old_id = n_data["id"]
+                id_map[old_id] = node.node_id
+                
+                # 위치 및 설정 복구
                 pos = n_data.get("pos")
                 if pos and len(pos) == 2:
                     dpg.set_item_pos(node.node_id, pos)
-                
                 node.load_settings(n_data.get("settings", {}))
         
-        # 3. 링크 복원
+        # 3. 링크 복원 (Remapping Table 사용)
         for l_data in data["links"]:
-            src_node = node_registry.get(l_data["src_node"])
-            dst_node = node_registry.get(l_data["dst_node"])
+            src_old_id = l_data["src_node"]
+            dst_old_id = l_data["dst_node"]
+            
+            # 신규 ID 찾기 (없으면 건너뜀)
+            if src_old_id not in id_map or dst_old_id not in id_map:
+                continue
+                
+            src_node = node_registry.get(id_map[src_old_id])
+            dst_node = node_registry.get(id_map[dst_old_id])
             
             if src_node and dst_node:
                 src_attr_id = list(src_node.outputs.keys())[l_data["src_idx"]]
@@ -546,8 +538,11 @@ def load_graph(filename):
                 
         write_log(f"Graph Loaded: {filename}")
         
-    except Exception as e:
-        write_log(f"Load Error: {e}")
+    except Exception as e: write_log(f"Load Error: {e}")
+
+def update_file_list():
+    files = get_save_files()
+    dpg.configure_item("file_list_combo", items=files)
 
 # ================= [Execution Logic] =================
 def execute_graph_once():
@@ -588,7 +583,7 @@ def link_cb(sender, app_data):
 def del_link_cb(sender, app_data): dpg.delete_item(app_data); del link_registry[app_data]
 def add_node_cb(sender, app_data, user_data): NodeFactory.create_node(user_data)
 def save_cb(sender, app_data): save_graph(dpg.get_value("file_name_input"))
-def load_cb(sender, app_data): load_graph(dpg.get_value("file_name_input"))
+def load_cb(sender, app_data): load_graph(dpg.get_value("file_list_combo")) # 콤보박스 값 사용
 
 def auto_reconnect_thread():
     global ser
@@ -612,14 +607,12 @@ with dpg.window(tag="PrimaryWindow"):
     
     # [1번 줄] System Status | Manual Control | Direct Coord (v18 Layout)
     with dpg.group(horizontal=True):
-        # 1. Status
         with dpg.child_window(width=250, height=130, border=True):
             dpg.add_text("System Status", color=(150,150,150)); dpg.add_text("Idle", tag="dash_status", color=(0,255,0))
             dpg.add_spacer(height=5); dpg.add_text("Hardware Link", color=(150,150,150))
             dpg.add_text(dashboard_state["hw_link"], tag="dash_link", color=(0,255,0) if dashboard_state["hw_link"]=="Online" else (255,0,0))
             dpg.add_spacer(height=5); dpg.add_text("Latency", color=(150,150,150)); dpg.add_text("0.0 ms", tag="dash_latency", color=(255,255,0))
 
-        # 2. Manual Control (v18 Restore)
         with dpg.child_window(width=350, height=130, border=True):
             dpg.add_text("Manual Control", color=(255,200,0))
             with dpg.group(horizontal=True):
@@ -629,7 +622,6 @@ with dpg.window(tag="PrimaryWindow"):
                 dpg.add_button(label="Z+", width=60, callback=manual_control_callback, user_data=('z', 10)); dpg.add_button(label="Z-", width=60, callback=manual_control_callback, user_data=('z', -10))
                 dpg.add_text("|"); dpg.add_button(label="G+", width=60, callback=manual_control_callback, user_data=('gripper', 5)); dpg.add_button(label="G-", width=60, callback=manual_control_callback, user_data=('gripper', -5))
 
-        # 3. Direct Coord (v18 Restore)
         with dpg.child_window(width=300, height=130, border=True):
             dpg.add_text("Direct Coord", color=(0,255,255))
             with dpg.group(horizontal=True):
@@ -642,19 +634,29 @@ with dpg.window(tag="PrimaryWindow"):
                 dpg.add_button(label="Move", width=100, callback=move_to_coord_callback)
                 dpg.add_button(label="Homing", width=100, callback=homing_callback)
 
-    # [2번 줄] File Manager & IP Info (New Layout)
+    # [2번 줄] File Manager & IP Info
     with dpg.group(horizontal=True):
-        # 4. File Manager (v19 Feature)
-        with dpg.child_window(width=400, height=80, border=True):
+        # 4. File Manager (UI 개선)
+        with dpg.child_window(width=400, height=100, border=True):
             dpg.add_text("Graph File Manager", color=(0,255,255))
+            
+            # Save Row
             with dpg.group(horizontal=True):
+                dpg.add_text("Save As:")
                 dpg.add_input_text(tag="file_name_input", default_value="my_graph", width=150)
-                dpg.add_button(label="SAVE", callback=save_cb, width=80)
-                dpg.add_button(label="LOAD", callback=load_cb, width=80)
+                dpg.add_button(label="SAVE", callback=save_cb, width=60)
+            
+            # Load Row (Combo Box)
+            with dpg.group(horizontal=True):
+                dpg.add_text("Load File:")
+                # 목록 갱신용 콤보박스
+                dpg.add_combo(items=get_save_files(), tag="file_list_combo", width=150)
+                dpg.add_button(label="LOAD", callback=load_cb, width=60)
+                dpg.add_button(label="Refresh", callback=update_file_list, width=60)
         
-        # 5. IP Info (v18 Restore)
-        with dpg.child_window(width=500, height=80, border=False):
-            dpg.add_spacer(height=10)
+        # 5. IP Info
+        with dpg.child_window(width=500, height=100, border=False):
+            dpg.add_spacer(height=20)
             dpg.add_text(f"My IP: {my_ip} | SSID: {my_ssid}", color=(180,180,180))
             dpg.add_text(f"Target IP: {UNITY_IP}  Port: {FEEDBACK_PORT}", color=(180,180,180))
 
@@ -675,7 +677,7 @@ with dpg.window(tag="PrimaryWindow"):
     
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
-dpg.create_viewport(title='PyGui V19 (Complete)', width=1024, height=768, vsync=True)
+dpg.create_viewport(title='PyGui V19 (Final Fix)', width=1024, height=768, vsync=True)
 dpg.setup_dearpygui()
 dpg.set_primary_window("PrimaryWindow", True)
 dpg.show_viewport()
