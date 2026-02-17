@@ -194,9 +194,22 @@ class LogicIfNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as cond: dpg.add_text("Condition (Bool)", color=(255,100,100)); self.inputs[cond] = "Data"; self.in_cond = cond
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as t: dpg.add_text("True", color=(100,255,100)); self.outputs[t] = "Flow"; self.out_true = t
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("False", color=(255,100,100)); self.outputs[f] = "Flow"; self.out_false = f
+    
     def execute(self):
-        return self.out_true if self.fetch_input_data(self.in_cond) else self.out_false
+        # ★ [핵심 수정] IF문에 도착했을 때, 연결된 조건 노드를 강제로 다시 계산시킴 (싱싱한 데이터 확보)
+        target_link = None
+        for link in link_registry.values():
+            if link['target'] == self.in_cond: target_link = link; break
+        
+        if target_link:
+            src_node_id = dpg.get_item_parent(target_link['source'])
+            if src_node_id in node_registry:
+                src_node = node_registry[src_node_id]
+                # 연결된 노드가 조건(Condition) 관련 노드라면 지금 당장 실행!
+                if src_node.type_str.startswith("COND_"):
+                    src_node.execute()
 
+        return self.out_true if self.fetch_input_data(self.in_cond) else self.out_false
 class LogicLoopNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Logic: LOOP", "LOGIC_LOOP")
