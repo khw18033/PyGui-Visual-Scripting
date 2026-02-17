@@ -553,7 +553,7 @@ def execute_graph_once():
     for nid, node in node_registry.items():
         if dpg.does_item_exist(nid):
             valid_nodes.append(nid)
-            
+
     for node in node_registry.values():
         if isinstance(node, StartNode): start_node = node; break
     if not start_node: return
@@ -579,43 +579,42 @@ def toggle_execution(sender, app_data):
     dpg.set_item_label("btn_run", "STOP" if is_running else "RUN")
 
 def delete_selection(sender, app_data):
-    # 1. 선택된 링크와 노드 가져오기
+    # 1. 선택된 링크와 노드 ID 가져오기
     selected_links = dpg.get_selected_links("node_editor")
     selected_nodes = dpg.get_selected_nodes("node_editor")
 
-    # 2. [링크 삭제] 선택된 링크 먼저 처리
+    # 2. [링크 삭제] 선택된 링크들 먼저 정리
     for link_id in selected_links:
         if link_id in link_registry:
             del link_registry[link_id]
         dpg.delete_item(link_id)
 
-    # 3. [노드 삭제] 노드를 지우면 연결된 링크도 DPG에서 자동 삭제됨
-    #    따라서 link_registry에서도 그 '유령 링크'들을 찾아서 지워야 함!
+    # 3. [노드 삭제] 노드를 지울 때 연결된 '유령 링크'들도 장부에서 지워야 함
+    # ★ [핵심 수정] DPG 함수(get_item_parent)를 쓰지 않고, 파이썬 데이터만으로 비교하여 충돌 방지
     for node_id in selected_nodes:
-        # 이 노드와 관련된 링크들을 찾아서 제거 목록에 추가
+        if node_id not in node_registry:
+            continue
+            
+        node = node_registry[node_id]
+        
+        # 현재 지워질 노드가 가진 모든 구멍(Attribute)의 ID를 수집
+        # (inputs와 outputs 딕셔너리의 키가 바로 Attribute ID입니다)
+        my_port_ids = set(node.inputs.keys()) | set(node.outputs.keys())
+        
+        # 링크 장부를 뒤져서, 내 구멍(Port)에 연결된 링크가 있는지 확인
         links_to_remove = []
         for lid, link_data in link_registry.items():
-            # 링크의 소스나 타겟이 현재 지워질 노드에 속해있는지 확인
-            # (주의: 이미 DPG 아이템이 지워졌을 수도 있으므로 try-except 처리)
-            try:
-                src_parent = dpg.get_item_parent(link_data['source'])
-                dst_parent = dpg.get_item_parent(link_data['target'])
-                
-                if src_parent == node_id or dst_parent == node_id:
-                    links_to_remove.append(lid)
-            except:
-                pass # 이미 지워진 경우 무시
-
-        # 찾은 유령 링크들을 레지스트리에서 삭제
+            if link_data['source'] in my_port_ids or link_data['target'] in my_port_ids:
+                links_to_remove.append(lid)
+        
+        # 찾은 링크들을 장부에서 삭제
+        # (DPG에서는 노드가 삭제될 때 링크도 자동 삭제되므로, 여기서는 장부 정리만 하면 됨)
         for lid in links_to_remove:
             if lid in link_registry:
                 del link_registry[lid]
 
-        # 노드 레지스트리에서 삭제
-        if node_id in node_registry:
-            del node_registry[node_id]
-        
-        # 마지막으로 DPG 상에서 노드 삭제 (이때 시각적 링크들도 같이 사라짐)
+        # 마지막으로 노드 장부에서 삭제하고 GUI에서 제거
+        del node_registry[node_id]
         dpg.delete_item(node_id)
 
 def link_cb(sender, app_data):
