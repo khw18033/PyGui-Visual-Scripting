@@ -547,6 +547,13 @@ def update_file_list():
 # ================= [Execution Logic] =================
 def execute_graph_once():
     start_node = None
+
+    # ★ [안전장치] 노드 레지스트리가 비정상적인지 검사
+    valid_nodes = []
+    for nid, node in node_registry.items():
+        if dpg.does_item_exist(nid):
+            valid_nodes.append(nid)
+            
     for node in node_registry.values():
         if isinstance(node, StartNode): start_node = node; break
     if not start_node: return
