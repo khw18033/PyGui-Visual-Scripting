@@ -24,7 +24,14 @@ current_pos = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0}
 target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0} 
 manual_override_until = 0.0 
 
-dashboard_state = {"status": "Idle", "hw_link": "Offline", "latency": 0.0, "last_pkt_time": 0.0}
+# Dashboard State
+dashboard_state = {
+    "status": "Idle",
+    "hw_link": "Offline",
+    "latency": 0.0,
+    "last_pkt_time": 0.0
+}
+
 system_log_buffer = deque(maxlen=50)
 
 # Config
@@ -119,7 +126,6 @@ class BaseNode(ABC):
     @abstractmethod
     def build_ui(self): pass
     
-    # execute는 이제 '다음에 실행할 Flow Output ID'를 반환하거나 (분기), None(기본)을 반환
     @abstractmethod
     def execute(self): return None 
 
@@ -234,7 +240,7 @@ class ConditionKeyNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Check: Key", "COND_KEY")
         self.field_key = None; self.out_res = None
-        self.key_map = {"A": dpg.mvKey_A, "B": dpg.mvKey_B, "C": dpg.mvKey_C, "S": dpg.mvKey_S, "W": dpg.mvKey_W} # 필요시 추가
+        self.key_map = {"A": dpg.mvKey_A, "B": dpg.mvKey_B, "C": dpg.mvKey_C, "S": dpg.mvKey_S, "W": dpg.mvKey_W} 
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label="Key Check"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_text("Key (A-Z):"); self.field_key = dpg.add_input_text(width=50, default_value="A")
@@ -246,7 +252,7 @@ class ConditionKeyNode(BaseNode):
     def get_settings(self): return {"k": dpg.get_value(self.field_key)}
     def load_settings(self, data): dpg.set_value(self.field_key, data.get("k", "A"))
 
-# ================= [Existing Nodes (Preserved)] =================
+# ================= [Existing Nodes] =================
 class StartNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "START", "START")
     def build_ui(self):
@@ -288,7 +294,6 @@ class KeyboardControlNode(BaseNode):
                 target_goal['z'] = max(LIMITS['min_z'], min(target_goal['z'], LIMITS['max_z']))
                 target_goal['gripper'] = max(GRIPPER_MIN, min(target_goal['gripper'], GRIPPER_MAX))
         self.output_data[self.out_x]=target_goal['x']; self.output_data[self.out_y]=target_goal['y']; self.output_data[self.out_z]=target_goal['z']; self.output_data[self.out_g]=target_goal['gripper']
-        # Return standard flow output
         for k, v in self.outputs.items():
             if v == "Flow": return k
         return None
@@ -341,7 +346,6 @@ class RobotControlNode(BaseNode):
         nx = max(LIMITS['min_x'], min(nx, LIMITS['max_x'])); ny = max(LIMITS['min_y'], min(ny, LIMITS['max_y'])); nz = max(LIMITS['min_z'], min(nz, LIMITS['max_z']))
         current_pos.update({'x':nx, 'y':ny, 'z':nz, 'gripper':ng})
         
-        # UI Update (Throttle)
         if abs(self.cache_ui['x']-nx)>0.1: dpg.set_value(self.field_x, nx); self.cache_ui['x']=nx
         if abs(self.cache_ui['y']-ny)>0.1: dpg.set_value(self.field_y, ny); self.cache_ui['y']=ny
         if abs(self.cache_ui['z']-nz)>0.1: dpg.set_value(self.field_z, nz); self.cache_ui['z']=nz
@@ -372,7 +376,6 @@ class UDPReceiverNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as d: dpg.add_text("JSON Out"); self.outputs[d]="Data"; self.out_json=d
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as o: dpg.add_text("Flow Out"); self.outputs[o]="Flow"; self.out_flow=o
     def execute(self):
-        # UDP Receiving Logic & Feedback Sending
         try:
             fb = {"x": -current_pos['y']/1000.0, "y": current_pos['z']/1000.0, "z": current_pos['x']/1000.0, "gripper": current_pos['gripper'], "status": "Running"}
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -484,26 +487,21 @@ def execute_graph_once():
         if isinstance(node, StartNode): start_node = node; break
     if not start_node: return
 
-    # 1. Data Processing Nodes (Calculate first)
     for node in node_registry.values():
         if not isinstance(node, (StartNode, CommandActionNode, LogicIfNode, LogicLoopNode, UDPReceiverNode, PrintNode, KeyboardControlNode, RobotControlNode)):
             node.execute()
 
-    # 2. Flow Execution
     current_node = start_node
     steps = 0
     MAX_STEPS = 100 
 
     while current_node and steps < MAX_STEPS:
-        # Execute node and get next flow ID
         result = current_node.execute()
         next_out_id = None
 
         if result is not None:
-            # New Style: Returns direct Attribute ID
             if isinstance(result, (int, str)):
                 next_out_id = result
-            # Old Style: Returns dict, find "Flow"
             elif isinstance(result, dict):
                 for k, v in result.items():
                     if v == "Flow": next_out_id = k; break
@@ -516,7 +514,6 @@ def execute_graph_once():
                     if target_node_id in node_registry:
                         next_node = node_registry[target_node_id]
                         break
-        
         current_node = next_node
         steps += 1
 
@@ -526,7 +523,7 @@ class NodeFactory:
     def create_node(node_type, node_id=None):
         if node_id is None: node_id = dpg.generate_uuid()
         node = None
-        if node_type == "START": node = StartNode(node_id)
+        if node_type == "START": node = StartNode(node_id, "START")
         elif node_type == "CMD_ACTION": node = CommandActionNode(node_id)
         elif node_type == "LOGIC_IF": node = LogicIfNode(node_id)
         elif node_type == "LOGIC_LOOP": node = LogicLoopNode(node_id)
@@ -648,12 +645,13 @@ dpg.create_context()
 with dpg.handler_registry(): dpg.add_key_press_handler(dpg.mvKey_Delete, callback=delete_selection)
 
 with dpg.window(tag="PrimaryWindow"):
-    # [1번 줄] System Status | Manual Control | Direct Coord (v19 유지)
+    # [1번 줄] System Status | Manual Control | Direct Coord (v19 Restore)
     with dpg.group(horizontal=True):
         with dpg.child_window(width=250, height=130, border=True):
             dpg.add_text("System Status", color=(150,150,150)); dpg.add_text("Idle", tag="dash_status", color=(0,255,0))
-            dpg.add_spacer(height=5); dpg.add_text(f"My IP: {get_local_ip()}", color=(180,180,180))
-            dpg.add_text(f"SSID: {get_wifi_ssid()}", color=(180,180,180))
+            dpg.add_spacer(height=5); dpg.add_text("Hardware Link", color=(150,150,150))
+            dpg.add_text(dashboard_state["hw_link"], tag="dash_link", color=(0,255,0) if dashboard_state["hw_link"]=="Online" else (255,0,0))
+            dpg.add_spacer(height=5); dpg.add_text("Latency", color=(150,150,150)); dpg.add_text("0.0 ms", tag="dash_latency", color=(255,255,0))
 
         with dpg.child_window(width=350, height=130, border=True):
             dpg.add_text("Manual Control", color=(255,200,0))
@@ -664,21 +662,36 @@ with dpg.window(tag="PrimaryWindow"):
                 dpg.add_button(label="Z+", width=60, callback=manual_control_callback, user_data=('z', 10)); dpg.add_button(label="Z-", width=60, callback=manual_control_callback, user_data=('z', -10))
                 dpg.add_text("|"); dpg.add_button(label="G+", width=60, callback=manual_control_callback, user_data=('gripper', 5)); dpg.add_button(label="G-", width=60, callback=manual_control_callback, user_data=('gripper', -5))
 
-        with dpg.child_window(width=400, height=130, border=True):
+        with dpg.child_window(width=300, height=130, border=True):
+            dpg.add_text("Direct Coord", color=(0,255,255))
+            with dpg.group(horizontal=True):
+                dpg.add_text("X"); dpg.add_input_int(tag="input_x", width=50, default_value=200, step=0)
+                dpg.add_text("Y"); dpg.add_input_int(tag="input_y", width=50, default_value=0, step=0)
+            with dpg.group(horizontal=True):
+                dpg.add_text("Z"); dpg.add_input_int(tag="input_z", width=50, default_value=120, step=0)
+                dpg.add_text("G"); dpg.add_input_int(tag="input_g", width=50, default_value=40, step=0)
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="Move", width=100, callback=move_to_coord_callback)
+                dpg.add_button(label="Homing", width=100, callback=homing_callback)
+
+    # [2번 줄] File Manager & IP Info
+    with dpg.group(horizontal=True):
+        # 4. File Manager
+        with dpg.child_window(width=400, height=100, border=True):
             dpg.add_text("Graph File Manager", color=(0,255,255))
             with dpg.group(horizontal=True):
-                dpg.add_text("Save:"); dpg.add_input_text(tag="file_name_input", default_value="logic_test", width=120); dpg.add_button(label="SAVE", callback=save_cb, width=50)
+                dpg.add_text("Save As:"); dpg.add_input_text(tag="file_name_input", default_value="my_graph", width=150); dpg.add_button(label="SAVE", callback=save_cb, width=60)
             with dpg.group(horizontal=True):
-                dpg.add_text("Load:"); dpg.add_combo(tag="file_list_combo", width=120); dpg.add_button(label="LOAD", callback=load_cb, width=50); dpg.add_button(label="Refresh", callback=update_file_list, width=50)
-            # Direct Coord를 여기 통합 (공간 부족 시)
-            dpg.add_separator()
-            with dpg.group(horizontal=True):
-                dpg.add_text("X"); dpg.add_input_int(tag="input_x", width=40, default_value=200); dpg.add_text("Y"); dpg.add_input_int(tag="input_y", width=40, default_value=0); 
-                dpg.add_button(label="Move", callback=move_to_coord_callback, width=50)
-                dpg.add_button(label="Home", callback=homing_callback, width=50)
+                dpg.add_text("Load File:"); dpg.add_combo(items=get_save_files(), tag="file_list_combo", width=150); dpg.add_button(label="LOAD", callback=load_cb, width=60); dpg.add_button(label="Refresh", callback=update_file_list, width=60)
+        
+        # 5. IP Info
+        with dpg.child_window(width=500, height=100, border=False):
+            dpg.add_spacer(height=20)
+            dpg.add_text(f"My IP: {my_ip} | SSID: {my_ssid}", color=(180,180,180))
+            dpg.add_text(f"Target IP: {UNITY_IP}  Port: {FEEDBACK_PORT}", color=(180,180,180))
 
     dpg.add_separator()
-    # Tool Bar (Old + New)
+    # Tool Bar (New + Old)
     with dpg.group(horizontal=True):
         dpg.add_button(label="START", callback=add_node_cb, user_data="START")
         dpg.add_button(label="UDP", callback=add_node_cb, user_data="UDP_RECV")
@@ -702,7 +715,7 @@ with dpg.window(tag="PrimaryWindow"):
 
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
-dpg.create_viewport(title='PyGui V20 (Complete)', width=1024, height=768, vsync=True)
+dpg.create_viewport(title='PyGui V20 (Perfect Merge)', width=1024, height=768, vsync=True)
 dpg.setup_dearpygui(); dpg.set_primary_window("PrimaryWindow", True); dpg.show_viewport()
 
 last_logic_time = 0
@@ -711,7 +724,7 @@ LOGIC_RATE = 0.02 # 50 FPS
 while dpg.is_dearpygui_running():
     if dashboard_state["last_pkt_time"] > 0:
         dpg.set_value("dash_status", dashboard_state["status"])
-        # dpg.set_value("dash_latency", f"{dashboard_state['latency']:.1f} ms") # 대시보드 구조 단순화로 인해 주석 처리 가능
+        dpg.set_value("dash_latency", f"{dashboard_state['latency']:.1f} ms")
     
     if is_running and (time.time() - last_logic_time > LOGIC_RATE):
         execute_graph_once()
