@@ -572,8 +572,44 @@ def toggle_execution(sender, app_data):
     dpg.set_item_label("btn_run", "STOP" if is_running else "RUN")
 
 def delete_selection(sender, app_data):
-    for link_id in dpg.get_selected_links("node_editor"): dpg.delete_item(link_id); del link_registry[link_id]
-    for node_id in dpg.get_selected_nodes("node_editor"): dpg.delete_item(node_id); del node_registry[node_id]
+    # 1. 선택된 링크와 노드 가져오기
+    selected_links = dpg.get_selected_links("node_editor")
+    selected_nodes = dpg.get_selected_nodes("node_editor")
+
+    # 2. [링크 삭제] 선택된 링크 먼저 처리
+    for link_id in selected_links:
+        if link_id in link_registry:
+            del link_registry[link_id]
+        dpg.delete_item(link_id)
+
+    # 3. [노드 삭제] 노드를 지우면 연결된 링크도 DPG에서 자동 삭제됨
+    #    따라서 link_registry에서도 그 '유령 링크'들을 찾아서 지워야 함!
+    for node_id in selected_nodes:
+        # 이 노드와 관련된 링크들을 찾아서 제거 목록에 추가
+        links_to_remove = []
+        for lid, link_data in link_registry.items():
+            # 링크의 소스나 타겟이 현재 지워질 노드에 속해있는지 확인
+            # (주의: 이미 DPG 아이템이 지워졌을 수도 있으므로 try-except 처리)
+            try:
+                src_parent = dpg.get_item_parent(link_data['source'])
+                dst_parent = dpg.get_item_parent(link_data['target'])
+                
+                if src_parent == node_id or dst_parent == node_id:
+                    links_to_remove.append(lid)
+            except:
+                pass # 이미 지워진 경우 무시
+
+        # 찾은 유령 링크들을 레지스트리에서 삭제
+        for lid in links_to_remove:
+            if lid in link_registry:
+                del link_registry[lid]
+
+        # 노드 레지스트리에서 삭제
+        if node_id in node_registry:
+            del node_registry[node_id]
+        
+        # 마지막으로 DPG 상에서 노드 삭제 (이때 시각적 링크들도 같이 사라짐)
+        dpg.delete_item(node_id)
 
 def link_cb(sender, app_data):
     src, dst = app_data[0], app_data[1] if len(app_data)==2 else (app_data[1], app_data[2])
