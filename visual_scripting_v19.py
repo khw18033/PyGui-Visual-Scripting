@@ -16,7 +16,8 @@ link_registry = {}
 ser = None 
 is_running = False 
 
-SAVE_DIR = "Node_File"  # 저장 경로
+# 저장 경로 설정
+SAVE_DIR = "Node_File"
 if not os.path.exists(SAVE_DIR):
     os.makedirs(SAVE_DIR)
 
@@ -26,6 +27,7 @@ target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0}
 
 manual_override_until = 0.0 
 
+# Dashboard State
 dashboard_state = {
     "status": "Idle",
     "hw_link": "Offline",
@@ -77,36 +79,42 @@ def init_serial():
         write_log(f"System: Connection Failed ({e}). Simulation Mode.")
         ser = None
 
-# ================= [1. Dashboard Callbacks] =================
-# ... (기존 콜백 함수들은 동일하므로 생략 없이 포함) ...
-def manual_control_callback(sender, app_data, user_data):
-    global manual_override_until
-    manual_override_until = time.time() + 1.5
-    target_goal['x'] = current_pos['x']; target_goal['y'] = current_pos['y']
-    target_goal['z'] = current_pos['z']; target_goal['gripper'] = current_pos['gripper']
-    axis, step = user_data
-    target_goal[axis] = current_pos[axis] + step
-    if axis == 'x': target_goal[axis] = max(LIMITS['min_x'], min(target_goal[axis], LIMITS['max_x']))
-    elif axis == 'y': target_goal[axis] = max(LIMITS['min_y'], min(target_goal[axis], LIMITS['max_y']))
-    elif axis == 'z': target_goal[axis] = max(LIMITS['min_z'], min(target_goal[axis], LIMITS['max_z']))
-    elif axis == 'gripper': target_goal[axis] = max(GRIPPER_MIN, min(target_goal[axis], GRIPPER_MAX))
-    write_log(f"Manual: {axis.upper()} Moved to {target_goal[axis]:.1f}")
-    current_pos.update(target_goal) 
-    send_robot_command_direct(target_goal['x'], target_goal['y'], target_goal['z'], target_goal['gripper'])
-
 def send_robot_command_direct(x, y, z, g):
     global ser
     if ser and ser.is_open:
         cmd_move = f"G0 X{x:.1f} Y{y:.1f} Z{z:.1f}\n"; cmd_grip = f"M3 S{int(g)}\n"
         ser.write(cmd_move.encode()); ser.write(cmd_grip.encode())
 
+# ================= [1. Dashboard Callbacks (Restored)] =================
+def manual_control_callback(sender, app_data, user_data):
+    global manual_override_until
+    manual_override_until = time.time() + 1.5
+    
+    # 튐 방지 동기화
+    target_goal['x'] = current_pos['x']; target_goal['y'] = current_pos['y']
+    target_goal['z'] = current_pos['z']; target_goal['gripper'] = current_pos['gripper']
+    
+    axis, step = user_data
+    target_goal[axis] = current_pos[axis] + step
+
+    if axis == 'x': target_goal[axis] = max(LIMITS['min_x'], min(target_goal[axis], LIMITS['max_x']))
+    elif axis == 'y': target_goal[axis] = max(LIMITS['min_y'], min(target_goal[axis], LIMITS['max_y']))
+    elif axis == 'z': target_goal[axis] = max(LIMITS['min_z'], min(target_goal[axis], LIMITS['max_z']))
+    elif axis == 'gripper': target_goal[axis] = max(GRIPPER_MIN, min(target_goal[axis], GRIPPER_MAX))
+    
+    write_log(f"Manual: {axis.upper()} Moved to {target_goal[axis]:.1f}")
+    current_pos.update(target_goal) 
+    send_robot_command_direct(target_goal['x'], target_goal['y'], target_goal['z'], target_goal['gripper'])
+
 def move_to_coord_callback(sender, app_data, user_data):
     global manual_override_until
     manual_override_until = time.time() + 2.0
+    
     target_goal['x'] = float(dpg.get_value("input_x"))
     target_goal['y'] = float(dpg.get_value("input_y"))
     target_goal['z'] = float(dpg.get_value("input_z"))
     target_goal['gripper'] = float(dpg.get_value("input_g"))
+    
     current_pos.update(target_goal)
     send_robot_command_direct(target_goal['x'], target_goal['y'], target_goal['z'], target_goal['gripper'])
     write_log(f"Direct Move: {target_goal['x']}, {target_goal['y']}, {target_goal['z']}")
@@ -119,11 +127,17 @@ def homing_thread_func():
         write_log("System: Homing Started...")
         ser.write(b"$H\r\n"); time.sleep(15)
         ser.write(b"M20\r\n"); ser.write(b"G90\r\n"); ser.write(b"G1 F2000\r\n")
+        
         target_goal['x'] = 200.0; target_goal['y'] = 0.0; target_goal['z'] = 120.0; target_goal['gripper'] = 40.0
         current_pos.update(target_goal)
-        if dpg.does_item_exist("input_x"): dpg.set_value("input_x", 200); dpg.set_value("input_y", 0); dpg.set_value("input_z", 120)
-        cmd = f"G0 X200 Y0 Z120 F2000\r\n"; ser.write(cmd.encode()); ser.write(b"M3 S40\r\n")
-        dashboard_state["status"] = "Idle"; write_log("System: Homing Complete")
+        
+        if dpg.does_item_exist("input_x"):
+            dpg.set_value("input_x", 200); dpg.set_value("input_y", 0); dpg.set_value("input_z", 120)
+        
+        cmd = f"G0 X200 Y0 Z120 F2000\r\n"
+        ser.write(cmd.encode()); ser.write(b"M3 S40\r\n")
+        dashboard_state["status"] = "Idle"
+        write_log("System: Homing Complete")
 
 def homing_callback(sender, app_data, user_data):
     threading.Thread(target=homing_thread_func, daemon=True).start()
@@ -131,8 +145,7 @@ def homing_callback(sender, app_data, user_data):
 # ================= [2. Base Class & Serialization] =================
 class BaseNode(ABC):
     def __init__(self, node_id, label, type_str):
-        self.node_id = node_id; self.label = label
-        self.type_str = type_str # ★ 저장용 타입 태그
+        self.node_id = node_id; self.label = label; self.type_str = type_str
         self.inputs = {}; self.outputs = {}; self.output_data = {} 
 
     @abstractmethod
@@ -151,7 +164,6 @@ class BaseNode(ABC):
             return node_registry[source_node_id].output_data.get(source_attr_id)
         return None
 
-    # ★ 저장/불러오기용 가상 메서드 (오버라이드 가능)
     def get_settings(self): return {}
     def load_settings(self, data): pass
 
@@ -177,7 +189,6 @@ class ConstantNode(BaseNode):
         val = dpg.get_value(self.field_val)
         self.output_data[self.out_val] = val
         return self.outputs
-    # ★ 값 저장 복구
     def get_settings(self): return {"value": dpg.get_value(self.field_val)}
     def load_settings(self, data): dpg.set_value(self.field_val, data.get("value", 1.0))
 
@@ -216,7 +227,6 @@ class UDPReceiverNode(BaseNode):
             self.sock_feedback.sendto(json.dumps(fb).encode(), (UNITY_IP, FEEDBACK_PORT))
         except: pass
         return self.outputs
-    # ★ IP/Port 저장 복구
     def get_settings(self): return {"port": dpg.get_value(self.port_input), "ip": dpg.get_value(self.target_ip_input)}
     def load_settings(self, data):
         dpg.set_value(self.port_input, data.get("port", 6000))
@@ -451,91 +461,44 @@ class NodeFactory:
         if node: node.build_ui(); node_registry[node_id] = node; return node
         return None
 
-# ★ 저장 함수
 def save_graph(filename):
     if not filename.endswith(".json"): filename += ".json"
     filepath = os.path.join(SAVE_DIR, filename)
-    
     data = {"nodes": [], "links": []}
-    
-    # 1. 노드 저장
     for node_id, node in node_registry.items():
-        node_info = {
-            "type": node.type_str,
-            "id": node_id,
-            "pos": dpg.get_item_pos(node_id),
-            "settings": node.get_settings()
-        }
-        data["nodes"].append(node_info)
-        
-    # 2. 링크 저장 (Source Node Index -> Target Node Index 방식)
-    # DPG ID는 매번 바뀌므로, 링크는 "어떤 노드의 몇 번째 속성인가"로 저장
+        data["nodes"].append({"type": node.type_str, "id": node_id, "pos": dpg.get_item_pos(node_id), "settings": node.get_settings()})
     for link_id, link in link_registry.items():
-        src_attr, dst_attr = link['source'], link['target']
-        src_node_id = dpg.get_item_parent(src_attr)
-        dst_node_id = dpg.get_item_parent(dst_attr)
-        
+        src_node_id, dst_node_id = dpg.get_item_parent(link['source']), dpg.get_item_parent(link['target'])
         if src_node_id in node_registry and dst_node_id in node_registry:
-            # 해당 노드의 몇 번째 output 속성인지 찾기
-            src_node = node_registry[src_node_id]
-            dst_node = node_registry[dst_node_id]
-            
-            src_idx = list(src_node.outputs.keys()).index(src_attr)
-            dst_idx = list(dst_node.inputs.keys()).index(dst_attr)
-            
-            data["links"].append({
-                "src_node": src_node_id, "src_idx": src_idx,
-                "dst_node": dst_node_id, "dst_idx": dst_idx
-            })
-            
+            src_idx = list(node_registry[src_node_id].outputs.keys()).index(link['source'])
+            dst_idx = list(node_registry[dst_node_id].inputs.keys()).index(link['target'])
+            data["links"].append({"src_node": src_node_id, "src_idx": src_idx, "dst_node": dst_node_id, "dst_idx": dst_idx})
     try:
         with open(filepath, 'w') as f: json.dump(data, f, indent=4)
         write_log(f"Graph Saved: {filename}")
-    except Exception as e:
-        write_log(f"Save Error: {e}")
+    except Exception as e: write_log(f"Save Error: {e}")
 
-# ★ 불러오기 함수
 def load_graph(filename):
     if not filename.endswith(".json"): filename += ".json"
     filepath = os.path.join(SAVE_DIR, filename)
+    if not os.path.exists(filepath): write_log(f"File not found: {filename}"); return
     
-    if not os.path.exists(filepath):
-        write_log(f"File not found: {filename}")
-        return
-
-    # 1. 기존 삭제
     for link in list(link_registry.keys()): dpg.delete_item(link)
     for node in list(node_registry.keys()): dpg.delete_item(node)
     link_registry.clear(); node_registry.clear()
     
     try:
         with open(filepath, 'r') as f: data = json.load(f)
-        
-        # 2. 노드 생성
         for n_data in data["nodes"]:
             node = NodeFactory.create_node(n_data["type"], n_data["id"])
-            if node:
-                dpg.set_item_pos(node.node_id, n_data["pos"])
-                node.load_settings(n_data.get("settings", {}))
-        
-        # 3. 링크 복원
-        # 저장된 ID는 이제 node_registry의 키와 일치함
+            if node: dpg.set_item_pos(node.node_id, n_data["pos"]); node.load_settings(n_data.get("settings", {}))
         for l_data in data["links"]:
-            src_node = node_registry.get(l_data["src_node"])
-            dst_node = node_registry.get(l_data["dst_node"])
-            
+            src_node = node_registry.get(l_data["src_node"]); dst_node = node_registry.get(l_data["dst_node"])
             if src_node and dst_node:
-                # 인덱스로 속성 ID 찾기
-                src_attr_id = list(src_node.outputs.keys())[l_data["src_idx"]]
-                dst_attr_id = list(dst_node.inputs.keys())[l_data["dst_idx"]]
-                
-                link_id = dpg.add_node_link(src_attr_id, dst_attr_id, parent="node_editor")
-                link_registry[link_id] = {'source': src_attr_id, 'target': dst_attr_id}
-                
+                link_id = dpg.add_node_link(list(src_node.outputs.keys())[l_data["src_idx"]], list(dst_node.inputs.keys())[l_data["dst_idx"]], parent="node_editor")
+                link_registry[link_id] = {'source': list(src_node.outputs.keys())[l_data["src_idx"]], 'target': list(dst_node.inputs.keys())[l_data["dst_idx"]]}
         write_log(f"Graph Loaded: {filename}")
-        
-    except Exception as e:
-        write_log(f"Load Error: {e}")
+    except Exception as e: write_log(f"Load Error: {e}")
 
 # ================= [Execution Logic] =================
 def execute_graph_once():
@@ -560,7 +523,6 @@ def execute_graph_once():
     for node in node_registry.values():
         if isinstance(node, (GraphNode, LoggerNode)): node.execute()
 
-# Callbacks
 def toggle_execution(sender, app_data):
     global is_running; is_running = not is_running
     dpg.set_item_label("btn_run", "STOP" if is_running else "RUN")
@@ -594,14 +556,21 @@ threading.Thread(target=auto_reconnect_thread, daemon=True).start()
 dpg.create_context()
 with dpg.handler_registry(): dpg.add_key_press_handler(dpg.mvKey_Delete, callback=delete_selection)
 
+my_ip = get_local_ip()
+my_ssid = get_wifi_ssid()
+
 with dpg.window(tag="PrimaryWindow"):
+    
+    # [1번 줄] System Status | Manual Control | Direct Coord (v18 Layout)
     with dpg.group(horizontal=True):
+        # 1. Status
         with dpg.child_window(width=250, height=130, border=True):
             dpg.add_text("System Status", color=(150,150,150)); dpg.add_text("Idle", tag="dash_status", color=(0,255,0))
             dpg.add_spacer(height=5); dpg.add_text("Hardware Link", color=(150,150,150))
             dpg.add_text(dashboard_state["hw_link"], tag="dash_link", color=(0,255,0) if dashboard_state["hw_link"]=="Online" else (255,0,0))
             dpg.add_spacer(height=5); dpg.add_text("Latency", color=(150,150,150)); dpg.add_text("0.0 ms", tag="dash_latency", color=(255,255,0))
 
+        # 2. Manual Control (v18 Restore)
         with dpg.child_window(width=350, height=130, border=True):
             dpg.add_text("Manual Control", color=(255,200,0))
             with dpg.group(horizontal=True):
@@ -611,15 +580,34 @@ with dpg.window(tag="PrimaryWindow"):
                 dpg.add_button(label="Z+", width=60, callback=manual_control_callback, user_data=('z', 10)); dpg.add_button(label="Z-", width=60, callback=manual_control_callback, user_data=('z', -10))
                 dpg.add_text("|"); dpg.add_button(label="G+", width=60, callback=manual_control_callback, user_data=('gripper', 5)); dpg.add_button(label="G-", width=60, callback=manual_control_callback, user_data=('gripper', -5))
 
-        # ★ [추가된 부분] 파일 저장/불러오기 패널
+        # 3. Direct Coord (v18 Restore)
         with dpg.child_window(width=300, height=130, border=True):
-            dpg.add_text("Graph File Manager", color=(0,255,255))
-            dpg.add_text("File Name:")
-            dpg.add_input_text(tag="file_name_input", default_value="my_graph", width=200)
-            dpg.add_spacer(height=10)
+            dpg.add_text("Direct Coord", color=(0,255,255))
             with dpg.group(horizontal=True):
-                dpg.add_button(label="SAVE", callback=save_cb, width=130)
-                dpg.add_button(label="LOAD", callback=load_cb, width=130)
+                dpg.add_text("X"); dpg.add_input_int(tag="input_x", width=50, default_value=200, step=0)
+                dpg.add_text("Y"); dpg.add_input_int(tag="input_y", width=50, default_value=0, step=0)
+            with dpg.group(horizontal=True):
+                dpg.add_text("Z"); dpg.add_input_int(tag="input_z", width=50, default_value=120, step=0)
+                dpg.add_text("G"); dpg.add_input_int(tag="input_g", width=50, default_value=40, step=0)
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="Move", width=100, callback=move_to_coord_callback)
+                dpg.add_button(label="Homing", width=100, callback=homing_callback)
+
+    # [2번 줄] File Manager & IP Info (New Layout)
+    with dpg.group(horizontal=True):
+        # 4. File Manager (v19 Feature)
+        with dpg.child_window(width=400, height=80, border=True):
+            dpg.add_text("Graph File Manager", color=(0,255,255))
+            with dpg.group(horizontal=True):
+                dpg.add_input_text(tag="file_name_input", default_value="my_graph", width=150)
+                dpg.add_button(label="SAVE", callback=save_cb, width=80)
+                dpg.add_button(label="LOAD", callback=load_cb, width=80)
+        
+        # 5. IP Info (v18 Restore)
+        with dpg.child_window(width=500, height=80, border=False):
+            dpg.add_spacer(height=10)
+            dpg.add_text(f"My IP: {my_ip} | SSID: {my_ssid}", color=(180,180,180))
+            dpg.add_text(f"Target IP: {UNITY_IP}  Port: {FEEDBACK_PORT}", color=(180,180,180))
 
     dpg.add_separator()
     with dpg.group(horizontal=True):
@@ -638,7 +626,7 @@ with dpg.window(tag="PrimaryWindow"):
     
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
-dpg.create_viewport(title='PyGui V19 (Save/Load)', width=1024, height=768, vsync=True)
+dpg.create_viewport(title='PyGui V19 (Complete)', width=1024, height=768, vsync=True)
 dpg.setup_dearpygui()
 dpg.set_primary_window("PrimaryWindow", True)
 dpg.show_viewport()
