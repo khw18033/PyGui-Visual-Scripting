@@ -386,7 +386,15 @@ class RobotControlNode(BaseNode):
     def load_settings(self, data): dpg.set_value(self.field_smooth, data.get("s", 0.2)); dpg.set_value(self.field_g_speed, data.get("sp", 2.0))
 
 class UDPReceiverNode(BaseNode):
-    def __init__(self, node_id): super().__init__(node_id, "UDP Receiver", "UDP_RECV"); self.out_flow=None; self.port=None; self.ip=None; self.out_json=None
+    def __init__(self, node_id):
+        super().__init__(node_id, "UDP Receiver", "UDP_RECV")
+        self.out_flow = None; self.port = None; self.ip = None; self.out_json = None
+        # ★ [복구됨] 통신용 소켓 초기화
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setblocking(False)
+        self.is_bound = False
+        self.last_data_str = ""
+
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label="UDP Receiver"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as f: dpg.add_text("Flow In"); self.inputs[f]="Flow"
@@ -394,38 +402,45 @@ class UDPReceiverNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_input_text(label="IP", width=100, default_value="192.168.50.63", tag=f"i_{self.node_id}"); self.ip=f"i_{self.node_id}"
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as d: dpg.add_text("JSON Out"); self.outputs[d]="Data"; self.out_json=d
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as o: dpg.add_text("Flow Out"); self.outputs[o]="Flow"; self.out_flow=o
+
     def execute(self):
+        global UNITY_IP
+        port = dpg.get_value(self.port)
+        UNITY_IP = dpg.get_value(self.ip)
+
+        # ★ [복구됨] 포트 개방 (수신 준비)
+        if not self.is_bound:
+            try: 
+                self.sock.bind(('0.0.0.0', port))
+                self.is_bound = True
+                write_log(f"UDP: Bound to port {port}")
+            except: 
+                self.is_bound = True
+
+        # ★ [복구됨] 유니티로부터 데이터 수신 로직
+        try:
+            while True: 
+                data, _ = self.sock.recvfrom(4096)
+                decoded = data.decode()
+                if decoded != self.last_data_str:
+                    self.output_data[self.out_json] = decoded
+                    self.last_data_str = decoded
+                    dashboard_state["last_pkt_time"] = time.time()
+                    dashboard_state["status"] = "Connected"
+        except: 
+            pass
+
+        # 피드백 송신 (유니티로 현재 위치 전송)
         try:
             fb = {"x": -current_pos['y']/1000.0, "y": current_pos['z']/1000.0, "z": current_pos['x']/1000.0, "gripper": current_pos['gripper'], "status": "Running"}
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.sendto(json.dumps(fb).encode(), (dpg.get_value(self.ip), FEEDBACK_PORT))
+            sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock_send.sendto(json.dumps(fb).encode(), (UNITY_IP, FEEDBACK_PORT))
         except: pass
+
         return self.out_flow
+
     def get_settings(self): return {"port": dpg.get_value(self.port), "ip": dpg.get_value(self.ip)}
     def load_settings(self, data): dpg.set_value(self.port, data.get("port", 6000)); dpg.set_value(self.ip, data.get("ip", "192.168.50.63"))
-
-class UnityControlNode(BaseNode):
-    def __init__(self, node_id): super().__init__(node_id, "Unity Logic", "UNITY_CONTROL"); self.d_in=None; self.ox=None; self.oy=None; self.oz=None; self.og=None
-    def build_ui(self):
-        with dpg.node(tag=self.node_id, parent="node_editor", label="Unity Logic"):
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as f: dpg.add_text("Flow In"); self.inputs[f]="Flow"
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as d: dpg.add_text("JSON"); self.inputs[d]="Data"; self.d_in=d
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as ox: dpg.add_text("Target X"); self.outputs[ox]="Data"; self.ox=ox
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as oy: dpg.add_text("Target Y"); self.outputs[oy]="Data"; self.oy=oy
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as oz: dpg.add_text("Target Z"); self.outputs[oz]="Data"; self.oz=oz
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as og: dpg.add_text("Target Grip"); self.outputs[og]="Data"; self.og=og
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as fo: dpg.add_text("Flow Out"); self.outputs[fo]="Flow"
-    def execute(self):
-        raw = self.fetch_input_data(self.d_in)
-        if raw:
-            try:
-                p = json.loads(raw)
-                if p.get("type")=="MOVE":
-                    self.output_data[self.ox]=p.get('z',0)*1000; self.output_data[self.oy]=-p.get('x',0)*1000; self.output_data[self.oz]=p.get('y',0)*1000; self.output_data[self.og]=p.get('gripper')
-            except: pass
-        for k, v in self.outputs.items():
-            if v == "Flow": return k
-        return None
 
 class JsonParseNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Simple Parser", "JSON_PARSE"); self.d_in=None; self.d_out=None
