@@ -444,7 +444,7 @@ class UDPReceiverNode(BaseNode):
 
 class UnityControlNode(BaseNode):
     def __init__(self, node_id):
-        super().__init__(node_id, "Unity Logic")
+        super().__init__(node_id, "Unity Logic", "UNITY_CONTROL")
         self.data_in_id = None; self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None
 
     def build_ui(self):
