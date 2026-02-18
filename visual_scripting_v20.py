@@ -322,7 +322,7 @@ class RobotControlNode(BaseNode):
         super().__init__(node_id, "Robot Driver", "ROBOT_CONTROL")
         self.in_x=None; self.in_y=None; self.in_z=None; self.in_g=None; self.in_smooth=None; self.in_g_speed=None
         self.field_x=None; self.field_y=None; self.field_z=None; self.field_g=None; self.field_smooth=None; self.field_g_speed=None 
-        self.last_cmd=""; self.cache_ui={'x':0,'y':0,'z':0,'g':0}; self.last_write_time=0; self.write_interval=0.0
+        self.last_cmd=""; self.cache_ui={'x':0,'y':0,'z':0,'g':0}; self.last_write_time=0; self.write_interval=0.033
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label=self.label):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow]="Flow"
@@ -786,7 +786,7 @@ dpg.create_viewport(title='PyGui V20 (Perfect Merge)', width=1024, height=768, v
 dpg.setup_dearpygui(); dpg.set_primary_window("PrimaryWindow", True); dpg.show_viewport()
 
 last_logic_time = 0
-LOGIC_RATE = 0.05
+LOGIC_RATE = 0.02 # 50 FPS
 
 while dpg.is_dearpygui_running():
     if dashboard_state["last_pkt_time"] > 0:
