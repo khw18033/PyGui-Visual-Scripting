@@ -442,6 +442,36 @@ class UDPReceiverNode(BaseNode):
     def get_settings(self): return {"port": dpg.get_value(self.port), "ip": dpg.get_value(self.ip)}
     def load_settings(self, data): dpg.set_value(self.port, data.get("port", 6000)); dpg.set_value(self.ip, data.get("ip", "192.168.50.63"))
 
+class UnityControlNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Unity Logic", "UNITY_CONTROL")
+        self.d_in = None; self.ox = None; self.oy = None; self.oz = None; self.og = None
+
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Unity Logic"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as f: dpg.add_text("Flow In"); self.inputs[f]="Flow"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as d: dpg.add_text("JSON"); self.inputs[d]="Data"; self.d_in=d
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as ox: dpg.add_text("Target X"); self.outputs[ox]="Data"; self.ox=ox
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as oy: dpg.add_text("Target Y"); self.outputs[oy]="Data"; self.oy=oy
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as oz: dpg.add_text("Target Z"); self.outputs[oz]="Data"; self.oz=oz
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as og: dpg.add_text("Target Grip"); self.outputs[og]="Data"; self.og=og
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as fo: dpg.add_text("Flow Out"); self.outputs[fo]="Flow"
+
+    def execute(self):
+        raw = self.fetch_input_data(self.d_in)
+        if raw:
+            try:
+                p = json.loads(raw)
+                if p.get("type")=="MOVE":
+                    self.output_data[self.ox]=p.get('z',0)*1000.0
+                    self.output_data[self.oy]=-p.get('x',0)*1000.0
+                    self.output_data[self.oz]=p.get('y',0)*1000.0
+                    self.output_data[self.og]=p.get('gripper')
+            except: pass
+        for k, v in self.outputs.items():
+            if v == "Flow": return k
+        return None
+
 class JsonParseNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Simple Parser", "JSON_PARSE"); self.d_in=None; self.d_out=None
     def build_ui(self):
