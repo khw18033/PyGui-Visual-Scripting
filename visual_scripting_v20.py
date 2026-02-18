@@ -444,33 +444,31 @@ class UDPReceiverNode(BaseNode):
 
 class UnityControlNode(BaseNode):
     def __init__(self, node_id):
-        super().__init__(node_id, "Unity Logic", "UNITY_CONTROL")
-        self.d_in = None; self.ox = None; self.oy = None; self.oz = None; self.og = None
+        super().__init__(node_id, "Unity Logic")
+        self.data_in_id = None; self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None
 
     def build_ui(self):
-        with dpg.node(tag=self.node_id, parent="node_editor", label="Unity Logic"):
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as f: dpg.add_text("Flow In"); self.inputs[f]="Flow"
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as d: dpg.add_text("JSON"); self.inputs[d]="Data"; self.d_in=d
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as ox: dpg.add_text("Target X"); self.outputs[ox]="Data"; self.ox=ox
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as oy: dpg.add_text("Target Y"); self.outputs[oy]="Data"; self.oy=oy
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as oz: dpg.add_text("Target Z"); self.outputs[oz]="Data"; self.oz=oz
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as og: dpg.add_text("Target Grip"); self.outputs[og]="Data"; self.og=og
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as fo: dpg.add_text("Flow Out"); self.outputs[fo]="Flow"
+        with dpg.node(tag=self.node_id, parent="node_editor", label=self.label):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as in_flow: dpg.add_text("Flow In"); self.inputs[in_flow] = "Flow"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as d_in: dpg.add_text("JSON"); self.inputs[d_in] = "Data"; self.data_in_id = d_in
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_x: dpg.add_text("Target X"); self.outputs[out_x] = "Data"; self.out_x = out_x
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_y: dpg.add_text("Target Y"); self.outputs[out_y] = "Data"; self.out_y = out_y
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_z: dpg.add_text("Target Z"); self.outputs[out_z] = "Data"; self.out_z = out_z
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_g: dpg.add_text("Target Grip"); self.outputs[out_g] = "Data"; self.out_g = out_g
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f_out: dpg.add_text("Flow Out"); self.outputs[f_out] = "Flow"
 
     def execute(self):
-        raw = self.fetch_input_data(self.d_in)
-        if raw:
+        raw_json = self.fetch_input_data(self.data_in_id)
+        if raw_json:
             try:
-                p = json.loads(raw)
-                if p.get("type")=="MOVE":
-                    self.output_data[self.ox]=p.get('z',0)*1000.0
-                    self.output_data[self.oy]=-p.get('x',0)*1000.0
-                    self.output_data[self.oz]=p.get('y',0)*1000.0
-                    self.output_data[self.og]=p.get('gripper')
-            except: pass
-        for k, v in self.outputs.items():
-            if v == "Flow": return k
-        return None
+                parsed = json.loads(raw_json)
+                if parsed.get("type", "MOVE") == "MOVE":
+                    self.output_data[self.out_x] = parsed.get('z', 0) * 1000.0
+                    self.output_data[self.out_y] = -parsed.get('x', 0) * 1000.0
+                    self.output_data[self.out_z] = parsed.get('y', 0) * 1000.0
+                    self.output_data[self.out_g] = parsed.get('gripper') 
+            except: pass 
+        return self.outputs
 
 class JsonParseNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Simple Parser", "JSON_PARSE"); self.d_in=None; self.d_out=None
