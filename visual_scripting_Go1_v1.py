@@ -79,11 +79,20 @@ def init_go1():
     global udp, cmd, state
     if HAS_UNITREE_SDK:
         try:
-            # UDP(Level, Local Port, Target IP, Target Port)
-            udp = sdk.UDP(sdk.HIGHLEVEL, 8080, UNITY_IP, 8082)
+            # 1. 구조체 및 클래스 참조
+            # 출력된 리스트에 'Go1', 'HighCmd', 'HighState', 'UDP'가 있음을 확인했습니다.
             cmd = sdk.HighCmd()
             state = sdk.HighState()
+            
+            # 2. UDP 초기화
+            # 두 번째 인자인 'level' 값에 보통 0xee (HighLevel)가 들어갑니다.
+            # 만약 에러가 난다면 0xee 대신 0 또는 sdk.Go1 등을 시도해볼 수 있습니다.
+            high_level_value = 0xee 
+            udp = sdk.UDP(high_level_value, 8080, UNITY_IP, 8082)
+            
+            # 3. 데이터 초기화
             udp.InitCmdData(cmd)
+            
             dashboard_state["hw_link"] = "Online"
             write_log("System: Unitree Go1 Connected (High-Level)")
         except Exception as e:
