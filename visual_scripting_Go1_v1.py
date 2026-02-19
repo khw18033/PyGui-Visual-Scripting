@@ -10,13 +10,17 @@ from abc import ABC, abstractmethod
 from collections import deque
 from datetime import datetime
 
-# ================= [Unitree SDK Import] =================
+# 빌드된 파이썬 라이브러리(.so 파일)가 있는 절대 경로를 추가합니다.
+# (주의: 라즈베리파이 OS 버전에 따라 맨 끝 폴더 이름이 'arm64'가 아니라 'aarch64'일 수도 있습니다. 확인 후 맞춰서 적어주세요!)
+sys.path.append('/home/physical/PyGui-Visual-Scripting/unitree_legged_sdk/lib/python/arm64')
+
 try:
     import robot_interface as sdk
     HAS_UNITREE_SDK = True
-except ImportError:
+    print("Unitree SDK Load Success!")
+except ImportError as e:
     HAS_UNITREE_SDK = False
-    print("Warning: 'robot_interface' module not found. Running in Simulation Mode.")
+    print(f"Warning: SDK Load Failed ({e}). Running in Simulation Mode.")
 
 # ================= [Global Settings] =================
 node_registry = {}
