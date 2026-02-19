@@ -47,7 +47,7 @@ dashboard_state = {
 system_log_buffer = deque(maxlen=50)
 
 # Config
-UNITY_IP = "192.168.123.161" # 보통 Go1의 High-Level 통신 IP
+UNITY_IP = "192.168.50.159" # 보통 Go1의 High-Level 통신 IP
 FEEDBACK_PORT = 5005
 LIMITS = {'max_vx': 1.0, 'min_vx': -1.0, 'max_vy': 0.5, 'min_vy': -0.5, 'max_wz': 1.5, 'min_wz': -1.5}
 
