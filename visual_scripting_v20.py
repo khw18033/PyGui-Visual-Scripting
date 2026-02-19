@@ -775,6 +775,7 @@ with dpg.window(tag="PrimaryWindow"):
         dpg.add_button(label="CONST", callback=add_node_cb, user_data="CONSTANT")
         dpg.add_button(label="GRAPH", callback=add_node_cb, user_data="GRAPH")
         dpg.add_button(label="LOG", callback=add_node_cb, user_data="LOGGER")
+        dpg.add_button(label="PRINT", callback=add_node_cb, user_data="PRINT")
         dpg.add_spacer(width=50)
         dpg.add_button(label="RUN", tag="btn_run", callback=toggle_exec, width=150)
 
