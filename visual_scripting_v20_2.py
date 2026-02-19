@@ -39,6 +39,7 @@ UNITY_IP = "192.168.50.63"
 FEEDBACK_PORT = 5005
 LIMITS = {'min_x': 100, 'max_x': 280, 'min_y': -150, 'max_y': 150, 'min_z': 0, 'max_z': 180}
 GRIPPER_MIN = 30.0; GRIPPER_MAX = 60.0
+Z_GRIPPER_OFFSET = 75.0
 
 # ================= [Helper Functions] =================
 def write_log(msg):
@@ -432,7 +433,7 @@ class UDPReceiverNode(BaseNode):
 
         # 피드백 송신 (유니티로 현재 위치 전송)
         try:
-            fb = {"x": -current_pos['y']/1000.0, "y": current_pos['z']/1000.0, "z": current_pos['x']/1000.0, "gripper": current_pos['gripper'], "status": "Running"}
+            fb = {"x": -current_pos['y']/1000.0, "y": (current_pos['z'] - Z_GRIPPER_OFFSET) / 1000.0, "z": current_pos['x']/1000.0, "gripper": current_pos['gripper'], "status": "Running"}
             sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock_send.sendto(json.dumps(fb).encode(), (UNITY_IP, FEEDBACK_PORT))
         except: pass
@@ -466,9 +467,6 @@ class UnityControlNode(BaseNode):
                     self.output_data[self.out_x] = parsed.get('z', 0) * 1000.0
                     self.output_data[self.out_y] = -parsed.get('x', 0) * 1000.0
                     
-                    # ★ [수정됨] 그리퍼 길이(Offset) 강제 추가
-                    # 실제 자로 잰 그리퍼 길이에 맞춰 75.0 숫자를 조절하세요.
-                    Z_GRIPPER_OFFSET = 75.0 
                     self.output_data[self.out_z] = (parsed.get('y', 0) * 1000.0) + Z_GRIPPER_OFFSET
                     
                     self.output_data[self.out_g] = parsed.get('gripper') 
