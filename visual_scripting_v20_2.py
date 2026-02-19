@@ -337,7 +337,7 @@ class RobotControlNode(BaseNode):
                     elif axis=='g':self.in_g=aid
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_spacer(height=5) 
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as sin:
-                with dpg.group(horizontal=True): dpg.add_text("Smth"); self.field_smooth=dpg.add_input_float(width=60, default_value=0.2, step=0)
+                with dpg.group(horizontal=True): dpg.add_text("Smth"); self.field_smooth=dpg.add_input_float(width=60, default_value=1.0, step=0)
                 self.inputs[sin]="Data"; self.in_smooth=sin
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as gin:
                 with dpg.group(horizontal=True): dpg.add_text("Spd "); self.field_g_speed=dpg.add_input_float(width=60, default_value=2.0, step=0)
