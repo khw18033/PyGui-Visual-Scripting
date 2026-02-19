@@ -39,7 +39,7 @@ UNITY_IP = "192.168.50.63"
 FEEDBACK_PORT = 5005
 LIMITS = {'min_x': 100, 'max_x': 280, 'min_y': -150, 'max_y': 150, 'min_z': 0, 'max_z': 180}
 GRIPPER_MIN = 30.0; GRIPPER_MAX = 60.0
-Z_GRIPPER_OFFSET = 75.0
+Z_GRIPPER_OFFSET = 90.0
 
 # ================= [Helper Functions] =================
 def write_log(msg):
