@@ -92,8 +92,9 @@ def camera_worker_thread():
                 write_log(f"Cam: Start JPEG stream to {pc_ip}")
                 
                 for nano in nanos:
-                    # 성공하신 PS 코드의 원격 명령 로직을 그대로 이식했습니다.
+                    # ✅ 성공하신 PS 코드 원본에 '장치 강제 해제(fuser)' 로직만 맨 앞에 추가했습니다.
                     remote_cmd = (
+                        f"sudo fuser -k /dev/video0 /dev/video1 2>/dev/null; "
                         f"cd /home/unitree; "
                         f"./kill_camera.sh || true; "
                         f"nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 & "
@@ -113,7 +114,7 @@ def camera_worker_thread():
                 # (중략 - 기존 STOP 로직 유지)
                 pass
         time.sleep(0.1)
-
+        
 # ================= [Background Comm Thread (Go1)] =================
 def go1_v4_comm_thread():
     global go1_state, UNITY_IP, unity_teleop_data
