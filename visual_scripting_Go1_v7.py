@@ -316,19 +316,23 @@ def go1_v4_comm_thread():
             if abs(err) <= yaw_align_tol_rad: 
                 yaw_align_active = False; target_mode = 1
             else: 
-                target_mode = 2; if cmd: cmd.gaitType = 1
+                target_mode = 2
+                if cmd: cmd.gaitType = 1
                 out_wz = clamp(-yaw_align_kp * err, -W_MAX, W_MAX)
         elif unity_active:
-            target_mode = 1 if uestop else 2; if cmd: cmd.gaitType = 1
+            target_mode = 1 if uestop else 2
+            if cmd: cmd.gaitType = 1
             out_vx = clamp(uvx, -V_MAX, V_MAX); out_vy = clamp(uvy, -S_MAX, S_MAX); out_wz = clamp(uwz, -W_MAX, W_MAX)
             go1_state['reason'] = "UNITY"
         elif active_walk:
-            target_mode = 2; if cmd: cmd.gaitType = 1
+            target_mode = 2
+            if cmd: cmd.gaitType = 1
             out_vx = clamp(node_intent['vx'], -V_MAX, V_MAX); out_vy = clamp(node_intent['vy'], -S_MAX, S_MAX); out_wz = clamp(node_intent['wz'], -W_MAX, W_MAX)
             go1_state['reason'] = "NODE_WALK"
         else:
             if since_move <= (min_move_sec + stop_brake_sec): 
-                target_mode = 2; if cmd: cmd.gaitType = 1
+                target_mode = 2
+                if cmd: cmd.gaitType = 1
                 go1_state['reason'] = "BRAKE"
             else: 
                 target_mode = 1; use_grace = True; go1_state['reason'] = "STAND"
@@ -605,7 +609,11 @@ class PrintNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as data: dpg.add_text("Data"); self.inputs[data] = "Data"; self.inp_data = data
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
-    def execute(self): val = self.fetch_input_data(self.inp_data); if val is not None: write_log(f"PRINT: {val}"); return self.out_flow
+    def execute(self):
+        val = self.fetch_input_data(self.inp_data)
+        if val is not None:
+            write_log(f"PRINT: {val}")
+        return self.out_flow
 
 class ConstantNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Constant", "CONSTANT"); self.out_val = None; self.field_val = None
