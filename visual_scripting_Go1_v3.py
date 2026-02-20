@@ -660,9 +660,9 @@ while dpg.is_dearpygui_running():
     dpg.set_value("dash_wx", f"World X: {go1_state['world_x']:.3f}")
     dpg.set_value("dash_wz", f"World Z: {go1_state['world_z']:.3f}")
     dpg.set_value("dash_yaw", f"Yaw (Unity): {go1_state['yaw_unity']:.3f} rad")
-    dpg.set_value("dash_vx", f"Vx Cmd: {go1_state['vx_cmd']:.2f}")
-    dpg.set_value("dash_vy", f"Vy Cmd: {go1_state['vy_cmd']:.2f}")
-    dpg.set_value("dash_wz", f"Wz Cmd: {go1_state['wz_cmd']:.2f}")
+    dpg.set_value("dash_vx_2", f"Vx Cmd: {go1_state['vx_cmd']:.2f}")
+    dpg.set_value("dash_vy_2", f"Vy Cmd: {go1_state['vy_cmd']:.2f}")
+    dpg.set_value("dash_wz_2", f"Wz Cmd: {go1_state['wz_cmd']:.2f}")
     
     if is_running and (time.time() - last_logic_time > LOGIC_RATE):
         execute_graph_once()
