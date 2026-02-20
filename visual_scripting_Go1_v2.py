@@ -450,9 +450,9 @@ with dpg.window(tag="PrimaryWindow"):
 
         with dpg.child_window(width=250, height=130, border=True):
             dpg.add_text("Commands", color=(255,200,0))
-            dpg.add_text("Vx Cmd: 0.00", tag="dash_vx")
-            dpg.add_text("Vy Cmd: 0.00", tag="dash_vy")
-            dpg.add_text("Wz Cmd: 0.00", tag="dash_wz")
+            dpg.add_text("Vx Cmd: 0.00", tag="dash_vx_2")
+            dpg.add_text("Vy Cmd: 0.00", tag="dash_vy_2")
+            dpg.add_text("Wz Cmd: 0.00", tag="dash_wz_2")
 
     dpg.add_separator()
     with dpg.group(horizontal=True):
