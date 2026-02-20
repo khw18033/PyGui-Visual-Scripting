@@ -202,22 +202,32 @@ def go1_v4_comm_thread():
             if abs(err) <= yaw_align_tol_rad: 
                 yaw_align_active = False; target_mode = 1
             else: 
-                target_mode = 2; if cmd: cmd.gaitType = 1
+                target_mode = 2
+                if cmd: cmd.gaitType = 1
                 out_wz = clamp(-yaw_align_kp * err, -W_MAX, W_MAX)
         elif unity_active:
-            target_mode = 1 if uestop else 2; if cmd: cmd.gaitType = 1
-            out_vx = clamp(uvx, -V_MAX, V_MAX); out_vy = clamp(uvy, -S_MAX, S_MAX); out_wz = clamp(uwz, -W_MAX, W_MAX)
+            target_mode = 1 if uestop else 2
+            if cmd: cmd.gaitType = 1
+            out_vx = clamp(uvx, -V_MAX, V_MAX)
+            out_vy = clamp(uvy, -S_MAX, S_MAX)
+            out_wz = clamp(uwz, -W_MAX, W_MAX)
             go1_state['reason'] = "UNITY"
         elif active_walk:
-            target_mode = 2; if cmd: cmd.gaitType = 1
-            out_vx = clamp(node_intent['vx'], -V_MAX, V_MAX); out_vy = clamp(node_intent['vy'], -S_MAX, S_MAX); out_wz = clamp(node_intent['wz'], -W_MAX, W_MAX)
+            target_mode = 2
+            if cmd: cmd.gaitType = 1
+            out_vx = clamp(node_intent['vx'], -V_MAX, V_MAX)
+            out_vy = clamp(node_intent['vy'], -S_MAX, S_MAX)
+            out_wz = clamp(node_intent['wz'], -W_MAX, W_MAX)
             go1_state['reason'] = "NODE_WALK"
         else:
             if since_move <= (min_move_sec + stop_brake_sec): 
-                target_mode = 2; if cmd: cmd.gaitType = 1
+                target_mode = 2
+                if cmd: cmd.gaitType = 1
                 go1_state['reason'] = "BRAKE"
             else: 
-                target_mode = 1; use_grace = True; go1_state['reason'] = "STAND"
+                target_mode = 1
+                use_grace = True
+                go1_state['reason'] = "STAND"
 
         if cmd:
             cmd.mode = target_mode; cmd.velocity = [out_vx, out_vy]; cmd.yawSpeed = out_wz
