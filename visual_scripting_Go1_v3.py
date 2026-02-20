@@ -67,13 +67,16 @@ def go1_v3_comm_thread():
         udp = sdk.UDP(HIGHLEVEL, LOCAL_PORT, ROBOT_IP, ROBOT_PORT)
         cmd = sdk.HighCmd(); state = sdk.HighState()
         udp.InitCmdData(cmd); dashboard_state["hw_link"] = "Online"
-    else: udp = cmd = state = None; dashboard_state["hw_link"] = "Simulation"
+    else: 
+        udp = cmd = state = None; dashboard_state["hw_link"] = "Simulation"
         
     sock_tx_state = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock_tx_cmd   = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock_rx_unity = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock_rx_unity.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try: sock_rx_unity.bind(("0.0.0.0", UNITY_RX_PORT)); sock_rx_unity.setblocking(False)
+    try: 
+        sock_rx_unity.bind(("0.0.0.0", UNITY_RX_PORT))
+        sock_rx_unity.setblocking(False)
     except: pass
     
     stand_only = True; now = time.monotonic()
@@ -97,21 +100,30 @@ def go1_v3_comm_thread():
         next_t += dt
 
         raw_yaw = 0.0
-        if udp: udp.Recv(); udp.GetRecv(state); raw_yaw = float(state.imu.rpy[2])
+        if udp: 
+            udp.Recv()
+            udp.GetRecv(state)
+            raw_yaw = float(state.imu.rpy[2])
 
-        if not yaw0_initialized: yaw0 = raw_yaw; yaw0_initialized = True; last_dr_time = time.monotonic()
-        if node_intent['reset_yaw']: yaw0 = raw_yaw; last_dr_time = time.monotonic(); node_intent['reset_yaw'] = False; write_log(f"YAW0 Reset")
+        if not yaw0_initialized: 
+            yaw0 = raw_yaw; yaw0_initialized = True; last_dr_time = time.monotonic()
+            
+        if node_intent['reset_yaw']: 
+            yaw0 = raw_yaw; last_dr_time = time.monotonic(); node_intent['reset_yaw'] = False; write_log("YAW0 Reset")
 
         yaw_rel = wrap_pi(raw_yaw - yaw0)
         yaw_unity = wrap_pi(yaw_rel + UNITY_YAW_OFFSET_RAD)
         go1_state['yaw_unity'] = yaw_unity
 
         is_node_active = (tnow - node_intent['trigger_time']) < 0.1
-        if node_intent['yaw_align']: yaw_align_active = True; stand_only = False; last_key_time = last_move_cmd_time = grace_deadline = tnow; use_grace = True; node_intent['yaw_align'] = False
-        if node_intent['stop']: yaw_align_active = False; stand_only = True; last_key_time = last_move_cmd_time = grace_deadline = tnow; use_grace = True; node_intent['stop'] = False
+        if node_intent['yaw_align']: 
+            yaw_align_active = True; stand_only = False; last_key_time = last_move_cmd_time = grace_deadline = tnow; use_grace = True; node_intent['yaw_align'] = False
+        if node_intent['stop']: 
+            yaw_align_active = False; stand_only = True; last_key_time = last_move_cmd_time = grace_deadline = tnow; use_grace = True; node_intent['stop'] = False
         elif is_node_active:
             yaw_align_active = False; stand_only = False; last_key_time = tnow; grace_deadline = tnow + repeat_grace_sec
-            if abs(node_intent['vx']) > 0 or abs(node_intent['vy']) > 0 or abs(node_intent['wz']) > 0: last_move_cmd_time = tnow
+            if abs(node_intent['vx']) > 0 or abs(node_intent['vy']) > 0 or abs(node_intent['wz']) > 0: 
+                last_move_cmd_time = tnow
 
         got = None
         try:
@@ -121,45 +133,77 @@ def go1_v3_comm_thread():
         except: pass
         
         uvx = uvy = uwz = uestop = 0
-        if got: uvx, uvy, uwz, uestop = got; last_unity_cmd_time = tnow; dashboard_state['unity_link'] = "Active"
+        if got: 
+            uvx, uvy, uwz, uestop = got
+            last_unity_cmd_time = tnow
+            dashboard_state['unity_link'] = "Active"
+            
         unity_active = node_intent['use_unity_cmd'] and ((tnow - last_unity_cmd_time) <= unity_timeout_sec)
-        if not unity_active: dashboard_state['unity_link'] = "Waiting"
+        if not unity_active: 
+            dashboard_state['unity_link'] = "Waiting"
 
-        since_key = tnow - last_key_time; since_move = tnow - last_move_cmd_time
+        since_key = tnow - last_key_time
+        since_move = tnow - last_move_cmd_time
         active_walk = ((not stand_only) and (since_key <= hold_timeout_sec)) or ((not stand_only) and use_grace and (tnow <= grace_deadline)) or ((not stand_only) and (since_move <= min_move_sec))
 
         reset_cmd_base()
-        target_mode = 1; out_vx = out_vy = out_wz = 0.0
+        target_mode = 1; out_vx = 0.0; out_vy = 0.0; out_wz = 0.0
 
         if yaw_align_active:
             err = wrap_pi(yaw_rel - yaw_align_target_rel)
-            if abs(err) <= yaw_align_tol_rad: yaw_align_active = False; target_mode = 1
-            else: target_mode = 2; cmd.gaitType = 1 if cmd else 1; out_wz = clamp(-yaw_align_kp * err, -W_MAX, W_MAX)
+            if abs(err) <= yaw_align_tol_rad: 
+                yaw_align_active = False
+                target_mode = 1
+            else: 
+                target_mode = 2
+                if cmd: cmd.gaitType = 1
+                out_wz = clamp(-yaw_align_kp * err, -W_MAX, W_MAX)
         elif unity_active:
-            target_mode = 1 if uestop else 2; if cmd: cmd.gaitType = 1
-            out_vx = clamp(uvx, -V_MAX, V_MAX); out_vy = clamp(uvy, -S_MAX, S_MAX); out_wz = clamp(uwz, -W_MAX, W_MAX); go1_state['reason'] = "UNITY"
+            target_mode = 1 if uestop else 2
+            if cmd: cmd.gaitType = 1
+            out_vx = clamp(uvx, -V_MAX, V_MAX)
+            out_vy = clamp(uvy, -S_MAX, S_MAX)
+            out_wz = clamp(uwz, -W_MAX, W_MAX)
+            go1_state['reason'] = "UNITY"
         elif active_walk:
-            target_mode = 2; if cmd: cmd.gaitType = 1
-            out_vx = clamp(node_intent['vx'], -V_MAX, V_MAX); out_vy = clamp(node_intent['vy'], -S_MAX, S_MAX); out_wz = clamp(node_intent['wz'], -W_MAX, W_MAX); go1_state['reason'] = "NODE_WALK"
+            target_mode = 2
+            if cmd: cmd.gaitType = 1
+            out_vx = clamp(node_intent['vx'], -V_MAX, V_MAX)
+            out_vy = clamp(node_intent['vy'], -S_MAX, S_MAX)
+            out_wz = clamp(node_intent['wz'], -W_MAX, W_MAX)
+            go1_state['reason'] = "NODE_WALK"
         else:
-            if since_move <= (min_move_sec + stop_brake_sec): target_mode = 2; if cmd: cmd.gaitType = 1; go1_state['reason'] = "BRAKE"
-            else: target_mode = 1; use_grace = True; go1_state['reason'] = "STAND"
+            if since_move <= (min_move_sec + stop_brake_sec): 
+                target_mode = 2
+                if cmd: cmd.gaitType = 1
+                go1_state['reason'] = "BRAKE"
+            else: 
+                target_mode = 1
+                use_grace = True
+                go1_state['reason'] = "STAND"
 
         if cmd:
             cmd.mode = target_mode; cmd.velocity = [out_vx, out_vy]; cmd.yawSpeed = out_wz
-            udp.SetSend(cmd); udp.Send()
+            udp.SetSend(cmd)
+            udp.Send()
             
-        go1_state['vx_cmd'], go1_state['vy_cmd'], go1_state['wz_cmd'], go1_state['mode'] = out_vx, out_vy, out_wz, target_mode
+        go1_state['vx_cmd'] = out_vx
+        go1_state['vy_cmd'] = out_vy
+        go1_state['wz_cmd'] = out_wz
+        go1_state['mode'] = target_mode
 
         dts = tnow - last_dr_time; last_dr_time = tnow
         cy = math.cos(yaw_unity); sy = math.sin(yaw_unity)
-        world_x += (out_vx * cy - out_vy * sy) * dts; world_z += (out_vx * sy + out_vy * cy) * dts
+        world_x += (out_vx * cy - out_vy * sy) * dts
+        world_z += (out_vx * sy + out_vy * cy) * dts
         go1_state['world_x'] = world_x; go1_state['world_z'] = world_z
 
         estop = 1 if target_mode == 1 else 0; seq += 1
         msg_state = f"{seq} {time.time()*1000.0:.1f} {world_x:.6f} {world_z:.6f} {yaw_unity:.6f} {out_vx:.3f} {out_vy:.3f} {out_wz:.3f} {estop} {target_mode}"
         msg_cmd = f"{out_vx:.3f} {out_vy:.3f} {out_wz:.3f} {estop}"
-        try: sock_tx_state.sendto(msg_state.encode("utf-8"), (UNITY_IP, UNITY_STATE_PORT)); sock_tx_cmd.sendto(msg_cmd.encode("utf-8"), (UNITY_IP, UNITY_CMD_PORT))
+        try: 
+            sock_tx_state.sendto(msg_state.encode("utf-8"), (UNITY_IP, UNITY_STATE_PORT))
+            sock_tx_cmd.sendto(msg_cmd.encode("utf-8"), (UNITY_IP, UNITY_CMD_PORT))
         except: pass
 
 # ================= [Node System Base] =================
@@ -301,7 +345,10 @@ class GraphNode(BaseNode):
                         dpg.add_line_series([],[], label="2", tag=f"sy_{self.node_id}")
                         dpg.add_line_series([],[], label="3", tag=f"sz_{self.node_id}")
     def execute(self):
-        self.c+=1; vx=self.fetch_input_data(self.in_x); vy=self.fetch_input_data(self.in_y); vz=self.fetch_input_data(self.in_z)
+        self.c+=1
+        vx=self.fetch_input_data(self.in_x)
+        vy=self.fetch_input_data(self.in_y)
+        vz=self.fetch_input_data(self.in_z)
         if vx is not None or vy is not None or vz is not None:
             self.buf_x.append(vx or 0); self.buf_y.append(vy or 0); self.buf_z.append(vz or 0); self.t.append(self.c)
             dpg.set_value(f"sx_{self.node_id}", [list(self.t), list(self.buf_x)])
@@ -367,7 +414,7 @@ class KeyboardControlNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as wz: dpg.add_text("Target Wz"); self.outputs[wz] = "Data"; self.out_wz = wz
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("Flow Out"); self.outputs[f] = "Flow"
     def execute(self):
-        global node_intent; vx, vy, wz = 0.0, 0.0, 0.0
+        global node_intent; vx = 0.0; vy = 0.0; wz = 0.0
         if dpg.is_key_down(dpg.mvKey_W): vx = VX_CMD
         if dpg.is_key_down(dpg.mvKey_S): vx = -VX_CMD
         if dpg.is_key_down(dpg.mvKey_A): vy = VY_CMD
@@ -379,8 +426,15 @@ class KeyboardControlNode(BaseNode):
         if dpg.is_key_pressed(dpg.mvKey_R): node_intent['yaw_align'] = True
         if dpg.is_key_pressed(dpg.mvKey_Z): node_intent['reset_yaw'] = True
 
-        if vx or vy or wz: node_intent['vx'] = vx; node_intent['vy'] = vy; node_intent['wz'] = wz; node_intent['trigger_time'] = time.monotonic()
-        self.output_data[self.out_vx]=vx; self.output_data[self.out_vy]=vy; self.output_data[self.out_wz]=wz
+        if vx or vy or wz: 
+            node_intent['vx'] = vx
+            node_intent['vy'] = vy
+            node_intent['wz'] = wz
+            node_intent['trigger_time'] = time.monotonic()
+            
+        self.output_data[self.out_vx]=vx
+        self.output_data[self.out_vy]=vy
+        self.output_data[self.out_wz]=wz
         for k, v in self.outputs.items():
             if v == "Flow": return k
         return None
@@ -393,7 +447,9 @@ class RobotControlNode(BaseNode):
             for axis, label in [('vx',"Vx In"), ('vy',"Vy In"), ('wz',"Wz In")]:
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as aid:
                     dpg.add_text(label, color=(255,255,0)); self.inputs[aid]="Data"
-                    if axis=='vx':self.in_vx=aid; elif axis=='vy':self.in_vy=aid; elif axis=='wz':self.in_wz=aid
+                    if axis=='vx': self.in_vx=aid
+                    elif axis=='vy': self.in_vy=aid
+                    elif axis=='wz': self.in_wz=aid
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as fout: dpg.add_text("Flow Out"); self.outputs[fout]="Flow"
     def execute(self):
         global node_intent
