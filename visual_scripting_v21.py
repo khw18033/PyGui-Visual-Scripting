@@ -459,6 +459,16 @@ class UnityControlNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f_out: dpg.add_text("Flow Out"); self.outputs[f_out] = "Flow"
 
     def execute(self):
+        # 1. 유니티 패킷이 끊긴 지 0.5초가 넘었는지 확인 (Idle 상태 감지)
+        if time.time() - dashboard_state.get("last_pkt_time", 0) > 0.5:
+            # 유니티가 조작을 멈췄으므로 출력핀을 모두 None으로 비워서 파이썬/Direct 제어권 보장
+            self.output_data[self.out_x] = None
+            self.output_data[self.out_y] = None
+            self.output_data[self.out_z] = None
+            self.output_data[self.out_g] = None
+            return self.outputs
+
+        # 2. 유니티가 조작 중일 때만 좌표 계산 후 출력
         raw_json = self.fetch_input_data(self.data_in_id)
         if raw_json:
             try:
@@ -466,9 +476,7 @@ class UnityControlNode(BaseNode):
                 if parsed.get("type", "MOVE") == "MOVE":
                     self.output_data[self.out_x] = parsed.get('z', 0) * 1000.0
                     self.output_data[self.out_y] = -parsed.get('x', 0) * 1000.0
-                    
                     self.output_data[self.out_z] = (parsed.get('y', 0) * 1000.0) + Z_GRIPPER_OFFSET
-                    
                     self.output_data[self.out_g] = parsed.get('gripper') 
             except: pass 
         return self.outputs
