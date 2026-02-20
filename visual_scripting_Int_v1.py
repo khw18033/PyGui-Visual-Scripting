@@ -925,9 +925,9 @@ with dpg.window(tag="PrimaryWindow"):
                     dpg.add_text("Yaw: 0.000 rad", tag="go1_dash_yaw")
                 with dpg.child_window(width=250, height=140, border=True):
                     dpg.add_text("Commands", color=(255,200,0))
-                    dpg.add_text("Vx Cmd: 0.00", tag="go1_dash_vx")
-                    dpg.add_text("Vy Cmd: 0.00", tag="go1_dash_vy")
-                    dpg.add_text("Wz Cmd: 0.00", tag="go1_dash_wz")
+                    dpg.add_text("Vx Cmd: 0.00", tag="go1_dash_vx_2")
+                    dpg.add_text("Vy Cmd: 0.00", tag="go1_dash_vy_2")
+                    dpg.add_text("Wz Cmd: 0.00", tag="go1_dash_wz_2")
 
         with dpg.tab(label="📁 Files & System"):
             with dpg.group(horizontal=True):
@@ -989,9 +989,9 @@ while dpg.is_dearpygui_running():
     dpg.set_value("go1_dash_wx", f"World X: {go1_state['world_x']:.3f}")
     dpg.set_value("go1_dash_wz", f"World Z: {go1_state['world_z']:.3f}")
     dpg.set_value("go1_dash_yaw", f"Yaw: {go1_state['yaw_unity']:.3f} rad")
-    dpg.set_value("go1_dash_vx", f"Vx Cmd: {go1_state['vx_cmd']:.2f}")
-    dpg.set_value("go1_dash_vy", f"Vy Cmd: {go1_state['vy_cmd']:.2f}")
-    dpg.set_value("go1_dash_wz", f"Wz Cmd: {go1_state['wz_cmd']:.2f}")
+    dpg.set_value("go1_dash_vx_2", f"Vx Cmd: {go1_state['vx_cmd']:.2f}")
+    dpg.set_value("go1_dash_vy_2", f"Vy Cmd: {go1_state['vy_cmd']:.2f}")
+    dpg.set_value("go1_dash_wz_2", f"Wz Cmd: {go1_state['wz_cmd']:.2f}")
     
     dpg.set_value("go1_dash_cam", f"Camera: {camera_state['status']}")
     if camera_state['status'] == 'Running': dpg.configure_item("go1_dash_cam", color=(0,255,0))
