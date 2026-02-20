@@ -160,23 +160,28 @@ def go1_v4_comm_thread():
         if yaw_align_active:
             err = wrap_pi(yaw_rel - yaw_align_target_rel)
             if abs(err) <= yaw_align_tol_rad: 
-                yaw_align_active = False; target_mode = 1
+                yaw_align_active = False
+                target_mode = 1
             else: 
                 target_mode = 2
                 if cmd: 
                     cmd.gaitType = 1
                 out_wz = clamp(-yaw_align_kp * err, -W_MAX, W_MAX)
         elif unity_active:
-            target_mode = 1 if uestop else 2; if cmd: cmd.gaitType = 1
+            target_mode = 1 if uestop else 2
+            if cmd: cmd.gaitType = 1
             out_vx = clamp(uvx, -V_MAX, V_MAX); out_vy = clamp(uvy, -S_MAX, S_MAX); out_wz = clamp(uwz, -W_MAX, W_MAX)
             go1_state['reason'] = "UNITY"
         elif active_walk:
-            target_mode = 2; if cmd: cmd.gaitType = 1
+            target_mode = 2
+            if cmd: cmd.gaitType = 1
             out_vx = clamp(node_intent['vx'], -V_MAX, V_MAX); out_vy = clamp(node_intent['vy'], -S_MAX, S_MAX); out_wz = clamp(node_intent['wz'], -W_MAX, W_MAX)
             go1_state['reason'] = "NODE_WALK"
         else:
             if since_move <= (min_move_sec + stop_brake_sec): 
-                target_mode = 2; if cmd: cmd.gaitType = 1
+                target_mode = 2
+                if cmd:
+                    cmd.gaitType = 1
                 go1_state['reason'] = "BRAKE"
             else: 
                 target_mode = 1; use_grace = True
