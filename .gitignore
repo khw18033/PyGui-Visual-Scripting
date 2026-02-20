@@ -1,3 +1,4 @@
 # .gitignore 파일 내용에 추가
 Node_File/
 unitree_legged_sdk/
+Node_File_Go1/
