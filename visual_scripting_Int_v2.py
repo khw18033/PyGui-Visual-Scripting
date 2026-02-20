@@ -991,9 +991,9 @@ with dpg.window(tag="PrimaryWindow"):
                     dpg.add_text("Yaw: 0.000 rad", tag="go1_dash_yaw")
                 with dpg.child_window(width=250, height=140, border=True):
                     dpg.add_text("Commands", color=(255,200,0))
-                    dpg.add_text("Vx Cmd: 0.00", tag="go1_dash_vx")
-                    dpg.add_text("Vy Cmd: 0.00", tag="go1_dash_vy")
-                    dpg.add_text("Wz Cmd: 0.00", tag="go1_dash_wz")
+                    dpg.add_text("Vx Cmd: 0.00", tag="go1_dash_vx_2")
+                    dpg.add_text("Vy Cmd: 0.00", tag="go1_dash_vy_2")
+                    dpg.add_text("Wz Cmd: 0.00", tag="go1_dash_wz_2")
 
         with dpg.tab(label="Files & System"):
             with dpg.group(horizontal=True):
