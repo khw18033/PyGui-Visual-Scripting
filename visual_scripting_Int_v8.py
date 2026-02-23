@@ -119,6 +119,7 @@ go1_unity_data = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'estop': 0, 'active': False}
 go1_dashboard = {"status": "Idle", "hw_link": "Offline", "unity_link": "Waiting"}
 
 aruco_settings = {'enabled': False, 'marker_size': 0.03}
+calib_settings = {'enabled': True} # ★ 추가된 부분 (보정 활성화 설정)
 latest_display_frame = None
 
 # V4 File-based Camera
@@ -326,11 +327,12 @@ def go1_vision_worker_thread():
                             frame = cv2.imread(target_file)
                             
                             if frame is not None:
-                                # ★ 1단계: 모든 카메라에 동일한 K1, D1 데이터를 적용하여 화면 펴기
-                                if HAS_CALIB_FILES:
+                                # ★ 1단계: 보정 옵션이 켜져 있는지 확인
+                                is_calibrated = HAS_CALIB_FILES and calib_settings['enabled']
+                                if is_calibrated:
                                     frame = cv2.fisheye.undistortImage(frame, orig_camera_matrix, orig_dist_coeffs, Knew=orig_camera_matrix)
                                 
-                                # ★ 2단계: ArUco 마커 인식 및 축 그리기 (모든 카메라 대상)
+                                # ★ 2단계: ArUco 마커 인식 및 축 그리기
                                 if aruco_settings['enabled'] and HAS_CV2_FLASK:
                                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                                     corners, ids, rejected = aruco_detector.detectMarkers(gray)
@@ -341,32 +343,32 @@ def go1_vision_worker_thread():
                                             [msize / 2, -msize / 2, 0], [-msize / 2, -msize / 2, 0]
                                         ], dtype=np.float32)
                                         for i in range(len(ids)):
-                                            ret, rvec, tvec = cv2.solvePnP(marker_points, corners[i], orig_camera_matrix, zero_dist_coeffs)
+                                            # ★ 핵심: 화면을 폈으면 왜곡이 없는 행렬(0)을, 화면이 둥글면 원본 왜곡 행렬을 넣어서 거리를 계산합니다.
+                                            use_dist = zero_dist_coeffs if is_calibrated else orig_dist_coeffs
+                                            ret, rvec, tvec = cv2.solvePnP(marker_points, corners[i], orig_camera_matrix, use_dist)
                                             if ret:
-                                                cv2.drawFrameAxes(frame, orig_camera_matrix, zero_dist_coeffs, rvec, tvec, 0.03)
+                                                cv2.drawFrameAxes(frame, orig_camera_matrix, use_dist, rvec, tvec, 0.03)
                                                 cv2.aruco.drawDetectedMarkers(frame, corners)
                                                 
                                                 marker_id = int(ids[i][0])
                                                 tx, ty, tz = float(tvec[0][0]), float(tvec[1][0]), float(tvec[2][0])
                                                 
-                                                # Unity 전송 (나중에 구분을 위해 cam 이름도 같이 보냅니다)
                                                 data = {"id": marker_id, "x": round(tx, 4), "y": round(ty, 4), "z": round(tz, 4), "cam": camera_id}
                                                 try: sock_aruco.sendto(json.dumps(data).encode(), (GO1_UNITY_IP, 5008))
                                                 except: pass
                                                 
-                                                # ArUco 텍스트 그리기 완료
                                                 text = f"[{camera_id}] ID:{marker_id} X:{tx:.2f} Y:{ty:.2f} Z:{tz:.2f}"
                                                 cx, cy = int(corners[i][0][0][0]), int(corners[i][0][0][1])
                                                 cv2.putText(frame, text, (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                                 
-                                # ★ [추가된 부분] 최종 결과물을 세로로 반 잘라서 왼쪽만 남기기
-                                # frame.shape[:2]는 (높이, 너비)를 반환합니다.
-                                height, width = frame.shape[:2]
-                                # 너비를 2로 나눈 지점(가운데)까지만 잘라냅니다.
-                                # [:, :width//2] 의미: 모든 높이(행)에 대해, 너비(열)의 처음부터 절반까지만 선택
-                                cropped_frame = frame[:, :width//2]
+                                # ★ 3단계: 화면 자르기 (보정 옵션을 켰을 때만 오른쪽 이상한 부분을 반으로 자릅니다)
+                                if is_calibrated:
+                                    height, width = frame.shape[:2]
+                                    cropped_frame = frame[:, :width//2]
+                                else:
+                                    cropped_frame = frame
 
-                                # ★ [수정됨] 이제 원본 'frame' 대신 잘라낸 'cropped_frame'을 인코딩합니다.
+                                # 최종 인코딩 및 메모리 저장
                                 ret_enc, buffer = cv2.imencode('.jpg', cropped_frame)
                                 if ret_enc:
                                     processed_bytes = buffer.tobytes()
@@ -711,6 +713,12 @@ class MT4KeyboardNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as g: dpg.add_text("Target Grip"); self.outputs[g] = "Data"; self.out_g = g
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("Flow Out"); self.outputs[f] = "Flow"
     def execute(self):
+        # ★ [추가된 부분] 파일 이름 입력창에 커서가 깜빡일 때는 키 입력을 무시하고 흐름만 통과시킵니다.
+        if dpg.is_item_focused("file_name_input"):
+            for k, v in self.outputs.items():
+                if v == "Flow": return k
+            return None
+        
         global mt4_manual_override_until, mt4_target_goal
         if time.time() - self.last_input_time > self.cooldown:
             dx=0; dy=0; dz=0; dg=0
@@ -817,13 +825,14 @@ class TargetIpNode(BaseNode):
     
 # (기존 V4 카메라 노드 유지)
 class CameraControlNode(BaseNode):
-    def __init__(self, node_id): super().__init__(node_id, "Camera Control", "CAM_CTRL"); self.combo_action = None; self.in_ip = None; self.out_flow = None; self.chk_aruco = None; self.input_size = None
+    def __init__(self, node_id): super().__init__(node_id, "Camera Control", "CAM_CTRL"); self.combo_action = None; self.in_ip = None; self.out_flow = None; self.chk_aruco = None; self.input_size = None; self.chk_calib = None
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label="File Save Camera (Go1)"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
                 self.combo_action = dpg.add_combo(["Start Stream", "Stop Stream"], default_value="Start Stream", width=140)
                 dpg.add_spacer(height=3)
+                self.chk_calib = dpg.add_checkbox(label="Enable Calibration", default_value=True) # ★ 보정 체크박스 추가
                 self.chk_aruco = dpg.add_checkbox(label="Enable ArUco Tracking", default_value=False)
                 with dpg.group(horizontal=True):
                     dpg.add_text("Size(m):")
@@ -831,23 +840,17 @@ class CameraControlNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as ip_in: dpg.add_text("Target IP In", color=(255,150,200)); self.inputs[ip_in] = "Data"; self.in_ip = ip_in
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
     def execute(self):
-        global aruco_settings, camera_state # ★ camera_state 전역 변수 선언 추가
+        global aruco_settings, calib_settings
         aruco_settings['enabled'] = dpg.get_value(self.chk_aruco)
         aruco_settings['marker_size'] = dpg.get_value(self.input_size)
+        calib_settings['enabled'] = dpg.get_value(self.chk_calib) # ★ 상태 저장
         
         action = dpg.get_value(self.combo_action); ext_ip = self.fetch_input_data(self.in_ip); target_ip = ext_ip if ext_ip else get_local_ip()
-        
-        # ★ [핵심 패치] 큐에 명령을 넣자마자 즉시 상태를 바꿔서 무한 증식(중복 실행) 차단!
-        if action == "Start Stream" and camera_state['status'] in ['Stopped', 'Stopping...']: 
-            camera_state['status'] = 'Starting...'
-            camera_command_queue.append(('START', target_ip))
-        elif action == "Stop Stream" and camera_state['status'] in ['Running', 'Starting...']: 
-            camera_state['status'] = 'Stopping...'
-            camera_command_queue.append(('STOP', target_ip))
-            
+        if action == "Start Stream" and camera_state['status'] in ['Stopped', 'Stopping...']: camera_command_queue.append(('START', target_ip))
+        elif action == "Stop Stream" and camera_state['status'] in ['Running', 'Starting...']: camera_command_queue.append(('STOP', target_ip))
         return self.out_flow
-    def get_settings(self): return {"act": dpg.get_value(self.combo_action), "aruco": dpg.get_value(self.chk_aruco), "size": dpg.get_value(self.input_size)}
-    def load_settings(self, data): dpg.set_value(self.combo_action, data.get("act", "Start Stream")); dpg.set_value(self.chk_aruco, data.get("aruco", False)); dpg.set_value(self.input_size, data.get("size", 0.03))
+    def get_settings(self): return {"act": dpg.get_value(self.combo_action), "aruco": dpg.get_value(self.chk_aruco), "size": dpg.get_value(self.input_size), "calib": dpg.get_value(self.chk_calib)}
+    def load_settings(self, data): dpg.set_value(self.combo_action, data.get("act", "Start Stream")); dpg.set_value(self.chk_aruco, data.get("aruco", False)); dpg.set_value(self.input_size, data.get("size", 0.03)); dpg.set_value(self.chk_calib, data.get("calib", True))
 
 class MultiSenderNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "AI Server Sender", "MULTI_SENDER"); self.combo_action = None; self.field_url = None; self.out_flow = None
@@ -928,6 +931,12 @@ class Go1KeyboardNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as wz: dpg.add_text("Target Wz"); self.outputs[wz] = "Data"; self.out_wz = wz
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("Flow Out"); self.outputs[f] = "Flow"
     def execute(self):
+        # ★ [추가된 부분] 파일 이름 입력창에 커서가 깜빡일 때는 키 입력을 무시하고 흐름만 통과시킵니다.
+        if dpg.is_item_focused("file_name_input"):
+            for k, v in self.outputs.items():
+                if v == "Flow": return k
+            return None
+        
         global go1_node_intent; vx = 0.0; vy = 0.0; wz = 0.0
         
         key_mode = dpg.get_value(self.combo_keys)
