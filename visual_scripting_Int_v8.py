@@ -485,7 +485,8 @@ def global_image_cleanup_thread():
                 try:
                     files = glob.glob(os.path.join(folder, "*.jpg"))
                     if len(files) > KEEP_COUNT:
-                        files.sort() 
+                        # 이름이 아닌 '파일 생성 시간'을 기준으로 정확하게 정렬하도록 수정
+                        files.sort(key=os.path.getctime) 
                         for f in files[:len(files) - KEEP_COUNT]:
                             try: os.remove(f)
                             except OSError: pass
@@ -830,13 +831,20 @@ class CameraControlNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as ip_in: dpg.add_text("Target IP In", color=(255,150,200)); self.inputs[ip_in] = "Data"; self.in_ip = ip_in
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
     def execute(self):
-        global aruco_settings
+        global aruco_settings, camera_state # ★ camera_state 전역 변수 선언 추가
         aruco_settings['enabled'] = dpg.get_value(self.chk_aruco)
         aruco_settings['marker_size'] = dpg.get_value(self.input_size)
         
         action = dpg.get_value(self.combo_action); ext_ip = self.fetch_input_data(self.in_ip); target_ip = ext_ip if ext_ip else get_local_ip()
-        if action == "Start Stream" and camera_state['status'] in ['Stopped', 'Stopping...']: camera_command_queue.append(('START', target_ip))
-        elif action == "Stop Stream" and camera_state['status'] in ['Running', 'Starting...']: camera_command_queue.append(('STOP', target_ip))
+        
+        # ★ [핵심 패치] 큐에 명령을 넣자마자 즉시 상태를 바꿔서 무한 증식(중복 실행) 차단!
+        if action == "Start Stream" and camera_state['status'] in ['Stopped', 'Stopping...']: 
+            camera_state['status'] = 'Starting...'
+            camera_command_queue.append(('START', target_ip))
+        elif action == "Stop Stream" and camera_state['status'] in ['Running', 'Starting...']: 
+            camera_state['status'] = 'Stopping...'
+            camera_command_queue.append(('STOP', target_ip))
+            
         return self.out_flow
     def get_settings(self): return {"act": dpg.get_value(self.combo_action), "aruco": dpg.get_value(self.chk_aruco), "size": dpg.get_value(self.input_size)}
     def load_settings(self, data): dpg.set_value(self.combo_action, data.get("act", "Start Stream")); dpg.set_value(self.chk_aruco, data.get("aruco", False)); dpg.set_value(self.input_size, data.get("size", 0.03))
@@ -849,9 +857,17 @@ class MultiSenderNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): self.combo_action = dpg.add_combo(["Start Sender", "Stop Sender"], default_value="Start Sender", width=140); dpg.add_spacer(height=3); dpg.add_text("AI Server URL:"); self.field_url = dpg.add_input_text(width=160, default_value="http://210.110.250.33:5001/upload")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
     def execute(self):
+        global sender_state # ★ sender_state 전역 변수 선언 추가
         action = dpg.get_value(self.combo_action); url = dpg.get_value(self.field_url)
-        if action == "Start Sender" and sender_state['status'] == 'Stopped': sender_command_queue.append(('START', url))
-        elif action == "Stop Sender" and sender_state['status'] == 'Running': sender_command_queue.append(('STOP', url))
+        
+        # ★ [핵심 패치] 중복 실행 차단!
+        if action == "Start Sender" and sender_state['status'] == 'Stopped': 
+            sender_state['status'] = 'Starting...'
+            sender_command_queue.append(('START', url))
+        elif action == "Stop Sender" and sender_state['status'] == 'Running': 
+            sender_state['status'] = 'Stopping...'
+            sender_command_queue.append(('STOP', url))
+            
         return self.out_flow
     def get_settings(self): return {"act": dpg.get_value(self.combo_action), "url": dpg.get_value(self.field_url)}
     def load_settings(self, data): dpg.set_value(self.combo_action, data.get("act", "Start Sender")); dpg.set_value(self.field_url, data.get("url", "http://210.110.250.33:5001/upload"))
