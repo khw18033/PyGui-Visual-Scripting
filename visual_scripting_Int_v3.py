@@ -175,8 +175,13 @@ class UniversalRobotNode(BaseNode):
         self.settings_schema = self.driver.get_settings_schema()
         self.in_pins = {}; self.ui_fields = {}; self.setting_pins = {}; self.setting_fields = {}
         self.cache_ui = {k: 0.0 for k in self.schema.keys()}
-        if isinstance(self.driver, MT4RobotDriver): self.label = "MT4 Driver"
-        elif isinstance(self.driver, Go1RobotDriver): self.label = "Go1 Driver"
+        # ★ [버그 픽스] 화면 라벨뿐만 아니라, 저장용 타입(type_str)도 정확하게 덮어씌워 줍니다.
+        if isinstance(self.driver, MT4RobotDriver): 
+            self.label = "MT4 Driver"
+            self.type_str = "MT4_DRIVER"  
+        elif isinstance(self.driver, Go1RobotDriver): 
+            self.label = "Go1 Driver"
+            self.type_str = "GO1_DRIVER"
 
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label=self.label):
