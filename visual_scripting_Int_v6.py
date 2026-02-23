@@ -350,7 +350,6 @@ if HAS_CV2_FLASK:
 def start_flask_app():
     if HAS_CV2_FLASK: app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 
-# ================= [★ V5 Direct RAM Streaming Thread] =================
 # ================= [V6 Direct Video/UDP Vision Worker] =================
 def direct_vision_worker_thread():
     global latest_display_frame, direct_stream_state
@@ -363,17 +362,15 @@ def direct_vision_worker_thread():
             if cmd == 'START':
                 if cap is not None: cap.release()
                 
-                # 입력값이 숫자(포트번호)라면 GStreamer UDP 파이프라인 구성
-                if str(url).isdigit() or url in ["9400", "9401", "9410", "9411", "9420"]:
-                    port = url
-                    # 파일 저장 없이 RAM으로 직접 스트림을 가져오는 파이프라인
+                # 입력값이 포트 번호(예: 9400)라면 GStreamer 파이프라인 구성
+                if str(url).isdigit():
                     pipeline = (
-                        f"udpsrc port={port} caps=\"application/x-rtp, media=video, encoding-name=JPEG, payload=26\" ! "
+                        f"udpsrc port={url} caps=\"application/x-rtp, media=video, encoding-name=JPEG, payload=26\" ! "
                         f"rtpjpegdepay ! jpegdec ! videoconvert ! appsink drop=1"
                     )
                     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
                 else:
-                    # HTTP URL 혹은 일반 웹캠 ID 처리
+                    # 일반 HTTP URL 처리
                     cap = cv2.VideoCapture(url)
                 
                 direct_stream_state['status'] = 'Running'
@@ -388,7 +385,7 @@ def direct_vision_worker_thread():
         if direct_stream_state['status'] == 'Running' and cap is not None:
             ret, frame = cap.read()
             if ret:
-                # ★ ArUco 마커 인식 로직 통합
+                # ArUco 마커 인식 (V5의 ArUco 로직 통합)
                 if direct_aruco_settings['enabled'] and HAS_CV2_FLASK:
                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                     corners, ids, rejected = aruco_detector.detectMarkers(gray)
@@ -396,16 +393,13 @@ def direct_vision_worker_thread():
                     if ids is not None:
                         msize = direct_aruco_settings['marker_size']
                         marker_points = np.array([
-                            [-msize / 2, msize / 2, 0],
-                            [msize / 2, msize / 2, 0],
-                            [msize / 2, -msize / 2, 0],
-                            [-msize / 2, -msize / 2, 0]
+                            [-msize / 2, msize / 2, 0], [msize / 2, msize / 2, 0],
+                            [msize / 2, -msize / 2, 0], [-msize / 2, -msize / 2, 0]
                         ], dtype=np.float32)
                         
                         for i in range(len(ids)):
                             pret, rvec, tvec = cv2.solvePnP(marker_points, corners[i], camera_matrix, dist_coeffs)
                             if pret:
-                                # 화면에 축과 마커 표시 그리기
                                 cv2.drawFrameAxes(frame, camera_matrix, dist_coeffs, rvec, tvec, 0.03)
                                 cv2.aruco.drawDetectedMarkers(frame, corners)
                                 
@@ -416,12 +410,12 @@ def direct_vision_worker_thread():
                                 try: sock_aruco.sendto(json.dumps(data).encode(), (GO1_UNITY_IP, 5008))
                                 except: pass
                                 
-                                # 화면 텍스트 오버레이
+                                # UI 텍스트 오버레이
                                 text = f"ID:{marker_id} X:{tx:.2f}m Y:{ty:.2f}m Z:{tz:.2f}m"
                                 cx, cy = int(corners[i][0][0][0]), int(corners[i][0][0][1])
                                 cv2.putText(frame, text, (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                                 
-                # Flask 웹 화면용 인코딩
+                # Flask 웹 화면 갱신
                 ret_enc, buffer = cv2.imencode('.jpg', frame)
                 if ret_enc:
                     latest_display_frame = buffer.tobytes()
@@ -799,15 +793,16 @@ class DirectStreamNode(BaseNode):
                 self.combo_action = dpg.add_combo(["Start Stream", "Stop Stream"], default_value="Start Stream", width=140)
                 dpg.add_spacer(height=3)
                 dpg.add_text("Port (9400) or URL:")
-                self.field_url = dpg.add_input_text(width=180, default_value="9400") # 포트 번호 기본값
+                self.field_url = dpg.add_input_text(width=180, default_value="9400") # 기본값을 포트로 변경
                 dpg.add_spacer(height=3)
                 self.chk_aruco = dpg.add_checkbox(label="Enable ArUco Tracking", default_value=False)
                 with dpg.group(horizontal=True):
-                    dpg.add_text("Size(m):")
-                    self.input_size = dpg.add_input_float(width=80, default_value=0.03, step=0.01)
-            # 로봇 명령을 위해 Target IP 입력 핀 추가
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as ip_in: dpg.add_text("Target IP In", color=(255,150,200)); self.inputs[ip_in] = "Data"; self.in_ip = ip_in
+                    dpg.add_text("Size(m):"); self.input_size = dpg.add_input_float(width=80, default_value=0.03, step=0.01)
+            # 로봇 스트리밍 시작을 위한 Target IP 입력 핀 추가
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as ip_in: 
+                dpg.add_text("Target IP In", color=(255,150,200)); self.inputs[ip_in] = "Data"; self.in_ip = ip_in
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
+
     def execute(self):
         global direct_aruco_settings, direct_stream_state
         direct_aruco_settings['enabled'] = dpg.get_value(self.chk_aruco)
@@ -818,7 +813,7 @@ class DirectStreamNode(BaseNode):
         ext_ip = self.fetch_input_data(self.in_ip); target_ip = ext_ip if ext_ip else get_local_ip()
         
         if action == "Start Stream" and direct_stream_state['status'] == 'Stopped': 
-            # 만약 포트 번호(Go1)라면 로봇에게 영상 송출 명령(SSH) 전송
+            # 로봇 포트 번호라면 SSH로 영상 전송 명령 실행
             if url in ["9400", "9401", "9410", "9411", "9420"]:
                 nanos = ["unitree@192.168.123.13", "unitree@192.168.123.14", "unitree@192.168.123.15"]
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -828,13 +823,9 @@ class DirectStreamNode(BaseNode):
                     except: pass
             
             direct_command_queue.append(('START', url))
-            
         elif action == "Stop Stream" and direct_stream_state['status'] == 'Running': 
             direct_command_queue.append(('STOP', url))
-            
         return self.out_flow
-    def get_settings(self): return {"act": dpg.get_value(self.combo_action), "url": str(dpg.get_value(self.field_url)), "aruco": dpg.get_value(self.chk_aruco), "size": dpg.get_value(self.input_size)}
-    def load_settings(self, data): dpg.set_value(self.combo_action, data.get("act", "Start Stream")); dpg.set_value(self.field_url, data.get("url", "9400")); dpg.set_value(self.chk_aruco, data.get("aruco", False)); dpg.set_value(self.input_size, data.get("size", 0.03))
     
 # (기존 V4 카메라 노드 유지)
 class CameraControlNode(BaseNode):
