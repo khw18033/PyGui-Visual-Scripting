@@ -362,22 +362,15 @@ def direct_vision_worker_thread():
             if cmd == 'START':
                 if cap is not None: cap.release()
                 
-                if str(url).isdigit() and int(url) >= 9000:
-                    port = int(url)
-                    # 윈도우 PC IP를 자동으로 가져오거나 Target IP 노드에서 받아옴
-                    # 여기서는 릴레이 포트를 9500번대로 설정
-                    relay_port = port + 100 
-                    ext_ip = GO1_UNITY_IP # 윈도우 PC IP (Unity IP와 동일하다고 가정)
-                    
-                    # ★ [V7 핵심] tee를 사용하여 ArUco 처리(appsink)와 윈도우 중계(udpsink)를 동시 수행
+                # 입력값이 숫자(포트)라면 과거 성공했던 GStreamer 파이프라인 적용
+                if str(url).isdigit():
+                    port = url
                     pipeline = (
-                        f"udpsrc port={port} buffer-size=1000000 caps=\"application/x-rtp, media=video, encoding-name=JPEG, payload=26\" ! "
-                        f"rtpjpegdepay ! tee name=t "
-                        f"t. ! queue ! jpegdec ! videoconvert ! appsink drop=1 sync=false "
-                        f"t. ! queue ! udpsink host={ext_ip} port={relay_port} sync=false"
+                        f"udpsrc port={port} caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" ! "
+                        f"rtpjpegdepay ! jpegdec ! videoconvert ! appsink drop=1 sync=false"
                     )
                     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-                    write_log(f"Direct Cam: GStreamer relay to {ext_ip}:{relay_port}")
+                    write_log(f"Direct Cam: GStreamer Receiver started on port {port}")
                 else:
                     cap = cv2.VideoCapture(url)
                 
@@ -392,36 +385,28 @@ def direct_vision_worker_thread():
         if direct_stream_state['status'] == 'Running' and cap is not None:
             ret, frame = cap.read()
             if ret:
-                # ArUco 마커 인식 (파일 읽기 없이 RAM 프레임에서 즉시 실행)
+                # ArUco 마커 인식 (V6와 동일 로직)
                 if direct_aruco_settings['enabled'] and HAS_CV2_FLASK:
                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                     corners, ids, rejected = aruco_detector.detectMarkers(gray)
                     if ids is not None:
                         msize = direct_aruco_settings['marker_size']
-                        marker_points = np.array([
-                            [-msize / 2, msize / 2, 0], [msize / 2, msize / 2, 0],
-                            [msize / 2, -msize / 2, 0], [-msize / 2, -msize / 2, 0]
-                        ], dtype=np.float32)
+                        marker_points = np.array([[-msize/2, msize/2, 0], [msize/2, msize/2, 0], [msize/2, -msize/2, 0], [-msize/2, -msize/2, 0]], dtype=np.float32)
                         for i in range(len(ids)):
                             pret, rvec, tvec = cv2.solvePnP(marker_points, corners[i], camera_matrix, dist_coeffs)
                             if pret:
                                 cv2.drawFrameAxes(frame, camera_matrix, dist_coeffs, rvec, tvec, 0.03)
                                 cv2.aruco.drawDetectedMarkers(frame, corners)
-                                marker_id = int(ids[i][0])
-                                tx, ty, tz = float(tvec[0][0]), float(tvec[1][0]), float(tvec[2][0])
                                 # Unity 전송 (Port 5008)
-                                data = {"id": marker_id, "x": round(tx, 4), "y": round(ty, 4), "z": round(tz, 4)}
+                                tx, ty, tz = float(tvec[0][0]), float(tvec[1][0]), float(tvec[2][0])
+                                data = {"id": int(ids[i][0]), "x": round(tx, 4), "y": round(ty, 4), "z": round(tz, 4)}
                                 try: sock_aruco.sendto(json.dumps(data).encode(), (GO1_UNITY_IP, 5008))
                                 except: pass
-                                text = f"ID:{marker_id} X:{tx:.2f}m Y:{ty:.2f}m Z:{tz:.2f}m"
-                                cx, cy = int(corners[i][0][0][0]), int(corners[i][0][0][1])
-                                cv2.putText(frame, text, (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                 
-                # Flask 웹 스트리밍 갱신
+                # 웹 화면 갱신
                 ret_enc, buffer = cv2.imencode('.jpg', frame)
                 if ret_enc: latest_display_frame = buffer.tobytes()
-            else:
-                time.sleep(0.01)
+            else: time.sleep(0.01)
         time.sleep(0.01)
 
 # ================= [Go1 Background Threads] =================
@@ -810,16 +795,16 @@ class DirectStreamNode(BaseNode):
         direct_aruco_settings['marker_size'] = dpg.get_value(self.input_size)
         
         action = dpg.get_value(self.combo_action)
-        url = str(dpg.get_value(self.field_url)) # 문자열 변환
+        url = str(dpg.get_value(self.field_url))
         ext_ip = self.fetch_input_data(self.in_ip); target_ip = ext_ip if ext_ip else get_local_ip()
         
         if action == "Start Stream" and direct_stream_state['status'] == 'Stopped': 
-            # Go1 포트 번호(9400~9420) 입력 시 로봇에게 SSH 명령 전송
+            # 로봇 포트 번호 입력 시 과거 성공했던 SSH 명령 실행
             if url in ["9400", "9401", "9410", "9411", "9420"]:
                 nanos = ["unitree@192.168.123.13", "unitree@192.168.123.14", "unitree@192.168.123.15"]
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 for nano in nanos:
-                    # SSH를 통해 로봇 내부 카메라 송출 스크립트 실행
+                    # 비밀번호 자동 입력 옵션을 포함한 고속 송출 명령
                     remote_cmd = f"echo 123 | sudo -S bash -c 'fuser -k /dev/video0 /dev/video1 2>/dev/null; cd /home/unitree; ./kill_camera.sh || true; nohup ./go1_send_both.sh {target_ip} > send_both_{ts}.log 2>&1 &'"
                     try: subprocess.Popen(["ssh", "-o", "StrictHostKeyChecking=accept-new", nano, remote_cmd])
                     except: pass
