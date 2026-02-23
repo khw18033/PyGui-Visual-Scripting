@@ -1194,6 +1194,29 @@ def delete_selection(sender, app_data):
 # ================= [Main Setup & Cleanup] =================
 import atexit
 
+# ★ [추가된 부분] 프로그램 시작 시 자동 네트워크 길뚫기 (라우팅)
+def setup_go1_routing():
+    try:
+        # 현재 우분투의 라우팅 테이블을 읽어옵니다.
+        routes = subprocess.check_output(['ip', 'route']).decode()
+        
+        # 길이 안 뚫려 있다면 자동으로 뚫어줍니다.
+        if "192.168.123.0/24 via 192.168.50.159" not in routes:
+            print("\n" + "="*60)
+            print("[System] Go1 카메라망(123.x) 접속을 위한 자동 길뚫기를 시작합니다.")
+            print("[System] 🚨 아래에 우분투 노트북의 '로그인 비밀번호'를 입력하고 엔터를 치세요!")
+            print("="*60 + "\n")
+            
+            # sudo 권한으로 명령어 실행 (터미널에서 비밀번호를 물어봄)
+            subprocess.call(['sudo', 'ip', 'route', 'add', '192.168.123.0/24', 'via', '192.168.50.159'])
+            write_log("System: Go1 Network Routing Configured.")
+        else:
+            write_log("System: Go1 Network Routing Already Exists.")
+    except Exception as e:
+        write_log(f"System: Routing setup error: {e}")
+
+setup_go1_routing() # 스크립트 실행 시 즉시 호출
+
 def force_cleanup_cameras():
     write_log("System: Cleaning up ghost camera processes...")
     subprocess.call("pkill -f 'gst-launch-1.0'", shell=True)
