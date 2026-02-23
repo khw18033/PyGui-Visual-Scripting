@@ -404,9 +404,20 @@ def go1_v4_comm_thread():
             udp.Recv()
             udp.GetRecv(state)
             raw_yaw = float(state.imu.rpy[2])
-            # ★ [v3 추가] SDK 통신 중 배터리(BMS SoC) 값 추출
-            try: go1_state['battery'] = int(state.bms.soc)
-            except: pass
+            # ★ [수정됨] SDK 통신 중 배터리(BMS SoC) 값 추출 (대소문자 및 예외 처리 강화)
+            try:
+                # SDK 버전에 따라 SOC가 대문자일 수도, 소문자일 수도 있음
+                if hasattr(state.bms, 'SOC'):
+                    go1_state['battery'] = int(state.bms.SOC)
+                elif hasattr(state.bms, 'soc'):
+                    go1_state['battery'] = int(state.bms.soc)
+                
+                # 특정 펌웨어에서는 HighLevel 통신 시 BMS 데이터를 0으로 비워서 보내는 경우가 있음
+                if go1_state['battery'] == 0:
+                    go1_state['battery'] = -1 
+            except Exception as e:
+                # 에러가 발생하면 무시하지 않고 터미널에 출력하여 원인 파악
+                print(f"[Go1 Battery Error] {e}")
         
         if not yaw0_initialized: yaw0 = raw_yaw; yaw0_initialized = True; last_dr_time = time.monotonic()
         if go1_node_intent['reset_yaw']: yaw0 = raw_yaw; last_dr_time = time.monotonic(); go1_node_intent['reset_yaw'] = False; write_log("YAW0 Reset")
