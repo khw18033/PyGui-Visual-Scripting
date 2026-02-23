@@ -398,31 +398,83 @@ def start_flask_app():
 def camera_worker_thread():
     global camera_state
     nanos = ["unitree@192.168.123.13", "unitree@192.168.123.14", "unitree@192.168.123.15"]
+    
     while True:
         if camera_command_queue:
             cmd, pc_ip = camera_command_queue.popleft()
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
             if cmd == 'START':
-                camera_state['status'] = 'Starting...'; write_log(f"Cam: Start Stream to {pc_ip}")
+                camera_state['status'] = 'Starting...'
+                write_log(f"[Cam START] Target PC IP: {pc_ip}")
+                
+                # 1단계: 로봇 내부(나노)로 영상 송출 명령 전송
+                write_log("[Cam START] Step 1: Sending SSH commands to Nanos...")
                 for nano in nanos:
                     remote_cmd = f"echo 123 | sudo -S bash -c 'fuser -k /dev/video0 /dev/video1 2>/dev/null; cd /home/unitree; ./kill_camera.sh || true; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 &'"
-                    try: subprocess.Popen(["ssh", "-o", "StrictHostKeyChecking=accept-new", nano, remote_cmd])
-                    except Exception as e: write_log(f"SSH Error ({nano}): {e}")
-                subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True); time.sleep(0.5)
-                recv_configs = [("9400", "/dev/shm/go1_front", "front"), ("9401", "/dev/shm/go1_underfront", "underfront"), ("9410", "/dev/shm/go1_nano14_left", "left"), ("9411", "/dev/shm/go1_nano14_right", "right"), ("9420", "/dev/shm/go1_nano15_bottom", "bottom")]
+                    try: 
+                        subprocess.Popen(["ssh", "-o", "StrictHostKeyChecking=accept-new", nano, remote_cmd])
+                        write_log(f"[Cam START] SSH command sent successfully to {nano}")
+                    except Exception as e: 
+                        write_log(f"[Cam START ERROR] SSH failed for {nano}: {e}")
+                
+                # 2단계: 로컬(노트북)에 남아있던 기존 GStreamer 찌꺼기 프로세스 정리
+                write_log("[Cam START] Step 2: Cleaning up existing local GStreamer processes...")
+                try:
+                    subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
+                except Exception as e:
+                    write_log(f"[Cam START WARN] Process cleanup issue: {e}")
+                time.sleep(0.5)
+                
+                # 3단계: 5개의 각 포트별로 GStreamer 수신 파이프라인 생성
+                write_log("[Cam START] Step 3: Setting up local GStreamer receivers...")
+                recv_configs = [
+                    ("9400", "/dev/shm/go1_front", "front"), 
+                    ("9401", "/dev/shm/go1_underfront", "underfront"), 
+                    ("9410", "/dev/shm/go1_nano14_left", "left"), 
+                    ("9411", "/dev/shm/go1_nano14_right", "right"), 
+                    ("9420", "/dev/shm/go1_nano15_bottom", "bottom")
+                ]
+                
                 for port, outdir, prefix in recv_configs:
-                    os.makedirs(outdir, exist_ok=True)
-                    gst_cmd = f"gst-launch-1.0 -q udpsrc port={port} caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" ! rtpjpegdepay ! multifilesink location=\"{outdir}/{prefix}_%06d.jpg\" sync=false"
-                    subprocess.Popen(gst_cmd, shell=True)
-                time.sleep(2); camera_state['status'] = 'Running'
+                    try:
+                        os.makedirs(outdir, exist_ok=True)
+                        gst_cmd = f"gst-launch-1.0 -q udpsrc port={port} caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" ! rtpjpegdepay ! multifilesink location=\"{outdir}/{prefix}_%06d.jpg\" sync=false"
+                        subprocess.Popen(gst_cmd, shell=True)
+                        write_log(f"[Cam START] Receiver listening on port {port} -> {outdir}")
+                    except Exception as e:
+                        write_log(f"[Cam START ERROR] Failed to start receiver on port {port}: {e}")
+                
+                time.sleep(2)
+                camera_state['status'] = 'Running'
+                write_log("[Cam START] All camera streams are now Running.")
+                
             elif cmd == 'STOP':
-                camera_state['status'] = 'Stopping...'; write_log("Cam: Stopping stream...")
+                camera_state['status'] = 'Stopping...'
+                write_log("[Cam STOP] Initiating stream shutdown...")
+                
+                # 1단계: 로봇 내부(나노)의 송출 스크립트 강제 종료
+                write_log("[Cam STOP] Step 1: Sending kill commands to Nanos...")
                 for nano in nanos:
                     script = f"echo 123 | sudo -S bash -c 'pkill -f go1_send_cam || true; cd /home/unitree && ./kill_camera.sh || true'"
-                    try: subprocess.Popen(["ssh", "-o", "StrictHostKeyChecking=accept-new", nano, script])
-                    except: pass
-                subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True); time.sleep(1)
-                camera_state['status'] = 'Stopped'; write_log("Cam: Stream Stopped")
+                    try: 
+                        subprocess.Popen(["ssh", "-o", "StrictHostKeyChecking=accept-new", nano, script])
+                        write_log(f"[Cam STOP] Kill command sent to {nano}")
+                    except Exception as e: 
+                        # 기존에는 pass로 덮어뒀던 에러를 표출하도록 수정
+                        write_log(f"[Cam STOP ERROR] Failed to send kill command to {nano}: {e}")
+                
+                # 2단계: 로컬(노트북)의 수신 프로세스 종료
+                write_log("[Cam STOP] Step 2: Terminating local GStreamer receivers...")
+                try:
+                    subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
+                except Exception as e:
+                    write_log(f"[Cam STOP WARN] Local termination issue: {e}")
+                    
+                time.sleep(1)
+                camera_state['status'] = 'Stopped'
+                write_log("[Cam STOP] Stream completely stopped.")
+                
         time.sleep(0.1)
 
 def global_image_cleanup_thread():
