@@ -412,7 +412,7 @@ def camera_worker_thread():
             if cmd == 'START':
                 camera_state['status'] = 'Starting...'; write_log(f"Cam: Start Stream to {pc_ip}")
                 for nano in nanos:
-                    remote_cmd = f"sudo fuser -k /dev/video0 /dev/video1 2>/dev/null; cd /home/unitree; ./kill_camera.sh || true; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 & echo $! > send_both_{ts}.pid"
+                    remote_cmd = f"echo 123 | sudo fuser -k /dev/video0 /dev/video1 2>/dev/null; cd /home/unitree; ./kill_camera.sh || true; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 & echo $! > send_both_{ts}.pid"
                     try: subprocess.Popen(["ssh", "-o", "StrictHostKeyChecking=accept-new", "-tt", nano, f"bash -lc '{remote_cmd}'"])
                     except Exception as e: write_log(f"SSH Error ({nano}): {e}")
                 subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True); time.sleep(0.5)
