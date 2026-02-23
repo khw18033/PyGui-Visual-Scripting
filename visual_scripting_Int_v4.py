@@ -403,6 +403,7 @@ def start_flask_app():
 
 # ================= [Go1 Background Threads] =================
 # ================= [Go1 Background Threads] =================
+# ================= [Go1 Background Threads] =================
 def camera_worker_thread():
     global camera_state
     nanos = ["unitree@192.168.123.13", "unitree@192.168.123.14", "unitree@192.168.123.15"]
@@ -413,11 +414,10 @@ def camera_worker_thread():
             if cmd == 'START':
                 camera_state['status'] = 'Starting...'; write_log(f"Cam: Start Stream to {pc_ip}")
                 for nano in nanos:
-                    # ★ [수정 1] echo 123 | sudo -S 적용 및 백그라운드(&) 강제화
-                    remote_cmd = f"echo 123 | sudo -S fuser -k /dev/video0 /dev/video1 2>/dev/null; cd /home/unitree; ./kill_camera.sh || true; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 &"
+                    # ★ [수정됨] 전체 스크립트를 bash -c '...' 로 묶어서 한 번의 sudo로 완벽하게 뚫어냅니다.
+                    remote_cmd = f"echo 123 | sudo -S bash -c 'fuser -k /dev/video0 /dev/video1 2>/dev/null; cd /home/unitree; ./kill_camera.sh || true; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 &'"
                     try: 
-                        # ★ [수정 2] "-tt" 옵션 삭제! (가상 터미널 끄기)
-                        subprocess.Popen(["ssh", "-o", "StrictHostKeyChecking=accept-new", nano, f"bash -lc '{remote_cmd}'"])
+                        subprocess.Popen(["ssh", "-o", "StrictHostKeyChecking=accept-new", nano, remote_cmd])
                     except Exception as e: 
                         write_log(f"SSH Error ({nano}): {e}")
                 subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True); time.sleep(0.5)
@@ -430,11 +430,10 @@ def camera_worker_thread():
             elif cmd == 'STOP':
                 camera_state['status'] = 'Stopping...'; write_log("Cam: Stopping stream...")
                 for nano in nanos:
-                    # ★ [수정 3] STOP 명령에도 적용
-                    script = "echo 123 | sudo -S pkill -f go1_send_cam || true; cd /home/unitree && ./kill_camera.sh || true"
+                    # ★ [수정됨] STOP 명령도 동일하게 처리
+                    script = f"echo 123 | sudo -S bash -c 'pkill -f go1_send_cam || true; cd /home/unitree && ./kill_camera.sh || true'"
                     try: 
-                        # ★ [수정 4] "-tt" 옵션 삭제!
-                        subprocess.Popen(["ssh", "-o", "StrictHostKeyChecking=accept-new", nano, f"bash -lc '{script}'"])
+                        subprocess.Popen(["ssh", "-o", "StrictHostKeyChecking=accept-new", nano, script])
                     except: pass
                 subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True); time.sleep(1)
                 camera_state['status'] = 'Stopped'; write_log("Cam: Stream Stopped")
