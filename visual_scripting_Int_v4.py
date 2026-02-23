@@ -439,18 +439,22 @@ def camera_worker_thread():
                 camera_state['status'] = 'Stopped'; write_log("Cam: Stream Stopped")
         time.sleep(0.1)
 
-def cleanup_worker(config):
-    global multi_sender_active
-    folder = config["folder"]
-    while multi_sender_active:
-        try:
-            files = glob.glob(os.path.join(folder, "*.jpg")); files.sort(key=os.path.getmtime)
-            if len(files) > KEEP_COUNT:
-                for f in files[:len(files) - KEEP_COUNT]:
-                    try: os.remove(f)
-                    except OSError: pass
-        except Exception: pass
-        time.sleep(1)
+def global_image_cleanup_thread():
+    while True:
+        for config in CAMERA_CONFIG:
+            folder = config["folder"]
+            if os.path.exists(folder):
+                try:
+                    # 폴더 내의 모든 jpg 파일을 찾아 이름순(번호순)으로 정렬
+                    files = glob.glob(os.path.join(folder, "*.jpg"))
+                    if len(files) > KEEP_COUNT:
+                        files.sort() 
+                        # 최신 300장(KEEP_COUNT)을 제외한 나머지 오래된 파일들 삭제
+                        for f in files[:len(files) - KEEP_COUNT]:
+                            try: os.remove(f)
+                            except OSError: pass
+                except Exception: pass
+        time.sleep(2)  # 2초마다 주기적으로 모든 폴더 청소
 
 async def send_image_async(session, filepath, camera_id, server_url):
     try:
@@ -490,11 +494,10 @@ def sender_manager_thread():
         if sender_command_queue:
             cmd, url = sender_command_queue.popleft()
             if cmd == 'START' and not multi_sender_active:
-                multi_sender_active = True; sender_state['status'] = 'Running'; write_log(f"Sender: Connect to {url}")
-                for config in CAMERA_CONFIG:
-                    c_thread = threading.Thread(target=cleanup_worker, args=(config,)); c_thread.daemon = True; c_thread.start()
-                    s_thread = threading.Thread(target=start_async_loop, args=(config, url)); s_thread.daemon = True; s_thread.start()
-                    sender_threads.extend([c_thread, s_thread])
+                    multi_sender_active = True; sender_state['status'] = 'Running'; write_log(f"Sender: Connect to {url}")
+                    for config in CAMERA_CONFIG:
+                        s_thread = threading.Thread(target=start_async_loop, args=(config, url)); s_thread.daemon = True; s_thread.start()
+                        sender_threads.extend([s_thread])
             elif cmd == 'STOP' and multi_sender_active:
                 multi_sender_active = False; sender_state['status'] = 'Stopped'; write_log("Sender: Disconnected"); sender_threads.clear()
         time.sleep(0.1)
@@ -1118,6 +1121,7 @@ threading.Thread(target=go1_v4_comm_thread, daemon=True).start()
 threading.Thread(target=camera_worker_thread, daemon=True).start()
 threading.Thread(target=sender_manager_thread, daemon=True).start()
 threading.Thread(target=go1_vision_worker_thread, daemon=True).start()
+threading.Thread(target=global_image_cleanup_thread, daemon=True).start() # ★ 추가된 전역 청소부
 threading.Thread(target=start_flask_app, daemon=True).start()
 threading.Thread(target=lambda: (time.sleep(1), update_file_list()), daemon=True).start()
 
