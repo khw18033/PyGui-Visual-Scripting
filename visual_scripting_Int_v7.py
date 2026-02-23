@@ -983,7 +983,29 @@ class NodeFactory:
         if node: node.build_ui(); node_registry[node_id] = node; return node
         return None
 
-def toggle_exec(s, a): global is_running; is_running = not is_running; dpg.set_item_label("btn_run", "STOP" if is_running else "RUN SCRIPT")
+def toggle_exec(s, a): 
+    global is_running
+    is_running = not is_running
+    dpg.set_item_label("btn_run", "STOP" if is_running else "RUN SCRIPT")
+    
+    # ★ [추가된 로직] 스크립트 정지 시 백그라운드 스레드들도 강제 종료
+    if not is_running:
+        # 1. 카메라 강제 종료
+        if camera_state['status'] in ['Running', 'Starting...']:
+            camera_command_queue.append(('STOP', ''))
+            
+        # 2. AI 센더 강제 종료
+        if sender_state['status'] in ['Running']:
+            sender_command_queue.append(('STOP', ''))
+            
+        # 3. (안전장치) 로봇의 움직임도 즉시 정지
+        global go1_node_intent
+        go1_node_intent['stop'] = True
+        go1_node_intent['vx'] = 0.0
+        go1_node_intent['vy'] = 0.0
+        go1_node_intent['wz'] = 0.0
+        write_log("System: Script Stopped. Halting all background tasks.")
+        
 def link_cb(s, a): src, dst = a[0], a[1] if len(a)==2 else a[1]; lid = dpg.add_node_link(src, dst, parent=s); link_registry[lid] = {'source': src, 'target': dst}
 def del_link_cb(s, a): dpg.delete_item(a); link_registry.pop(a, None)
 def add_node_cb(s, a, u): NodeFactory.create_node(u)
