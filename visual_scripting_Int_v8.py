@@ -17,6 +17,8 @@ from collections import deque
 from abc import ABC, abstractmethod
 from datetime import datetime
 
+latest_processed_frames = {} # ★ 각 카메라의 완성된 이미지를 메모리에 임시 보관할 딕셔너리
+
 # ================= [OpenCV & Flask Import (V4/V5 ArUco)] =================
 try:
     import cv2
@@ -356,13 +358,17 @@ def go1_vision_worker_thread():
                                                 cx, cy = int(corners[i][0][0][0]), int(corners[i][0][0][1])
                                                 cv2.putText(frame, text, (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                                 
-                                # ★ 3단계: 화면 펴짐 + 축 그려짐이 완료된 프레임을 원본에 덮어쓰기
-                                cv2.imwrite(target_file, frame)
-                                                
-                                # ★ 4단계: Flask 웹 브라우저에는 '정면 카메라' 화면만 대표로 띄워줌
-                                if camera_id == 'go1_front':
-                                    ret_enc, buffer = cv2.imencode('.jpg', frame)
-                                    if ret_enc: latest_display_frame = buffer.tobytes()
+                                # ★ [수정됨] cv2.imwrite(target_file, frame)는 지우세요! (디스크 충돌 원인)
+                                # 대신 이미지를 메모리(RAM)에 저장해서 Sender가 바로 가져가게 만듭니다.
+                                ret_enc, buffer = cv2.imencode('.jpg', frame)
+                                if ret_enc:
+                                    processed_bytes = buffer.tobytes()
+                                    global latest_processed_frames
+                                    latest_processed_frames[camera_id] = processed_bytes
+                                    
+                                    # Flask 웹 브라우저에는 '정면 카메라' 화면 띄우기
+                                    if camera_id == 'go1_front':
+                                        latest_display_frame = processed_bytes
                 except Exception as e: pass
         time.sleep(0.01)
 
@@ -429,10 +435,19 @@ def global_image_cleanup_thread():
 
 async def send_image_async(session, filepath, camera_id, server_url):
     try:
-        if not os.path.exists(filepath): return
-        with open(filepath, 'rb') as f: file_data = f.read()
+        global latest_processed_frames
+        # ★ 폴더 뒤지지 않고, 비전 스레드가 완성해둔 메모리 속 이미지를 즉시 가져옴!
+        file_data = latest_processed_frames.get(camera_id)
+        
+        # 만약 아직 비전 처리가 한 번도 안 끝난 초기 상태라면 기존 방식대로 폴더에서 원본 읽기
+        if file_data is None:
+            if not os.path.exists(filepath): return
+            with open(filepath, 'rb') as f: file_data = f.read()
+
         form = aiohttp.FormData()
-        form.add_field('camera_id', camera_id); form.add_field('file', file_data, filename=os.path.basename(filepath), content_type='image/jpeg')
+        form.add_field('camera_id', camera_id)
+        # 서버에서 받을 때 헷갈리지 않게 파일명 고정
+        form.add_field('file', file_data, filename=f"{camera_id}_calib.jpg", content_type='image/jpeg')
         async with session.post(server_url, data=form, timeout=2.0) as response: pass
     except: pass
 
