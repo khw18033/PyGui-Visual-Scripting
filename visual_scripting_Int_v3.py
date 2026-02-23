@@ -1068,32 +1068,45 @@ with dpg.window(tag="PrimaryWindow"):
                     dpg.add_text(f"My IP: {get_local_ip()} | SSID: {get_wifi_ssid()}", color=(180,180,180))
 
     dpg.add_separator()
-    with dpg.group(horizontal=True):
-        dpg.add_button(label="START", callback=add_node_cb, user_data="START")
-        dpg.add_button(label="LOG", callback=add_node_cb, user_data="LOGGER")
-        dpg.add_button(label="IF", callback=add_node_cb, user_data="LOGIC_IF")
-        dpg.add_button(label="LOOP", callback=add_node_cb, user_data="LOGIC_LOOP")
-        dpg.add_spacer(width=20)
-        
-        dpg.add_text("MT4 Tools:", color=(255,200,0))
-        dpg.add_button(label="DRIVER(MT4)", callback=add_node_cb, user_data="MT4_DRIVER")
-        dpg.add_button(label="ACTION(MT4)", callback=add_node_cb, user_data="MT4_ACTION")
-        dpg.add_button(label="KEY(MT4)", callback=add_node_cb, user_data="MT4_KEYBOARD")
-        dpg.add_button(label="UNITY(MT4)", callback=add_node_cb, user_data="MT4_UNITY")
-        dpg.add_button(label="UDP(MT4)", callback=add_node_cb, user_data="UDP_RECV")
-        dpg.add_spacer(width=20)
-        
-        dpg.add_text("Go1 Tools:", color=(0,255,255))
-        dpg.add_button(label="DRIVER(Go1)", callback=add_node_cb, user_data="GO1_DRIVER")
-        dpg.add_button(label="ACTION(Go1)", callback=add_node_cb, user_data="GO1_ACTION")
-        dpg.add_button(label="KEY(Go1)", callback=add_node_cb, user_data="GO1_KEYBOARD")
-        dpg.add_button(label="UNITY(Go1)", callback=add_node_cb, user_data="GO1_UNITY")
-        dpg.add_button(label="CAM_CTRL", callback=add_node_cb, user_data="CAM_CTRL")
-        dpg.add_button(label="AI_SENDER", callback=add_node_cb, user_data="MULTI_SENDER")
+    
+    # ★ [수정됨] 노드 생성 버튼들을 2줄로 깔끔하게 정리하고 누락된 노드(Target IP 등) 모두 추가
+    with dpg.group():
+        # 첫 번째 줄: 공통 도구 + MT4 도구 + 실행 버튼
+        with dpg.group(horizontal=True):
+            dpg.add_text("Common:", color=(200,200,200))
+            dpg.add_button(label="START", callback=add_node_cb, user_data="START")
+            dpg.add_button(label="IF", callback=add_node_cb, user_data="LOGIC_IF")
+            dpg.add_button(label="LOOP", callback=add_node_cb, user_data="LOGIC_LOOP")
+            dpg.add_button(label="CHK KEY", callback=add_node_cb, user_data="COND_KEY")
+            dpg.add_button(label="CONST", callback=add_node_cb, user_data="CONSTANT")
+            dpg.add_button(label="PRINT", callback=add_node_cb, user_data="PRINT")
+            dpg.add_button(label="LOG", callback=add_node_cb, user_data="LOGGER")
+            
+            dpg.add_spacer(width=30)
+            
+            dpg.add_text("MT4 Tools:", color=(255,200,0))
+            dpg.add_button(label="DRIVER", callback=add_node_cb, user_data="MT4_DRIVER")
+            dpg.add_button(label="ACTION", callback=add_node_cb, user_data="MT4_ACTION")
+            dpg.add_button(label="KEY", callback=add_node_cb, user_data="MT4_KEYBOARD")
+            dpg.add_button(label="UNITY", callback=add_node_cb, user_data="MT4_UNITY")
+            dpg.add_button(label="UDP", callback=add_node_cb, user_data="UDP_RECV")
+            
+            dpg.add_spacer(width=50)
+            dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
 
-        dpg.add_spacer(width=50)
-        dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
+        # 두 번째 줄: Go1 전용 도구
+        with dpg.group(horizontal=True):
+            dpg.add_text("Go1 Tools:", color=(0,255,255))
+            dpg.add_button(label="DRIVER", callback=add_node_cb, user_data="GO1_DRIVER")
+            dpg.add_button(label="ACTION", callback=add_node_cb, user_data="GO1_ACTION")
+            dpg.add_button(label="KEY", callback=add_node_cb, user_data="GO1_KEYBOARD")
+            dpg.add_button(label="UNITY", callback=add_node_cb, user_data="GO1_UNITY")
+            dpg.add_button(label="CAM_CTRL", callback=add_node_cb, user_data="CAM_CTRL")
+            dpg.add_button(label="TARGET_IP", callback=add_node_cb, user_data="TARGET_IP") # <- 부활!
+            dpg.add_button(label="AI_SENDER", callback=add_node_cb, user_data="MULTI_SENDER")
+            dpg.add_button(label="GO1_STATE", callback=add_node_cb, user_data="GET_GO1_STATE") # <- 부활!
 
+    # 노드 에디터 영역
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
 dpg.create_viewport(title='PyGui V3 (E-STOP & Advanced Setup)', width=1280, height=800, vsync=True)
