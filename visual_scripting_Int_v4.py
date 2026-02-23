@@ -1115,6 +1115,28 @@ def delete_selection(sender, app_data):
         if dpg.does_item_exist(nid): dpg.delete_item(nid)
 
 # ================= [Main Setup] =================
+
+import atexit
+
+# ★ [추가] 좀비 프로세스 및 잔여 파일 완벽 청소 함수
+def force_cleanup_cameras():
+    write_log("System: Cleaning up ghost camera processes...")
+    # 우분투 백그라운드에 숨어있는 수신 프로그램 완벽 사살
+    subprocess.call("pkill -f 'gst-launch-1.0'", shell=True)
+    time.sleep(0.5)
+    # 메모리에 남아있는 이전 사진 쓰레기들 싹 비우기
+    for config in CAMERA_CONFIG:
+        folder = config["folder"]
+        if os.path.exists(folder):
+            try:
+                for f in glob.glob(os.path.join(folder, "*.jpg")):
+                    os.remove(f)
+            except: pass
+
+# 프로그램 켜질 때 1번, 꺼질 때(X버튼 등) 1번 무조건 실행되도록 등록
+force_cleanup_cameras()
+atexit.register(force_cleanup_cameras)
+
 init_mt4_serial()
 threading.Thread(target=auto_reconnect_mt4_thread, daemon=True).start()
 threading.Thread(target=go1_v4_comm_thread, daemon=True).start()
