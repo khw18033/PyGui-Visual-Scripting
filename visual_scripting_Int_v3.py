@@ -11,13 +11,29 @@ import glob
 import asyncio
 import aiohttp
 import serial 
+import platform # ★ [추가] 운영체제 아키텍처 확인용
 import dearpygui.dearpygui as dpg
 from collections import deque
 from abc import ABC, abstractmethod
 from datetime import datetime
 
 # ================= [Unitree SDK Import (Go1)] =================
-sys.path.append('/home/physical/PyGui-Visual-Scripting/unitree_legged_sdk/lib/python/arm64')
+# 1. 현재 파이썬 파일이 있는 폴더 위치를 동적으로 알아냄
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+# 2. CPU 아키텍처에 따라 불러올 폴더 이름 결정
+arch = platform.machine().lower()
+if arch in ['aarch64', 'arm64']:
+    sdk_arch = 'arm64'  # 라즈베리파이 5
+elif arch in ['x86_64', 'amd64']:
+    sdk_arch = 'amd64'  # 우분투 노트북 (Intel/AMD)
+else:
+    sdk_arch = 'amd64'  # 안전을 위한 기본값
+
+# 3. 경로를 합쳐서 파이썬에 추가
+sdk_path = os.path.join(current_dir, 'unitree_legged_sdk', 'lib', 'python', sdk_arch)
+sys.path.append(sdk_path)
+
 try:
     import robot_interface as sdk
     HAS_UNITREE_SDK = True
