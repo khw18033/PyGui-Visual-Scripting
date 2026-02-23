@@ -117,11 +117,6 @@ CAMERA_CONFIG = [
     {"folder": "/dev/shm/go1_nano15_bottom", "id": "go1_bottom"}
 ]
 
-# ★ [V5 추가] Direct Stream State
-direct_stream_state = {'status': 'Stopped'}
-direct_command_queue = deque()
-direct_aruco_settings = {'enabled': False, 'marker_size': 0.03}
-
 def clamp(x, lo, hi): return lo if x < lo else hi if x > hi else x
 def wrap_pi(a):
     while a > math.pi: a -= 2.0 * math.pi
@@ -358,65 +353,6 @@ if HAS_CV2_FLASK:
 
 def start_flask_app():
     if HAS_CV2_FLASK: app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
-
-# ================= [V6 Direct Video/UDP Vision Worker - 최적화 버전] =================
-def direct_vision_worker_thread():
-    global latest_display_frame, direct_stream_state
-    sock_aruco = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    cap = None
-    
-    while True:
-        if direct_command_queue:
-            cmd, url = direct_command_queue.popleft()
-            if cmd == 'START':
-                if cap is not None: cap.release()
-                
-                # 입력값이 숫자(포트)라면 과거 성공했던 GStreamer 파이프라인 적용
-                if str(url).isdigit():
-                    port = url
-                    pipeline = (
-                        f"udpsrc port={port} caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" ! "
-                        f"rtpjpegdepay ! jpegdec ! videoconvert ! appsink drop=1 sync=false"
-                    )
-                    cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-                    write_log(f"Direct Cam: GStreamer Receiver started on port {port}")
-                else:
-                    cap = cv2.VideoCapture(url)
-                
-                direct_stream_state['status'] = 'Running'
-                
-            elif cmd == 'STOP':
-                if cap is not None: cap.release(); cap = None
-                direct_stream_state['status'] = 'Stopped'
-                latest_display_frame = None
-                write_log("Direct Cam: Stopped")
-        
-        if direct_stream_state['status'] == 'Running' and cap is not None:
-            ret, frame = cap.read()
-            if ret:
-                # ArUco 마커 인식 (V6와 동일 로직)
-                if direct_aruco_settings['enabled'] and HAS_CV2_FLASK:
-                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    corners, ids, rejected = aruco_detector.detectMarkers(gray)
-                    if ids is not None:
-                        msize = direct_aruco_settings['marker_size']
-                        marker_points = np.array([[-msize/2, msize/2, 0], [msize/2, msize/2, 0], [msize/2, -msize/2, 0], [-msize/2, -msize/2, 0]], dtype=np.float32)
-                        for i in range(len(ids)):
-                            pret, rvec, tvec = cv2.solvePnP(marker_points, corners[i], camera_matrix, dist_coeffs)
-                            if pret:
-                                cv2.drawFrameAxes(frame, camera_matrix, dist_coeffs, rvec, tvec, 0.03)
-                                cv2.aruco.drawDetectedMarkers(frame, corners)
-                                # Unity 전송 (Port 5008)
-                                tx, ty, tz = float(tvec[0][0]), float(tvec[1][0]), float(tvec[2][0])
-                                data = {"id": int(ids[i][0]), "x": round(tx, 4), "y": round(ty, 4), "z": round(tz, 4)}
-                                try: sock_aruco.sendto(json.dumps(data).encode(), (GO1_UNITY_IP, 5008))
-                                except: pass
-                
-                # 웹 화면 갱신
-                ret_enc, buffer = cv2.imencode('.jpg', frame)
-                if ret_enc: latest_display_frame = buffer.tobytes()
-            else: time.sleep(0.01)
-        time.sleep(0.01)
 
 # ================= [Go1 Background Threads] =================
 def camera_worker_thread():
@@ -776,62 +712,6 @@ class TargetIpNode(BaseNode):
     def execute(self): self.output_data[self.out_ip] = dpg.get_value(self.field_ip); return None
     def get_settings(self): return {"ip": dpg.get_value(self.field_ip)}
     def load_settings(self, data): dpg.set_value(self.field_ip, data.get("ip", get_local_ip()))
-
-class DirectStreamNode(BaseNode):
-    def __init__(self, node_id): 
-        super().__init__(node_id, "Direct Video Stream", "DIRECT_STREAM")
-        self.combo_action = None; self.out_flow = None; self.chk_aruco = None; self.input_size = None; self.field_url = None; self.in_ip = None
-    def build_ui(self):
-        with dpg.node(tag=self.node_id, parent="node_editor", label="Direct Stream (No Save)"):
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
-                self.combo_action = dpg.add_combo(["Start Stream", "Stop Stream"], default_value="Start Stream", width=140)
-                dpg.add_spacer(height=3)
-                dpg.add_text("Port (9400) or URL:")
-                self.field_url = dpg.add_input_text(width=180, default_value="9400") # 기본값을 포트로 변경
-                dpg.add_spacer(height=3)
-                self.chk_aruco = dpg.add_checkbox(label="Enable ArUco Tracking", default_value=False)
-                with dpg.group(horizontal=True):
-                    dpg.add_text("Size(m):"); self.input_size = dpg.add_input_float(width=80, default_value=0.03, step=0.01)
-            # 로봇 스트리밍 시작을 위한 Target IP 입력 핀 추가
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as ip_in: 
-                dpg.add_text("Target IP In", color=(255,150,200)); self.inputs[ip_in] = "Data"; self.in_ip = ip_in
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
-
-    def execute(self):
-        global direct_aruco_settings, direct_stream_state
-        direct_aruco_settings['enabled'] = dpg.get_value(self.chk_aruco)
-        direct_aruco_settings['marker_size'] = dpg.get_value(self.input_size)
-        
-        action = dpg.get_value(self.combo_action)
-        url = str(dpg.get_value(self.field_url))
-        ext_ip = self.fetch_input_data(self.in_ip); target_ip = ext_ip if ext_ip else get_local_ip()
-        
-        if action == "Start Stream" and direct_stream_state['status'] == 'Stopped': 
-            # 로봇 포트 번호 입력 시 과거 성공했던 SSH 명령 실행
-            if url in ["9400", "9401", "9410", "9411", "9420"]:
-                nanos = ["unitree@192.168.123.13", "unitree@192.168.123.14", "unitree@192.168.123.15"]
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                for nano in nanos:
-                    # 비밀번호 자동 입력 옵션을 포함한 고속 송출 명령
-                    remote_cmd = f"echo 123 | sudo -S bash -c 'fuser -k /dev/video0 /dev/video1 2>/dev/null; cd /home/unitree; ./kill_camera.sh || true; nohup ./go1_send_both.sh {target_ip} > send_both_{ts}.log 2>&1 &'"
-                    try: subprocess.Popen(["ssh", "-o", "StrictHostKeyChecking=accept-new", nano, remote_cmd])
-                    except: pass
-            
-            direct_command_queue.append(('START', url))
-        elif action == "Stop Stream" and direct_stream_state['status'] == 'Running': 
-            direct_command_queue.append(('STOP', url))
-        return self.out_flow
-
-    # ★ [버그 수정] 설정 저장 및 로드 기능 추가
-    def get_settings(self): 
-        return {"act": dpg.get_value(self.combo_action), "url": dpg.get_value(self.field_url), "aruco": dpg.get_value(self.chk_aruco), "size": dpg.get_value(self.input_size)}
-    
-    def load_settings(self, data): 
-        dpg.set_value(self.combo_action, data.get("act", "Start Stream"))
-        dpg.set_value(self.field_url, data.get("url", "9400")) # 기본값을 포트로 고정
-        dpg.set_value(self.chk_aruco, data.get("aruco", False))
-        dpg.set_value(self.input_size, data.get("size", 0.03))
     
 # (기존 V4 카메라 노드 유지)
 class CameraControlNode(BaseNode):
@@ -1099,7 +979,6 @@ class NodeFactory:
         elif node_type == "TARGET_IP": node = TargetIpNode(node_id)
         elif node_type == "MULTI_SENDER": node = MultiSenderNode(node_id)
         elif node_type == "GET_GO1_STATE": node = GetGo1StateNode(node_id)
-        elif node_type == "DIRECT_STREAM": node = DirectStreamNode(node_id) # ★ [V5 추가]
         
         if node: node.build_ui(); node_registry[node_id] = node; return node
         return None
@@ -1197,7 +1076,6 @@ threading.Thread(target=camera_worker_thread, daemon=True).start()
 threading.Thread(target=sender_manager_thread, daemon=True).start()
 threading.Thread(target=go1_vision_worker_thread, daemon=True).start()
 threading.Thread(target=global_image_cleanup_thread, daemon=True).start()
-threading.Thread(target=direct_vision_worker_thread, daemon=True).start() # ★ V5 추가 스레드
 threading.Thread(target=start_flask_app, daemon=True).start()
 threading.Thread(target=lambda: (time.sleep(1), update_file_list()), daemon=True).start()
 
@@ -1249,7 +1127,6 @@ with dpg.window(tag="PrimaryWindow"):
                     dpg.add_text(f"HW: {go1_dashboard['hw_link']}", tag="go1_dash_link", color=(0,255,0))
                     dpg.add_text(f"Unity: Waiting", tag="go1_dash_unity", color=(255,255,0))
                     dpg.add_text(f"File Cam: Stopped", tag="go1_dash_cam", color=(200,200,200))
-                    dpg.add_text(f"Direct Cam: Stopped", tag="go1_dash_direct_cam", color=(200,200,200)) # ★ V5 추가
                     dpg.add_text("ArUco: OFF", tag="go1_dash_aruco", color=(200,200,200))
                     dpg.add_text("Battery: -%", tag="go1_dash_battery", color=(100,255,100))
                     btn_estop = dpg.add_button(label="[ EMERGENCY STOP ]", width=-1, height=25, callback=go1_estop_callback)
@@ -1310,7 +1187,6 @@ with dpg.window(tag="PrimaryWindow"):
             dpg.add_button(label="KEY", callback=add_node_cb, user_data="GO1_KEYBOARD")
             dpg.add_button(label="UNITY", callback=add_node_cb, user_data="GO1_UNITY")
             dpg.add_button(label="FILE_CAM", callback=add_node_cb, user_data="CAM_CTRL")
-            dpg.add_button(label="DIRECT_CAM", callback=add_node_cb, user_data="DIRECT_STREAM") # ★ V5 버튼 추가
             dpg.add_button(label="TARGET_IP", callback=add_node_cb, user_data="TARGET_IP")
             dpg.add_button(label="AI_SENDER", callback=add_node_cb, user_data="MULTI_SENDER")
             dpg.add_button(label="GO1_STATE", callback=add_node_cb, user_data="GET_GO1_STATE")
@@ -1346,14 +1222,8 @@ while dpg.is_dearpygui_running():
     elif camera_state['status'] == 'Stopped': dpg.configure_item("go1_dash_cam", color=(200,200,200))
     else: dpg.configure_item("go1_dash_cam", color=(255,200,0))
     
-    # Direct Cam (V5) Dashboard UI
-    dpg.set_value("go1_dash_direct_cam", f"Direct Cam: {direct_stream_state['status']}")
-    if direct_stream_state['status'] == 'Running': dpg.configure_item("go1_dash_direct_cam", color=(0,255,0))
-    else: dpg.configure_item("go1_dash_direct_cam", color=(200,200,200))
-    
-    # ArUco State UI (Either File Cam or Direct Cam)
-    is_aruco_on = (aruco_settings['enabled'] and camera_state['status'] == 'Running') or \
-                  (direct_aruco_settings['enabled'] and direct_stream_state['status'] == 'Running')
+    # ArUco State UI
+    is_aruco_on = (aruco_settings['enabled'] and camera_state['status'] == 'Running')
     if is_aruco_on and HAS_CV2_FLASK: dpg.configure_item("go1_dash_aruco", default_value="ArUco: ON (Port 5000)", color=(0,255,255))
     else: dpg.configure_item("go1_dash_aruco", default_value="ArUco: OFF", color=(200,200,200))
     
