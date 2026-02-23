@@ -296,67 +296,75 @@ def auto_reconnect_mt4_thread():
             except: pass
         time.sleep(3) 
 
-# ================= [V6 File-based Vision & Web Server (안전 읽기 패치)] =================
-# ================= [V7 File-based Vision & Web Server (Calibration 적용)] =================
+# ================= [V8 File-based Vision (All Cameras Calibration & ArUco)] =================
 def go1_vision_worker_thread():
     global latest_display_frame
     sock_aruco = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    last_processed_file = None
+    
+    # 각 카메라별로 마지막 처리한 파일을 기억하기 위한 딕셔너리
+    last_processed_files = {cfg["id"]: None for cfg in CAMERA_CONFIG}
     
     while True:
         if camera_state['status'] == 'Running':
-            folder = "/dev/shm/go1_front"
-            try:
-                files = glob.glob(os.path.join(folder, "*.jpg"))
-                if len(files) >= 2:
-                    files.sort(key=os.path.getctime)
-                    target_file = files[-2] # 안전하게 완전히 저장된 직전 파일 읽기
+            # ★ 5개의 모든 카메라 폴더를 순회하며 처리합니다.
+            for config in CAMERA_CONFIG:
+                folder = config["folder"]
+                camera_id = config["id"]
+                
+                try:
+                    if not os.path.exists(folder): continue
                     
-                    if target_file != last_processed_file:
-                        last_processed_file = target_file
-                        frame = cv2.imread(target_file)
+                    files = glob.glob(os.path.join(folder, "*.jpg"))
+                    if len(files) >= 2:
+                        files.sort(key=os.path.getctime)
+                        target_file = files[-2] # 안전하게 완전히 저장된 직전 파일 읽기
                         
-                        if frame is not None:
-                            # ★ 1단계: Fisheye 캘리브레이션 데이터로 카메라 화면 반듯하게 펴기
-                            if HAS_CALIB_FILES:
-                                frame = cv2.fisheye.undistortImage(frame, orig_camera_matrix, orig_dist_coeffs, Knew=orig_camera_matrix)
+                        if target_file != last_processed_files[camera_id]:
+                            last_processed_files[camera_id] = target_file
+                            frame = cv2.imread(target_file)
                             
-                            # ★ 2단계: ArUco 마커 인식 및 축 그리기
-                            if aruco_settings['enabled'] and HAS_CV2_FLASK:
-                                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                                corners, ids, rejected = aruco_detector.detectMarkers(gray)
-                                if ids is not None:
-                                    msize = aruco_settings['marker_size']
-                                    marker_points = np.array([
-                                        [-msize / 2, msize / 2, 0], [msize / 2, msize / 2, 0],
-                                        [msize / 2, -msize / 2, 0], [-msize / 2, -msize / 2, 0]
-                                    ], dtype=np.float32)
-                                    for i in range(len(ids)):
-                                        # 이미 펴진 이미지이므로, dist_coeffs에는 0 배열(zero_dist_coeffs)을 넣어야 정확한 거리가 나옵니다!
-                                        ret, rvec, tvec = cv2.solvePnP(marker_points, corners[i], orig_camera_matrix, zero_dist_coeffs)
-                                        if ret:
-                                            cv2.drawFrameAxes(frame, orig_camera_matrix, zero_dist_coeffs, rvec, tvec, 0.03)
-                                            cv2.aruco.drawDetectedMarkers(frame, corners)
-                                            
-                                            marker_id = int(ids[i][0])
-                                            tx, ty, tz = float(tvec[0][0]), float(tvec[1][0]), float(tvec[2][0])
-                                            data = {"id": marker_id, "x": round(tx, 4), "y": round(ty, 4), "z": round(tz, 4)}
-                                            try: sock_aruco.sendto(json.dumps(data).encode(), (GO1_UNITY_IP, 5008))
-                                            except: pass
-                                            
-                                            text = f"ID:{marker_id} X:{tx:.2f}m Y:{ty:.2f}m Z:{tz:.2f}m"
-                                            cx, cy = int(corners[i][0][0][0]), int(corners[i][0][0][1])
-                                            cv2.putText(frame, text, (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                            
-                            # ★ 3단계: 화면 펴짐 + 축 그려짐이 모두 완료된 최종 프레임을 원본 파일에 덮어쓰기!
-                            # 이렇게 하면 MULTI_SENDER가 그라파나로 보낼 때도 똑바로 펴진 멋진 화면이 전송됩니다.
-                            cv2.imwrite(target_file, frame)
-                                            
-                            # Flask 웹 화면 갱신
-                            ret_enc, buffer = cv2.imencode('.jpg', frame)
-                            if ret_enc: latest_display_frame = buffer.tobytes()
-            except Exception as e: pass
-        time.sleep(0.02)
+                            if frame is not None:
+                                # ★ 1단계: 모든 카메라에 동일한 K1, D1 데이터를 적용하여 화면 펴기
+                                if HAS_CALIB_FILES:
+                                    frame = cv2.fisheye.undistortImage(frame, orig_camera_matrix, orig_dist_coeffs, Knew=orig_camera_matrix)
+                                
+                                # ★ 2단계: ArUco 마커 인식 및 축 그리기 (모든 카메라 대상)
+                                if aruco_settings['enabled'] and HAS_CV2_FLASK:
+                                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                                    corners, ids, rejected = aruco_detector.detectMarkers(gray)
+                                    if ids is not None:
+                                        msize = aruco_settings['marker_size']
+                                        marker_points = np.array([
+                                            [-msize / 2, msize / 2, 0], [msize / 2, msize / 2, 0],
+                                            [msize / 2, -msize / 2, 0], [-msize / 2, -msize / 2, 0]
+                                        ], dtype=np.float32)
+                                        for i in range(len(ids)):
+                                            ret, rvec, tvec = cv2.solvePnP(marker_points, corners[i], orig_camera_matrix, zero_dist_coeffs)
+                                            if ret:
+                                                cv2.drawFrameAxes(frame, orig_camera_matrix, zero_dist_coeffs, rvec, tvec, 0.03)
+                                                cv2.aruco.drawDetectedMarkers(frame, corners)
+                                                
+                                                marker_id = int(ids[i][0])
+                                                tx, ty, tz = float(tvec[0][0]), float(tvec[1][0]), float(tvec[2][0])
+                                                
+                                                # Unity 전송 (나중에 구분을 위해 cam 이름도 같이 보냅니다)
+                                                data = {"id": marker_id, "x": round(tx, 4), "y": round(ty, 4), "z": round(tz, 4), "cam": camera_id}
+                                                try: sock_aruco.sendto(json.dumps(data).encode(), (GO1_UNITY_IP, 5008))
+                                                except: pass
+                                                
+                                                text = f"[{camera_id}] ID:{marker_id} X:{tx:.2f} Y:{ty:.2f} Z:{tz:.2f}"
+                                                cx, cy = int(corners[i][0][0][0]), int(corners[i][0][0][1])
+                                                cv2.putText(frame, text, (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                
+                                # ★ 3단계: 화면 펴짐 + 축 그려짐이 완료된 프레임을 원본에 덮어쓰기
+                                cv2.imwrite(target_file, frame)
+                                                
+                                # ★ 4단계: Flask 웹 브라우저에는 '정면 카메라' 화면만 대표로 띄워줌
+                                if camera_id == 'go1_front':
+                                    ret_enc, buffer = cv2.imencode('.jpg', frame)
+                                    if ret_enc: latest_display_frame = buffer.tobytes()
+                except Exception as e: pass
+        time.sleep(0.01)
 
 if HAS_CV2_FLASK:
     @app.route('/')
