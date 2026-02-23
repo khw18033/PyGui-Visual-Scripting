@@ -354,19 +354,26 @@ def go1_vision_worker_thread():
                                                 try: sock_aruco.sendto(json.dumps(data).encode(), (GO1_UNITY_IP, 5008))
                                                 except: pass
                                                 
+                                                # ArUco 텍스트 그리기 완료
                                                 text = f"[{camera_id}] ID:{marker_id} X:{tx:.2f} Y:{ty:.2f} Z:{tz:.2f}"
                                                 cx, cy = int(corners[i][0][0][0]), int(corners[i][0][0][1])
                                                 cv2.putText(frame, text, (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                                 
-                                # ★ [수정됨] cv2.imwrite(target_file, frame)는 지우세요! (디스크 충돌 원인)
-                                # 대신 이미지를 메모리(RAM)에 저장해서 Sender가 바로 가져가게 만듭니다.
-                                ret_enc, buffer = cv2.imencode('.jpg', frame)
+                                # ★ [추가된 부분] 최종 결과물을 세로로 반 잘라서 왼쪽만 남기기
+                                # frame.shape[:2]는 (높이, 너비)를 반환합니다.
+                                height, width = frame.shape[:2]
+                                # 너비를 2로 나눈 지점(가운데)까지만 잘라냅니다.
+                                # [:, :width//2] 의미: 모든 높이(행)에 대해, 너비(열)의 처음부터 절반까지만 선택
+                                cropped_frame = frame[:, :width//2]
+
+                                # ★ [수정됨] 이제 원본 'frame' 대신 잘라낸 'cropped_frame'을 인코딩합니다.
+                                ret_enc, buffer = cv2.imencode('.jpg', cropped_frame)
                                 if ret_enc:
                                     processed_bytes = buffer.tobytes()
                                     global latest_processed_frames
                                     latest_processed_frames[camera_id] = processed_bytes
                                     
-                                    # Flask 웹 브라우저에는 '정면 카메라' 화면 띄우기
+                                    # Flask 웹 브라우저에도 잘린 화면을 띄웁니다.
                                     if camera_id == 'go1_front':
                                         latest_display_frame = processed_bytes
                 except Exception as e: pass
