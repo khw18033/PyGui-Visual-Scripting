@@ -336,6 +336,8 @@ def go1_vision_worker_thread():
                                             cx, cy = int(corners[i][0][0][0]), int(corners[i][0][0][1])
                                             cv2.putText(frame, text, (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                                             
+                            cv2.imwrite(target_file, frame)
+                            
                             # Flask 웹 화면 갱신
                             ret_enc, buffer = cv2.imencode('.jpg', frame)
                             if ret_enc: latest_display_frame = buffer.tobytes()
