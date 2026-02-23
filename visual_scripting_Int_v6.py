@@ -362,20 +362,24 @@ def direct_vision_worker_thread():
             if cmd == 'START':
                 if cap is not None: cap.release()
                 
-                # 입력값이 숫자(9400 등)라면 Go1 전용 GStreamer 파이프라인 실행
                 if str(url).isdigit() and int(url) >= 9000:
-                    port = url
-                    # ★ 파일 저장 없이 RAM에서 즉시 처리하는 고속 파이프라인
+                    port = int(url)
+                    # 윈도우 PC IP를 자동으로 가져오거나 Target IP 노드에서 받아옴
+                    # 여기서는 릴레이 포트를 9500번대로 설정
+                    relay_port = port + 100 
+                    ext_ip = GO1_UNITY_IP # 윈도우 PC IP (Unity IP와 동일하다고 가정)
+                    
+                    # ★ [V7 핵심] tee를 사용하여 ArUco 처리(appsink)와 윈도우 중계(udpsink)를 동시 수행
                     pipeline = (
-                        f"udpsrc port={port} caps=\"application/x-rtp, media=video, encoding-name=JPEG, payload=26\" ! "
-                        f"rtpjpegdepay ! jpegdec ! videoconvert ! appsink drop=1 sync=false"
+                        f"udpsrc port={port} buffer-size=1000000 caps=\"application/x-rtp, media=video, encoding-name=JPEG, payload=26\" ! "
+                        f"rtpjpegdepay ! tee name=t "
+                        f"t. ! queue ! jpegdec ! videoconvert ! appsink drop=1 sync=false "
+                        f"t. ! queue ! udpsink host={ext_ip} port={relay_port} sync=false"
                     )
                     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-                    write_log(f"Direct Cam: GStreamer Pipeline started on port {port}")
+                    write_log(f"Direct Cam: GStreamer relay to {ext_ip}:{relay_port}")
                 else:
-                    # 일반 URL(0, 1, http 등) 처리
-                    val = int(url) if str(url).isdigit() else url
-                    cap = cv2.VideoCapture(val)
+                    cap = cv2.VideoCapture(url)
                 
                 direct_stream_state['status'] = 'Running'
                 
