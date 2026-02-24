@@ -1532,7 +1532,7 @@ with dpg.window(tag="PrimaryWindow"):
             dpg.add_button(label="UNITY", callback=add_node_cb, user_data="GO1_UNITY")
             dpg.add_button(label="FILE_CAM", callback=add_node_cb, user_data="CAM_CTRL")
             dpg.add_button(label="TARGET_IP", callback=add_node_cb, user_data="TARGET_IP")
-            dpg.add_button(label="AI_SENDER", callback=add_node_cb, user_data="MULTI_SENDER")
+            dpg.add_button(label="SENDER", callback=add_node_cb, user_data="MULTI_SENDER")
             dpg.add_button(label="GO1_STATE", callback=add_node_cb, user_data="GET_GO1_STATE")
 
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
