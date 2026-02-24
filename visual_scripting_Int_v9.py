@@ -292,10 +292,13 @@ def mt4_move_to_coord_callback(sender, app_data, user_data):
 def mt4_apply_limits_and_move():
     global mt4_target_goal, mt4_current_pos, ser
     if time.time() < mt4_collision_lock_until: return # 충돌 락
-    mt4_target_goal['x'] = max(MT4_LIMITS['min_x'], min(mt4_target_goal['x'], MT4_LIMITS['max_x'])); mt4_target_goal['y'] = max(MT4_LIMITS['min_y'], min(mt4_target_goal['y'], MT4_LIMITS['max_y']))
-    mt4_target_goal['z'] = max(MT4_LIMITS['min_z'], min(mt4_target_goal['z'], MT4_LIMITS['max_z'])); mt4_target_goal['gripper'] = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
-    mt4_current_pos.update(mt4_target_goal)
-    if ser and ser.is_open: ser.write(f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n".encode())
+    mt4_target_goal['x'] = max(MT4_LIMITS['min_x'], min(mt4_target_goal['x'], MT4_LIMITS['max_x']))
+    mt4_target_goal['y'] = max(MT4_LIMITS['min_y'], min(mt4_target_goal['y'], MT4_LIMITS['max_y']))
+    mt4_target_goal['z'] = max(MT4_LIMITS['min_z'], min(mt4_target_goal['z'], MT4_LIMITS['max_z']))
+    mt4_target_goal['gripper'] = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
+    
+    # ★ 기존에 있던 mt4_current_pos 덮어쓰기와 ser.write() 코드를 완전히 삭제합니다. 
+    # MT4RobotDriver가 백그라운드에서 안전하게 부드러운 이동 및 전송을 대신 처리합니다.
 
 def get_mt4_paths(): return [f for f in os.listdir(PATH_DIR) if f.endswith(".csv")]
 
@@ -346,7 +349,8 @@ def play_mt4_path_thread(filepath):
                 mt4_target_goal['z'] = float(row['z']); mt4_target_goal['gripper'] = float(row['gripper'])
                 mt4_apply_limits_and_move()
                 time.sleep(0.05)
-    except: pass
+    except Exception as e: 
+        write_log(f"Play Error: {e}") # pass 대신 에러 내용을 출력하도록 수정
     mt4_mode["playing"] = False; mt4_manual_override_until = time.time()
     send_unity_ui("STATUS", "경로 재생 완료")
     write_log("MT4 Playback finished.")
@@ -357,21 +361,22 @@ def mt4_background_logger_thread():
     with open(log_filename, 'w', newline='') as mt4_log_f:
         mt4_log_writer = csv.writer(mt4_log_f)
         mt4_log_writer.writerow(['timestamp', 'event', 'target_x', 'target_y', 'target_z', 'target_g', 'current_x', 'current_y', 'current_z', 'current_g'])
-        last_rec_pos = None
+        
         while True:
-            time.sleep(0.1)
+            time.sleep(0.05) # ★ 0.1(10Hz)에서 0.05(20Hz)로 재생 속도와 완벽히 맞춤
+            
             event_str = "TICK"
             if mt4_log_event_queue: event_str = mt4_log_event_queue.popleft()
             
+            # 상시 로깅
             mt4_log_writer.writerow([time.time(), event_str, mt4_target_goal['x'], mt4_target_goal['y'], mt4_target_goal['z'], mt4_target_goal['gripper'], mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['gripper']])
             mt4_log_f.flush()
             
+            # ★ 경로 녹화 (중복 생략 코드를 제거하여, 정지 시간까지 1:1로 리얼타임 녹화)
             if mt4_mode["recording"] and mt4_record_writer:
                 curr_tuple = (mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['gripper'])
-                if curr_tuple != last_rec_pos:
-                    mt4_record_writer.writerow(curr_tuple)
-                    mt4_record_f.flush()
-                    last_rec_pos = curr_tuple
+                mt4_record_writer.writerow(curr_tuple)
+                mt4_record_f.flush()
 
 def mt4_homing_callback(sender, app_data, user_data): threading.Thread(target=mt4_homing_thread_func, daemon=True).start()
 def mt4_homing_thread_func():
@@ -872,7 +877,7 @@ class MT4KeyboardNode(BaseNode):
 
 class MT4UnityNode(BaseNode):
     def __init__(self, node_id):
-        super().__init__(node_id, "Unity Logic (MT4)", "MT4_UNITY_CONTROL")
+        super().__init__(node_id, "Unity Logic (MT4)", "MT4_UNITY")
         self.data_in_id = None; self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None
         self.last_processed_json = ""  # ★ 이 한 줄을 끝에 추가해 주세요!
     def build_ui(self):
@@ -1040,7 +1045,7 @@ class MultiSenderNode(BaseNode):
     def load_settings(self, data): dpg.set_value(self.combo_action, data.get("act", "Start Sender")); dpg.set_value(self.field_url, data.get("url", "http://210.110.250.33:5001/upload"))
 
 class Go1UnityNode(BaseNode):
-    def __init__(self, node_id): super().__init__(node_id, "Unity Link", "GO1_UNITY_CONTROL"); self.field_ip = None; self.chk_enable = None; self.out_vx = None; self.out_vy = None; self.out_wz = None; self.out_active = None
+    def __init__(self, node_id): super().__init__(node_id, "Unity Link", "GO1_UNITY"); self.field_ip = None; self.chk_enable = None; self.out_vx = None; self.out_vy = None; self.out_wz = None; self.out_active = None
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label="Unity Link (Go1)"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_text("Unity PC IP:", color=(100,255,100)); self.field_ip = dpg.add_input_text(width=120, default_value=GO1_UNITY_IP); dpg.add_spacer(height=3); self.chk_enable = dpg.add_checkbox(label="Enable Teleop Rx", default_value=True)
