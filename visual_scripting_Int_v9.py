@@ -1541,7 +1541,7 @@ with dpg.window(tag="PrimaryWindow"):
 
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
-dpg.create_viewport(title='PyGui V5 (Direct Stream + ArUco)', width=1280, height=800, vsync=True)
+dpg.create_viewport(title='PyGui V9', width=1280, height=800, vsync=True)
 dpg.setup_dearpygui(); dpg.set_primary_window("PrimaryWindow", True); dpg.show_viewport()
 
 last_logic_time = 0; LOGIC_RATE = 0.02
