@@ -489,7 +489,7 @@ def go1_vision_worker_thread():
 
 if HAS_CV2_FLASK:
     @app.route('/')
-    def index(): return "<h1>Go1 ArUco Vision Tracker (V5)</h1><img src='/video_feed' width='640'>"
+    def index(): return "<h1>Multi-Robot Integrated Visual Scripting Framework (9)</h1><img src='/video_feed' width='640'>"
 
     @app.route('/video_feed')
     def video_feed():
