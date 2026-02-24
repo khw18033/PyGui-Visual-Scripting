@@ -98,19 +98,33 @@ def get_save_files():
     return [f for f in os.listdir(SAVE_DIR) if f.endswith(".json")]
 
 # ================= [MT4 State & Config] =================
+# ================= [MT4 State & Config] =================
 ser = None 
 mt4_current_pos = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0}
 mt4_target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0} 
 mt4_manual_override_until = 0.0 
 mt4_dashboard = {"status": "Idle", "hw_link": "Offline", "latency": 0.0, "last_pkt_time": 0.0}
-# ★ [추가된 MT4 로깅 & 경로 제어 상태]
+
+# ★ [V9 추가] 로깅, 경로 제어, 유니티 통신용 상태 변수
 PATH_DIR = "path_record"
 LOG_DIR = "result_log"
 os.makedirs(PATH_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
-mt4_mode = {"stopped": False, "recording": False, "playing": False}
+
+mt4_mode = {"recording": False, "playing": False}
+mt4_collision_lock_until = 0.0 # 충돌 잠금 타이머
 mt4_record_f = None
 mt4_record_writer = None
+mt4_record_temp_name = ""
+mt4_log_event_queue = deque() # 유니티의 성공/실패 로그 이벤트를 담을 큐
+
+# 유니티 5007포트(SystemManager UI)로 메시지 전송
+def send_unity_ui(msg_type, extra_data):
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        msg = f"type:{msg_type},extra:{extra_data}"
+        sock.sendto(msg.encode('utf-8'), (MT4_UNITY_IP, 5007))
+    except: pass
 
 MT4_UNITY_IP = "192.168.50.63"; MT4_FEEDBACK_PORT = 5005
 MT4_LIMITS = {'min_x': 100, 'max_x': 280, 'min_y': -150, 'max_y': 150, 'min_z': 0, 'max_z': 280}
@@ -171,7 +185,7 @@ class MT4RobotDriver(BaseRobotDriver):
     def get_settings_schema(self): return {'smooth': ("Smth", 1.0), 'speed': ("Spd", 2.0)}
     def execute_command(self, inputs, settings):
         global mt4_current_pos, mt4_target_goal, mt4_manual_override_until, ser
-        if mt4_mode["stopped"]: return mt4_current_pos # ★ 충돌 시 구동 무시
+        if time.time() < mt4_collision_lock_until: return # 충돌 락
         if time.time() > mt4_manual_override_until:
             for k in self.get_ui_schema().keys():
                 if inputs.get(k) is not None: mt4_target_goal[k] = float(inputs[k])
@@ -278,7 +292,7 @@ def mt4_move_to_coord_callback(sender, app_data, user_data):
 
 def mt4_apply_limits_and_move():
     global mt4_target_goal, mt4_current_pos, ser
-    if mt4_mode["stopped"]: return # ★ 충돌 시 구동 무시
+    if time.time() < mt4_collision_lock_until: return # 충돌 락
     mt4_target_goal['x'] = max(MT4_LIMITS['min_x'], min(mt4_target_goal['x'], MT4_LIMITS['max_x'])); mt4_target_goal['y'] = max(MT4_LIMITS['min_y'], min(mt4_target_goal['y'], MT4_LIMITS['max_y']))
     mt4_target_goal['z'] = max(MT4_LIMITS['min_z'], min(mt4_target_goal['z'], MT4_LIMITS['max_z'])); mt4_target_goal['gripper'] = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
     mt4_current_pos.update(mt4_target_goal)
@@ -286,17 +300,26 @@ def mt4_apply_limits_and_move():
 
 def get_mt4_paths(): return [f for f in os.listdir(PATH_DIR) if f.endswith(".csv")]
 
-def toggle_mt4_record():
-    global mt4_record_f, mt4_record_writer
+def toggle_mt4_record(custom_name=None):
+    global mt4_record_f, mt4_record_writer, mt4_record_temp_name
     if mt4_mode["recording"]:
         mt4_mode["recording"] = False
         if mt4_record_f: mt4_record_f.close()
+        
+        # 유니티에서 지정한 이름으로 파일명 변경
+        if custom_name and mt4_record_temp_name:
+            if not custom_name.endswith(".csv"): custom_name += ".csv"
+            final_path = os.path.join(PATH_DIR, custom_name)
+            try: os.rename(mt4_record_temp_name, final_path)
+            except: pass
+                
         dpg.set_item_label("btn_mt4_record", "Start Recording")
         if dpg.does_item_exist("combo_mt4_path"): dpg.configure_item("combo_mt4_path", items=get_mt4_paths())
-        write_log("MT4 Path Recording Stopped.")
+        write_log(f"MT4 Path Saved: {custom_name}")
     else:
         mt4_mode["recording"] = True
         fname = os.path.join(PATH_DIR, f"path_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+        mt4_record_temp_name = fname
         mt4_record_f = open(fname, 'w', newline='')
         mt4_record_writer = csv.writer(mt4_record_f)
         mt4_record_writer.writerow(['x', 'y', 'z', 'gripper'])
@@ -305,43 +328,45 @@ def toggle_mt4_record():
 
 def play_mt4_path(sender=None, app_data=None, user_data=None, filename=None):
     if not filename: filename = dpg.get_value("combo_mt4_path")
-    if not filename or mt4_mode["playing"] or mt4_mode["stopped"]: return
+    if not filename or mt4_mode["playing"] or time.time() < mt4_collision_lock_until: return
     filepath = os.path.join(PATH_DIR, filename)
     if os.path.exists(filepath): threading.Thread(target=play_mt4_path_thread, args=(filepath,), daemon=True).start()
 
 def play_mt4_path_thread(filepath):
     global mt4_mode, mt4_target_goal, mt4_manual_override_until
     mt4_mode["playing"] = True
-    mt4_manual_override_until = time.time() + 86400 # 플레이 중 수동 조작 방지
+    mt4_manual_override_until = time.time() + 86400 # 재생 중 조작 잠금
     write_log(f"MT4 Playing path: {os.path.basename(filepath)}")
+    send_unity_ui("STATUS", f"경로 재생 중: {os.path.basename(filepath)}")
     try:
         with open(filepath, 'r') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                if mt4_mode["stopped"] or not mt4_mode["playing"]: break
+                if time.time() < mt4_collision_lock_until or not mt4_mode["playing"]: break
                 mt4_target_goal['x'] = float(row['x']); mt4_target_goal['y'] = float(row['y'])
                 mt4_target_goal['z'] = float(row['z']); mt4_target_goal['gripper'] = float(row['gripper'])
                 mt4_apply_limits_and_move()
-                time.sleep(0.05) # 재생 속도 (기존 MT4 코드 참고)
-    except Exception as e: write_log(f"Play Error: {e}")
+                time.sleep(0.05)
+    except: pass
     mt4_mode["playing"] = False; mt4_manual_override_until = time.time()
+    send_unity_ui("STATUS", "경로 재생 완료")
     write_log("MT4 Playback finished.")
 
-# ★ 상시 로그 기록 및 경로 저장 스레드
 def mt4_background_logger_thread():
     global mt4_record_writer
     log_filename = os.path.join(LOG_DIR, f"mt4_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
     with open(log_filename, 'w', newline='') as mt4_log_f:
         mt4_log_writer = csv.writer(mt4_log_f)
-        mt4_log_writer.writerow(['timestamp', 'target_x', 'target_y', 'target_z', 'target_g', 'current_x', 'current_y', 'current_z', 'current_g'])
+        mt4_log_writer.writerow(['timestamp', 'event', 'target_x', 'target_y', 'target_z', 'target_g', 'current_x', 'current_y', 'current_z', 'current_g'])
         last_rec_pos = None
         while True:
             time.sleep(0.1)
-            # 1. 상시 로깅 (GUI 제어 포함)
-            mt4_log_writer.writerow([time.time(), mt4_target_goal['x'], mt4_target_goal['y'], mt4_target_goal['z'], mt4_target_goal['gripper'], mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['gripper']])
+            event_str = "TICK"
+            if mt4_log_event_queue: event_str = mt4_log_event_queue.popleft()
+            
+            mt4_log_writer.writerow([time.time(), event_str, mt4_target_goal['x'], mt4_target_goal['y'], mt4_target_goal['z'], mt4_target_goal['gripper'], mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['gripper']])
             mt4_log_f.flush()
             
-            # 2. 경로 기록 (위치가 변했을 때만 저장)
             if mt4_mode["recording"] and mt4_record_writer:
                 curr_tuple = (mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['gripper'])
                 if curr_tuple != last_rec_pos:
@@ -839,37 +864,55 @@ class MT4UnityNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_g: dpg.add_text("Target Grip"); self.outputs[out_g] = "Data"; self.out_g = out_g
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f_out: dpg.add_text("Flow Out"); self.outputs[f_out] = "Flow"
     def execute(self):
+        global mt4_collision_lock_until
         if time.time() - mt4_dashboard.get("last_pkt_time", 0) > 0.5:
             self.output_data[self.out_x] = None; self.output_data[self.out_y] = None; self.output_data[self.out_z] = None; self.output_data[self.out_g] = None
             return self.outputs
             
         raw_json = self.fetch_input_data(self.data_in_id)
-        if raw_json:
+        if raw_json and raw_json != self.last_processed_json:
+            self.last_processed_json = raw_json
             try:
                 parsed = json.loads(raw_json)
+                msg_type = parsed.get("type", "MOVE")
                 
-                # ★ 1. 충돌 정지
-                if "collision" in parsed:
-                    if parsed["collision"] == 1 and not mt4_mode["stopped"]:
-                        mt4_mode["stopped"] = True
-                        if ser and ser.is_open: ser.write(b"!") # 하드웨어 즉시 정지
-                        write_log("MT4 Collision Detected! Stopped.")
-                    elif parsed["collision"] == 0 and mt4_mode["stopped"]:
-                        mt4_mode["stopped"] = False
-                        if ser and ser.is_open: ser.write(b"~") # 하드웨어 재개
-                        write_log("MT4 Collision Cleared. Resumed.")
-                
-                # ★ 2. 경로 기록 제어
-                if "record" in parsed:
-                    if parsed["record"] == 1 and not mt4_mode["recording"]: toggle_mt4_record()
-                    elif parsed["record"] == 0 and mt4_mode["recording"]: toggle_mt4_record()
-                
-                # ★ 3. 경로 재생 제어
-                if "play_path" in parsed and parsed["play_path"]:
-                    play_mt4_path(filename=parsed["play_path"])
-                
-                # ★ 4. 이동 제어 (재생 중이거나 충돌 상태면 Unity 이동 무시)
-                if parsed.get("type", "MOVE") == "MOVE" and not mt4_mode["stopped"] and not mt4_mode["playing"]:
+                # ★ 유니티가 보낸 Raw Command 처리
+                if msg_type == "CMD":
+                    val = parsed.get("val", "")
+                    
+                    if val == "COLLISION":
+                        mt4_collision_lock_until = time.time() + 2.0 # 2초간 조작 무시
+                        if ser and ser.is_open: ser.write(b"!") # 하드웨어 급정지
+                        write_log("MT4 Collision Detected! Robot Locked.")
+                        send_unity_ui("STATUS", "충돌 감지! 로봇 긴급 정지")
+                        
+                    elif val == "START_REC":
+                        if not mt4_mode["recording"]: toggle_mt4_record()
+                        send_unity_ui("STATUS", "경로 녹화 시작...")
+                        
+                    elif val.startswith("STOP_REC:"):
+                        fname = val.split(":")[1]
+                        if mt4_mode["recording"]: toggle_mt4_record(custom_name=fname)
+                        send_unity_ui("STATUS", f"저장 완료: {fname}.csv")
+                        send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]") # 파일 목록 갱신
+                        
+                    elif val == "REQ_FILES":
+                        send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
+                        
+                    elif val.startswith("PLAY:"):
+                        fname = val.split(":")[1]
+                        play_mt4_path(filename=fname)
+                        
+                    elif val == "LOG_SUCCESS":
+                        mt4_log_event_queue.append("SUCCESS")
+                        send_unity_ui("LOG", "<color=green>SUCCESS 기록 완료</color>")
+                        
+                    elif val == "LOG_FAIL":
+                        mt4_log_event_queue.append("FAIL")
+                        send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
+
+                # ★ XYZ 및 그리퍼 이동 처리 (충돌 시나 재생 중일 때는 유니티 명령 무시)
+                elif msg_type == "MOVE" and not mt4_mode["playing"] and time.time() > mt4_collision_lock_until:
                     self.output_data[self.out_x] = parsed.get('z', 0) * 1000.0
                     self.output_data[self.out_y] = -parsed.get('x', 0) * 1000.0
                     self.output_data[self.out_z] = (parsed.get('y', 0) * 1000.0) + MT4_Z_OFFSET
