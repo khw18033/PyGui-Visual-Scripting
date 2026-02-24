@@ -657,7 +657,7 @@ def go1_v4_comm_thread():
     if HAS_UNITREE_SDK:
         udp = sdk.UDP(HIGHLEVEL, LOCAL_PORT, ROBOT_IP, ROBOT_PORT)
         cmd = sdk.HighCmd(); state = sdk.HighState()
-        udp.InitCmdData(cmd); go1_dashboard["hw_link"] = "Online"
+        udp.InitCmdData(cmd); go1_dashboard["hw_link"] = "Connecting..." # ★ 처음엔 무조건 Online이 아니라 연결 중으로 표시
     else: 
         udp = cmd = state = None; go1_dashboard["hw_link"] = "Simulation"
         
@@ -671,6 +671,11 @@ def go1_v4_comm_thread():
     yaw0_initialized = False; yaw0 = 0.0; UNITY_YAW_OFFSET_RAD = math.pi / 2.0
     world_x = world_z = 0.0; last_dr_time = now; seq = 0
     yaw_align_active = False; yaw_align_target_rel = 0.0; yaw_align_kp = 2.0; yaw_align_tol_rad = 2.0 * math.pi / 180.0
+
+    # ★ [추가된 부분] 로봇 연결 상태 감지용 변수
+    last_go1_recv_time = now
+    last_go1_tick = 0
+    last_imu_val = 0.0
 
     def reset_cmd_base():
         if not cmd: return
@@ -688,11 +693,27 @@ def go1_v4_comm_thread():
             udp.Recv()
             udp.GetRecv(state)
             raw_yaw = float(state.imu.rpy[2])
-            try:
-                if hasattr(state.bms, 'SOC'): go1_state['battery'] = int(state.bms.SOC)
-                elif hasattr(state.bms, 'soc'): go1_state['battery'] = int(state.bms.soc)
-                if go1_state['battery'] == 0: go1_state['battery'] = -1 
-            except Exception as e: print(f"[Go1 Battery Error] {e}")
+            
+            # ★ [핵심 추가] 데이터가 진짜로 갱신되고 있는지 (Heartbeat) 검사
+            current_tick = getattr(state, 'tick', 0)
+            current_imu = float(state.imu.rpy[0]) + float(state.imu.rpy[1]) + float(state.imu.rpy[2])
+            
+            if current_tick != last_go1_tick or current_imu != last_imu_val:
+                last_go1_recv_time = tnow
+                last_go1_tick = current_tick
+                last_imu_val = current_imu
+                
+            # 최근 1초 이내에 데이터가 살아서 움직였다면 Online, 아니면 Offline
+            if (tnow - last_go1_recv_time) < 1.0:
+                go1_dashboard["hw_link"] = "Online"
+                try:
+                    if hasattr(state.bms, 'SOC'): go1_state['battery'] = int(state.bms.SOC)
+                    elif hasattr(state.bms, 'soc'): go1_state['battery'] = int(state.bms.soc)
+                    if go1_state['battery'] == 0: go1_state['battery'] = -1 
+                except Exception as e: pass
+            else:
+                go1_dashboard["hw_link"] = "Offline"
+                go1_state['battery'] = -1
         
         if not yaw0_initialized: yaw0 = raw_yaw; yaw0_initialized = True; last_dr_time = time.monotonic()
         if go1_node_intent['reset_yaw']: yaw0 = raw_yaw; last_dr_time = time.monotonic(); go1_node_intent['reset_yaw'] = False; write_log("YAW0 Reset")
@@ -997,11 +1018,11 @@ class CameraControlNode(BaseNode):
     def load_settings(self, data): dpg.set_value(self.combo_action, data.get("act", "Start Stream")); dpg.set_value(self.chk_aruco, data.get("aruco", False)); dpg.set_value(self.input_size, data.get("size", 0.03)); dpg.set_value(self.chk_calib, data.get("calib", True))
 
 class MultiSenderNode(BaseNode):
-    def __init__(self, node_id): super().__init__(node_id, "AI Server Sender", "MULTI_SENDER"); self.combo_action = None; self.field_url = None; self.out_flow = None
+    def __init__(self, node_id): super().__init__(node_id, "Server Sender", "MULTI_SENDER"); self.combo_action = None; self.field_url = None; self.out_flow = None
     def build_ui(self):
-        with dpg.node(tag=self.node_id, parent="node_editor", label="AI Server Sender (Go1)"):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Server Sender (Go1)"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): self.combo_action = dpg.add_combo(["Start Sender", "Stop Sender"], default_value="Start Sender", width=140); dpg.add_spacer(height=3); dpg.add_text("AI Server URL:"); self.field_url = dpg.add_input_text(width=160, default_value="http://210.110.250.33:5001/upload")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): self.combo_action = dpg.add_combo(["Start Sender", "Stop Sender"], default_value="Start Sender", width=140); dpg.add_spacer(height=3); dpg.add_text("Server URL:"); self.field_url = dpg.add_input_text(width=160, default_value="http://210.110.250.33:5001/upload")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
     def execute(self):
         global sender_state # ★ sender_state 전역 변수 선언 추가
@@ -1264,7 +1285,7 @@ def toggle_exec(s, a):
         if camera_state['status'] in ['Running', 'Starting...']:
             camera_command_queue.append(('STOP', ''))
             
-        # 2. AI 센더 강제 종료
+        # 2. 센더 강제 종료
         if sender_state['status'] in ['Running']:
             sender_command_queue.append(('STOP', ''))
             
@@ -1409,11 +1430,12 @@ with dpg.window(tag="PrimaryWindow"):
         with dpg.tab(label="MT4 Dashboard"):
             with dpg.group(horizontal=True):
                 with dpg.child_window(width=250, height=130, border=True):
-                    dpg.add_text("MT4 Status", color=(150,150,150)); dpg.add_text("Idle", tag="mt4_dash_status", color=(0,255,0))
-                    dpg.add_text(mt4_dashboard["hw_link"], tag="mt4_dash_link", color=(0,255,0) if mt4_dashboard["hw_link"]=="Online" else (255,0,0))
-                    dpg.add_text("0.0 ms", tag="mt4_dash_latency", color=(255,255,0))
+                    dpg.add_text("MT4 Status", color=(150,150,150)); 
+                    dpg.add_text("Status: Idle", tag="mt4_dash_status", color=(0,255,0))
+                    dpg.add_text(f"HW: {mt4_dashboard['hw_link']}", tag="mt4_dash_link", color=(0,255,0) if mt4_dashboard["hw_link"]=="Online" else (255,0,0))
+                    dpg.add_text("Latency: 0.0 ms", tag="mt4_dash_latency", color=(255,255,0))
                 with dpg.child_window(width=350, height=130, border=True):
-                    dpg.add_text("Manual Control", color=(255,200,0))
+                    dpg.add_text("Manual Control (10mm, Grip 5mm)", color=(255,200,0))
                     with dpg.group(horizontal=True):
                         dpg.add_button(label="X+", width=60, callback=mt4_manual_control_callback, user_data=('x', 10)); dpg.add_button(label="X-", width=60, callback=mt4_manual_control_callback, user_data=('x', -10))
                         dpg.add_text("|"); dpg.add_button(label="Y+", width=60, callback=mt4_manual_control_callback, user_data=('y', 10)); dpg.add_button(label="Y-", width=60, callback=mt4_manual_control_callback, user_data=('y', -10))
@@ -1521,9 +1543,21 @@ dpg.setup_dearpygui(); dpg.set_primary_window("PrimaryWindow", True); dpg.show_v
 last_logic_time = 0; LOGIC_RATE = 0.02
 
 while dpg.is_dearpygui_running():
-    if mt4_dashboard["last_pkt_time"] > 0: dpg.set_value("mt4_dash_status", mt4_dashboard["status"])
+    if mt4_dashboard["last_pkt_time"] > 0: dpg.set_value("mt4_dash_status", f"Status: {mt4_dashboard['status']}")
     dpg.set_value("mt4_x", f"X: {mt4_current_pos['x']:.1f}"); dpg.set_value("mt4_y", f"Y: {mt4_current_pos['y']:.1f}")
     dpg.set_value("mt4_z", f"Z: {mt4_current_pos['z']:.1f}"); dpg.set_value("mt4_g", f"G: {mt4_current_pos['gripper']:.1f}")
+
+    mt4_hw_str = mt4_dashboard.get('hw_link', 'Offline')
+    dpg.set_value("mt4_dash_link", f"HW: {mt4_hw_str}")
+    if mt4_hw_str == "Online": dpg.configure_item("mt4_dash_link", color=(0,255,0))
+    elif mt4_hw_str == "Simulation": dpg.configure_item("mt4_dash_link", color=(255,200,0))
+    else: dpg.configure_item("mt4_dash_link", color=(255,0,0))
+
+    hw_link_str = go1_dashboard.get('hw_link', 'Offline')
+    dpg.set_value("go1_dash_link", f"HW: {hw_link_str}")
+    if hw_link_str == "Online": dpg.configure_item("go1_dash_link", color=(0,255,0))
+    elif hw_link_str == "Simulation": dpg.configure_item("go1_dash_link", color=(255,200,0))
+    else: dpg.configure_item("go1_dash_link", color=(255,0,0))
     
     dpg.set_value("go1_dash_unity", f"Unity: {go1_dashboard['unity_link']}")
     dpg.set_value("go1_dash_reason", f"Mode: {go1_state['mode']} | {go1_state['reason']}")
