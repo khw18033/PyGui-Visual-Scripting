@@ -308,7 +308,11 @@ def toggle_mt4_record(custom_name=None):
         mt4_mode["recording"] = False
         if mt4_record_f: mt4_record_f.close()
         
-        # 유니티에서 지정한 이름으로 파일명 변경
+        # ★ 유니티에서 보낸 이름이 없고 GUI에서 누른 경우, GUI 입력창의 이름을 가져옴
+        if not custom_name and dpg.does_item_exist("path_name_input"):
+            custom_name = dpg.get_value("path_name_input")
+            
+        # 지정한 이름으로 파일명 변경
         if custom_name and mt4_record_temp_name:
             if not custom_name.endswith(".csv"): custom_name += ".csv"
             final_path = os.path.join(PATH_DIR, custom_name)
@@ -317,7 +321,13 @@ def toggle_mt4_record(custom_name=None):
                 
         dpg.set_item_label("btn_mt4_record", "Start Recording")
         if dpg.does_item_exist("combo_mt4_path"): dpg.configure_item("combo_mt4_path", items=get_mt4_paths())
-        write_log(f"MT4 Path Saved: {custom_name}")
+        
+        log_msg = f"MT4 Path Saved: {custom_name}" if custom_name else "MT4 Path Saved"
+        write_log(log_msg)
+        
+        # ★ 유니티 UI로 저장 완료 메시지 띄우기 및 드롭다운 목록 즉시 갱신!
+        send_unity_ui("STATUS", f"저장 완료: {custom_name if custom_name else '기본 이름'}")
+        send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
     else:
         mt4_mode["recording"] = True
         fname = os.path.join(PATH_DIR, f"path_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
@@ -327,6 +337,9 @@ def toggle_mt4_record(custom_name=None):
         mt4_record_writer.writerow(['x', 'y', 'z', 'gripper'])
         dpg.set_item_label("btn_mt4_record", "Stop Recording")
         write_log("MT4 Path Recording Started.")
+        
+        # ★ 유니티 UI로 녹화 시작 메시지 띄우기!
+        send_unity_ui("STATUS", "경로 녹화 시작...")
 
 def play_mt4_path(sender=None, app_data=None, user_data=None, filename=None):
     if not filename: filename = dpg.get_value("combo_mt4_path")
@@ -841,7 +854,7 @@ class MT4KeyboardNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("Flow Out"); self.outputs[f] = "Flow"
     def execute(self):
         # ★ [추가된 부분] 파일 이름 입력창에 커서가 깜빡일 때는 키 입력을 무시하고 흐름만 통과시킵니다.
-        if dpg.is_item_focused("file_name_input"):
+        if dpg.is_item_focused("file_name_input") or (dpg.does_item_exist("path_name_input") and dpg.is_item_focused("path_name_input")):
             for k, v in self.outputs.items():
                 if v == "Flow": return k
             return None
@@ -914,13 +927,10 @@ class MT4UnityNode(BaseNode):
                         
                     elif val == "START_REC":
                         if not mt4_mode["recording"]: toggle_mt4_record()
-                        send_unity_ui("STATUS", "경로 녹화 시작...")
                         
                     elif val.startswith("STOP_REC:"):
                         fname = val.split(":")[1]
                         if mt4_mode["recording"]: toggle_mt4_record(custom_name=fname)
-                        send_unity_ui("STATUS", f"저장 완료: {fname}.csv")
-                        send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]") # 파일 목록 갱신
                         
                     elif val == "REQ_FILES":
                         send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
@@ -1101,7 +1111,7 @@ class Go1KeyboardNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("Flow Out"); self.outputs[f] = "Flow"
     def execute(self):
         # ★ [추가된 부분] 파일 이름 입력창에 커서가 깜빡일 때는 키 입력을 무시하고 흐름만 통과시킵니다.
-        if dpg.is_item_focused("file_name_input"):
+        if dpg.is_item_focused("file_name_input") or (dpg.does_item_exist("path_name_input") and dpg.is_item_focused("path_name_input")):
             for k, v in self.outputs.items():
                 if v == "Flow": return k
             return None
@@ -1462,8 +1472,9 @@ with dpg.window(tag="PrimaryWindow"):
                     dpg.add_text("X: 0", tag="mt4_x"); dpg.add_text("Y: 0", tag="mt4_y")
                     dpg.add_text("Z: 0", tag="mt4_z"); dpg.add_text("G: 0", tag="mt4_g")
                 # 기존 "Coords" 자식 윈도우 아래쪽 또는 옆에 추가
-                with dpg.child_window(width=200, height=130, border=True):
+                with dpg.child_window(width=200, height=155, border=True):
                     dpg.add_text("Record & Play", color=(255,100,200))
+                    dpg.add_input_text(tag="path_name_input", default_value="my_path", width=130) # ★ 파일 이름 입력창 추가
                     dpg.add_button(label="Start Recording", tag="btn_mt4_record", width=130, callback=lambda s,a,u: toggle_mt4_record())
                     dpg.add_combo(items=get_mt4_paths(), tag="combo_mt4_path", width=130)
                     dpg.add_button(label="Play Selected", width=130, callback=play_mt4_path)
