@@ -98,7 +98,6 @@ def get_save_files():
     return [f for f in os.listdir(SAVE_DIR) if f.endswith(".json")]
 
 # ================= [MT4 State & Config] =================
-# ================= [MT4 State & Config] =================
 ser = None 
 mt4_current_pos = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0}
 mt4_target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0} 
@@ -127,7 +126,7 @@ def send_unity_ui(msg_type, extra_data):
     except: pass
 
 MT4_UNITY_IP = "192.168.50.63"; MT4_FEEDBACK_PORT = 5005
-MT4_LIMITS = {'min_x': 100, 'max_x': 280, 'min_y': -150, 'max_y': 150, 'min_z': 0, 'max_z': 280}
+MT4_LIMITS = {'min_x': 100, 'max_x': 280, 'min_y': -200, 'max_y': 200, 'min_z': 0, 'max_z': 280}
 MT4_GRIPPER_MIN = 30.0; MT4_GRIPPER_MAX = 60.0
 MT4_Z_OFFSET = 90.0
 
