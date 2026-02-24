@@ -854,6 +854,7 @@ class MT4UnityNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Unity Logic (MT4)", "MT4_UNITY_CONTROL")
         self.data_in_id = None; self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None
+        self.last_processed_json = ""  # ★ 이 한 줄을 끝에 추가해 주세요!
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label="Unity Logic (MT4)"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as in_flow: dpg.add_text("Flow In"); self.inputs[in_flow] = "Flow"
