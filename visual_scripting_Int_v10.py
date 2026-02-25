@@ -93,6 +93,28 @@ def get_wifi_ssid():
     try: return subprocess.check_output(['iwgetid','-r']).decode('utf-8').strip() or "Unknown"
     except: return "Unknown"
 
+# 백그라운드에서 모든 네트워크를 실시간 감지
+sys_net_str = "Loading Network..."
+def network_monitor_thread():
+    global sys_net_str
+    while True:
+        try:
+            out = subprocess.check_output("ip -o -4 addr show", shell=True).decode('utf-8')
+            info = []
+            for line in out.strip().split('\n'):
+                if ' lo ' in line: continue # 로컬 루프백 제외
+                p = line.split()
+                if len(p) >= 4:
+                    dev, ip = p[1], p[3].split('/')[0]
+                    ssid = ""
+                    if dev.startswith('wl'): # Wi-Fi인 경우 SSID 탐색
+                        try: ssid = subprocess.check_output(['iwgetid', dev, '-r']).decode('utf-8').strip()
+                        except: pass
+                    info.append(f"[{dev}] {ip} ({ssid})" if ssid else f"[{dev}] {ip}")
+            sys_net_str = "\n".join(info) if info else "Offline"
+        except: pass
+        time.sleep(2) # 2초마다 갱신
+
 def get_save_files():
     if not os.path.exists(SAVE_DIR): return []
     return [f for f in os.listdir(SAVE_DIR) if f.endswith(".json")]
@@ -1493,6 +1515,7 @@ atexit.register(force_cleanup_cameras)
 
 init_mt4_serial()
 threading.Thread(target=auto_reconnect_mt4_thread, daemon=True).start()
+threading.Thread(target=network_monitor_thread, daemon=True).start()
 threading.Thread(target=go1_v4_comm_thread, daemon=True).start()
 threading.Thread(target=camera_worker_thread, daemon=True).start()
 threading.Thread(target=sender_manager_thread, daemon=True).start()
@@ -1593,7 +1616,7 @@ with dpg.window(tag="PrimaryWindow"):
                         dpg.add_text("Load:"); dpg.add_combo(items=get_save_files(), tag="file_list_combo", width=120); dpg.add_button(label="LOAD", callback=load_cb, width=60); dpg.add_button(label="Refresh", callback=update_file_list, width=60)
                 with dpg.child_window(width=400, height=100, border=False):
                     dpg.add_spacer(height=20)
-                    dpg.add_text(f"My IP: {get_local_ip()} | SSID: {get_wifi_ssid()}", color=(180,180,180))
+                    dpg.add_text("Loading...", tag="sys_tab_net", color=(180,180,180)) # ★ 태그 달기
 
     dpg.add_separator()
     
@@ -1681,6 +1704,9 @@ while dpg.is_dearpygui_running():
     is_aruco_on = (aruco_settings['enabled'] and camera_state['status'] == 'Running')
     if is_aruco_on and HAS_CV2_FLASK: dpg.configure_item("go1_dash_aruco", default_value="ArUco: ON (Port 5000)", color=(0,255,255))
     else: dpg.configure_item("go1_dash_aruco", default_value="ArUco: OFF", color=(200,200,200))
+
+    if dpg.does_item_exist("dash_host_ip"): dpg.set_value("dash_host_ip", sys_net_str)
+    if dpg.does_item_exist("sys_tab_net"): dpg.set_value("sys_tab_net", sys_net_str)
     
     if is_running and (time.time() - last_logic_time > LOGIC_RATE):
         execute_graph_once()
