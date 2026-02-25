@@ -1116,6 +1116,52 @@ class Go1CommandActionNode(BaseNode):
     def get_settings(self): return {"mode": dpg.get_value(self.combo_id), "v1": dpg.get_value(self.field_v1)}
     def load_settings(self, data): dpg.set_value(self.combo_id, data.get("mode", "Stand")); dpg.set_value(self.field_v1, data.get("v1", 0.2))
 
+class Go1TimedActionNode(BaseNode):
+    def __init__(self, node_id): 
+        super().__init__(node_id, "Go1 Timed Action", "GO1_TIMED")
+        self.combo_id = None; self.field_spd = None; self.field_time = None; self.out_flow = None
+        self.start_time = 0.0; self.is_running = False
+
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Go1 Timed Action (Test)"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
+                self.combo_id = dpg.add_combo(items=["Walk Fwd", "Walk Back", "Turn Left", "Turn Right"], default_value="Walk Fwd", width=130)
+                dpg.add_spacer(height=3)
+                with dpg.group(horizontal=True): dpg.add_text("Spd:"); self.field_spd = dpg.add_input_float(width=60, default_value=0.4, step=0.1)
+                with dpg.group(horizontal=True): dpg.add_text("Sec:"); self.field_time = dpg.add_input_float(width=60, default_value=2.0, step=0.5)
+                dpg.add_spacer(height=5)
+                # ★ 노드 자체에 독립적인 실행 버튼을 달아줍니다.
+                dpg.add_button(label="[ ▶ TEST TRIGGER ]", width=130, callback=self.start_timer)
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
+
+    def start_timer(self, s, a):
+        self.is_running = True; self.start_time = time.time()
+        write_log(f"Timed Action: {dpg.get_value(self.field_time)}sec test started")
+
+    def execute(self):
+        global go1_node_intent
+        # 버튼이 눌렸을 때만 백그라운드에서 N초간 실행됩니다.
+        if self.is_running:
+            if time.time() - self.start_time <= dpg.get_value(self.field_time):
+                mode = dpg.get_value(self.combo_id); spd = dpg.get_value(self.field_spd)
+                vx = 0.0; vy = 0.0; wz = 0.0
+                if mode == "Walk Fwd": vx = spd
+                elif mode == "Walk Back": vx = -spd
+                elif mode == "Turn Left": wz = spd
+                elif mode == "Turn Right": wz = -spd
+                
+                go1_node_intent['vx'] = vx; go1_node_intent['vy'] = vy; go1_node_intent['wz'] = wz
+                go1_node_intent['trigger_time'] = time.monotonic()
+            else: 
+                # 시간이 다 되면 자동으로 멈춤(브레이크) 신호를 보냅니다.
+                self.is_running = False; go1_node_intent['stop'] = True
+                write_log("Timed Action: Finished")
+        return self.out_flow
+
+    def get_settings(self): return {"mode": dpg.get_value(self.combo_id), "spd": dpg.get_value(self.field_spd), "time": dpg.get_value(self.field_time)}
+    def load_settings(self, data): dpg.set_value(self.combo_id, data.get("mode", "Walk Fwd")); dpg.set_value(self.field_spd, data.get("spd", 0.4)); dpg.set_value(self.field_time, data.get("time", 2.0))
+
 class GetGo1StateNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Get Go1 State", "GET_GO1_STATE"); self.out_x = None; self.out_z = None; self.out_yaw = None
     def build_ui(self):
@@ -1306,6 +1352,7 @@ class NodeFactory:
         elif node_type == "UDP_RECV": node = UDPReceiverNode(node_id)
         elif node_type == "GO1_DRIVER": node = UniversalRobotNode(node_id, Go1RobotDriver())
         elif node_type == "GO1_ACTION": node = Go1CommandActionNode(node_id)
+        elif node_type == "GO1_TIMED": node = Go1TimedActionNode(node_id)
         elif node_type == "GO1_KEYBOARD": node = Go1KeyboardNode(node_id)
         elif node_type == "GO1_UNITY": node = Go1UnityNode(node_id)
         elif node_type == "CAM_CTRL": node = CameraControlNode(node_id)
@@ -1580,6 +1627,7 @@ with dpg.window(tag="PrimaryWindow"):
             dpg.add_text("Go1 Tools:", color=(0,255,255))
             dpg.add_button(label="DRIVER", callback=add_node_cb, user_data="GO1_DRIVER")
             dpg.add_button(label="ACTION", callback=add_node_cb, user_data="GO1_ACTION")
+            dpg.add_button(label="TIMED", callback=add_node_cb, user_data="GO1_TIMED")
             dpg.add_button(label="KEY", callback=add_node_cb, user_data="GO1_KEYBOARD")
             dpg.add_button(label="UNITY", callback=add_node_cb, user_data="GO1_UNITY")
             dpg.add_button(label="FILE_CAM", callback=add_node_cb, user_data="CAM_CTRL")
