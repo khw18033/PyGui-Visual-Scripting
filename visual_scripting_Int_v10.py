@@ -748,16 +748,19 @@ def go1_v4_comm_thread():
             if abs(go1_node_intent['vx']) > 0 or abs(go1_node_intent['vy']) > 0 or abs(go1_node_intent['wz']) > 0: last_move_cmd_time = tnow
 
         got = None
-        try:
-            data, _ = sock_rx_unity.recvfrom(256)
-            s = data.decode("utf-8", errors="ignore").strip().split()
-            if len(s) >= 4: got = (float(s[0]), float(s[1]), float(s[2]), int(s[3]))
-        except: pass
+        # ★ [핵심 패치 1] 버퍼에 밀린 패킷을 싹 다 읽어서 가장 최신의 명령만 가져옵니다 (C++ 로직 동일)
+        while True:
+            try:
+                data, _ = sock_rx_unity.recvfrom(256)
+                s = data.decode("utf-8", errors="ignore").strip().split()
+                if len(s) >= 4: got = (float(s[0]), float(s[1]), float(s[2]), int(s[3]))
+            except: 
+                break # 더 이상 읽을 패킷이 없으면 빠져나옴
         
-        uvx = uvy = uwz = uestop = 0
+        # ★ [핵심 패치 2] 명령이 오지 않은 찰나의 순간에도 기존 명령(go1_unity_data)을 0으로 덮어쓰지 않고 유지합니다
         if got: 
-            uvx, uvy, uwz, uestop = got; last_unity_cmd_time = tnow; go1_dashboard['unity_link'] = "Active"
-            go1_unity_data['vx'] = uvx; go1_unity_data['vy'] = uvy; go1_unity_data['wz'] = uwz; go1_unity_data['estop'] = uestop
+            last_unity_cmd_time = tnow; go1_dashboard['unity_link'] = "Active"
+            go1_unity_data['vx'], go1_unity_data['vy'], go1_unity_data['wz'], go1_unity_data['estop'] = got
             
         unity_active = go1_node_intent['use_unity_cmd'] and ((tnow - last_unity_cmd_time) <= unity_timeout_sec)
         go1_unity_data['active'] = unity_active
@@ -774,9 +777,12 @@ def go1_v4_comm_thread():
             else: target_mode = 2; out_wz = clamp(-yaw_align_kp * err, -W_MAX, W_MAX)
             if target_mode == 2 and cmd: cmd.gaitType = 1
         elif unity_active:
-            target_mode = 2 if not uestop else 1
+            # ★ [핵심 패치 3] 허공에 사라지는 임시 변수(uvx) 대신 기억해둔 유니티 값을 모터에 꽂아줍니다
+            target_mode = 2 if not go1_unity_data['estop'] else 1
             if cmd: cmd.gaitType = 1
-            out_vx = clamp(uvx, -V_MAX, V_MAX); out_vy = clamp(uvy, -S_MAX, S_MAX); out_wz = clamp(uwz, -W_MAX, W_MAX)
+            out_vx = clamp(go1_unity_data['vx'], -V_MAX, V_MAX)
+            out_vy = clamp(go1_unity_data['vy'], -S_MAX, S_MAX)
+            out_wz = clamp(go1_unity_data['wz'], -W_MAX, W_MAX)
             go1_state['reason'] = "UNITY"
         elif active_walk:
             target_mode = 2
