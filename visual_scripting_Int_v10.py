@@ -209,19 +209,16 @@ class MT4RobotDriver(BaseRobotDriver):
 class Go1RobotDriver(BaseRobotDriver):
     def get_ui_schema(self): return {'vx': ("Vx In", 0.0), 'vy': ("Vy In", 0.0), 'wz': ("Wz In", 0.0)}
     
-    # ★ 1. 설정 스키마에 Speed(%) 속성을 추가합니다. UniversalRobotNode가 알아서 숫자 입력창을 만들어 줍니다!
-    def get_settings_schema(self): return {'speed': ("Speed(%)", 100.0)}
+    # ★ 설정 스키마를 다시 비워줍니다. (UI에서 Speed 입력창이 사라짐)
+    def get_settings_schema(self): return {}
     
     def execute_command(self, inputs, settings):
         global go1_node_intent
         if inputs.get('vx') is not None or inputs.get('vy') is not None or inputs.get('wz') is not None:
-            # ★ 2. 입력된 속도(%) 값을 가져와 비율(0.0~1.0)로 변환합니다.
-            speed_mult = settings.get('speed', 100.0) / 100.0
-            
-            # ★ 3. 들어오는 속도 명령에 비율을 곱해서 로봇에게 최종 전달합니다.
-            go1_node_intent['vx'] = float(inputs.get('vx') or 0) * speed_mult
-            go1_node_intent['vy'] = float(inputs.get('vy') or 0) * speed_mult
-            go1_node_intent['wz'] = float(inputs.get('wz') or 0) * speed_mult
+            # ★ 배율 계산을 없애고 앞선 노드에서 들어온 값을 100% 그대로 로봇에 전달합니다.
+            go1_node_intent['vx'] = float(inputs.get('vx') or 0)
+            go1_node_intent['vy'] = float(inputs.get('vy') or 0)
+            go1_node_intent['wz'] = float(inputs.get('wz') or 0)
             go1_node_intent['trigger_time'] = time.monotonic()
         return None
 
