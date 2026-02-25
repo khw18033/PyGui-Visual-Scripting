@@ -893,30 +893,59 @@ def ep_sub_imu(info): ep_state['accel_x'], ep_state['accel_y'], ep_state['accel_
 # --- EP Connection Engine ---
 def connect_ep_thread_func(conn_mode):
     global ep_robot_inst
+    
+    # [로그 1] SDK 설치 여부 및 시작 로그
     if not HAS_ROBOMASTER_SDK:
-        ep_dashboard["hw_link"] = "Simulation"; return
+        ep_dashboard["hw_link"] = "Simulation"
+        write_log("EP_DEBUG: 'robomaster' SDK not found. Skipping connection.")
+        return
         
     ep_dashboard["hw_link"] = f"Connecting ({conn_mode.upper()})..."
     write_log(f"System: Attempting EP Connection via {conn_mode.upper()}...")
+    
+    # [로그 2] 기존 로봇 객체가 있다면 정리하는 과정 로깅
+    if ep_robot_inst is not None:
+        write_log("EP_DEBUG: Cleaning up previous robot instance...")
+        try: 
+            ep_robot_inst.close()
+            write_log("EP_DEBUG: Previous instance closed.")
+        except Exception as e: 
+            write_log(f"EP_DEBUG: Error closing previous instance: {e}")
+            pass
+
     try:
-        if ep_robot_inst is not None:
-            try: ep_robot_inst.close()
-            except: pass
-        
+        write_log("EP_DEBUG: Instantiating robot.Robot()...")
         ep_robot_inst = robot.Robot()
+        
+        # [로그 3] Initialize 직전/직후 로깅 (이 구간에서 가장 많이 멈춥니다)
+        write_log(f"EP_DEBUG: Calling initialize(conn_type='{conn_mode}')...")
         ep_robot_inst.initialize(conn_type=conn_mode)
+        write_log("EP_DEBUG: Initialize completed successfully.")
+        
+        # [로그 4] SN 획득 및 센서 구독 로깅
+        write_log("EP_DEBUG: Getting Serial Number...")
         ep_dashboard["sn"] = ep_robot_inst.get_sn()
+        
         ep_dashboard["hw_link"] = f"Online ({conn_mode.upper()})"
         ep_dashboard["conn_type"] = conn_mode.upper()
         write_log(f"System: EP Connected! (SN: {ep_dashboard['sn']})")
         
+        write_log("EP_DEBUG: Subscribing to telemetry (Pos, Vel, Bat, IMU)...")
         ep_robot_inst.chassis.sub_position(freq=1, callback=ep_sub_pos)
         ep_robot_inst.chassis.sub_velocity(freq=5, callback=ep_sub_vel)
         ep_robot_inst.battery.sub_battery_info(freq=1, callback=ep_sub_bat)
         ep_robot_inst.chassis.sub_imu(freq=10, callback=ep_sub_imu)
+        write_log("EP_DEBUG: All subscriptions active.")
+        
     except Exception as e:
-        ep_robot_inst = None; ep_dashboard["hw_link"] = "Offline"
-        write_log(f"EP Connect Error: {e}")
+        ep_robot_inst = None
+        ep_dashboard["hw_link"] = "Offline"
+        
+        # [로그 5] 에러 발생 시 traceback 모듈을 사용해 정확히 어디서 멈췄는지 상세 출력
+        import traceback
+        error_details = traceback.format_exc()
+        write_log(f"EP Connect Error (Detailed): {e}")
+        print(f"\n[EP_CRITICAL_ERROR_TRACE]\n{error_details}\n")
 
 def btn_connect_ep_sta(s, a): threading.Thread(target=connect_ep_thread_func, args=("sta",), daemon=True).start()
 def btn_connect_ep_ap(s, a): threading.Thread(target=connect_ep_thread_func, args=("ap",), daemon=True).start()
