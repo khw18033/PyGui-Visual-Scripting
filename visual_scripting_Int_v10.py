@@ -208,13 +208,22 @@ class MT4RobotDriver(BaseRobotDriver):
 
 class Go1RobotDriver(BaseRobotDriver):
     def get_ui_schema(self): return {'vx': ("Vx In", 0.0), 'vy': ("Vy In", 0.0), 'wz': ("Wz In", 0.0)}
-    def get_settings_schema(self): return {}
+    
+    # ★ 1. 설정 스키마에 Speed(%) 속성을 추가합니다. UniversalRobotNode가 알아서 숫자 입력창을 만들어 줍니다!
+    def get_settings_schema(self): return {'speed': ("Speed(%)", 100.0)}
+    
     def execute_command(self, inputs, settings):
         global go1_node_intent
         if inputs.get('vx') is not None or inputs.get('vy') is not None or inputs.get('wz') is not None:
-            go1_node_intent['vx'] = float(inputs.get('vx') or 0); go1_node_intent['vy'] = float(inputs.get('vy') or 0); go1_node_intent['wz'] = float(inputs.get('wz') or 0)
+            # ★ 2. 입력된 속도(%) 값을 가져와 비율(0.0~1.0)로 변환합니다.
+            speed_mult = settings.get('speed', 100.0) / 100.0
+            
+            # ★ 3. 들어오는 속도 명령에 비율을 곱해서 로봇에게 최종 전달합니다.
+            go1_node_intent['vx'] = float(inputs.get('vx') or 0) * speed_mult
+            go1_node_intent['vy'] = float(inputs.get('vy') or 0) * speed_mult
+            go1_node_intent['wz'] = float(inputs.get('wz') or 0) * speed_mult
             go1_node_intent['trigger_time'] = time.monotonic()
-        return None 
+        return None
 
 class BaseNode(ABC):
     def __init__(self, node_id, label, type_str):
@@ -1520,6 +1529,15 @@ with dpg.window(tag="PrimaryWindow"):
                     dpg.add_text("Vx Cmd: 0.00", tag="go1_dash_vx_2")
                     dpg.add_text("Vy Cmd: 0.00", tag="go1_dash_vy_2")
                     dpg.add_text("Wz Cmd: 0.00", tag="go1_dash_wz_2")
+                # ★ [새로 추가할 부분: 세 번째 박스 Network Info] ★
+                with dpg.child_window(width=260, height=150, border=True):
+                    dpg.add_text("Network Info", color=(100,200,255))
+                    dpg.add_text(f"Host IP: {get_local_ip()}", color=(200,200,200))
+                    dpg.add_text("Relay (Pi): 192.168.50.159", color=(200,200,200))
+                    dpg.add_separator()
+                    dpg.add_text("Cam 1 (Front): 192.168.123.13")
+                    dpg.add_text("Cam 2 (L / R): 192.168.123.14")
+                    dpg.add_text("Cam 3 (Bottom): 192.168.123.15")
 
         with dpg.tab(label="Files & System"):
             with dpg.group(horizontal=True):
