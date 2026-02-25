@@ -918,8 +918,8 @@ def connect_ep_thread_func(conn_mode):
         ep_robot_inst = None; ep_dashboard["hw_link"] = "Offline"
         write_log(f"EP Connect Error: {e}")
 
-def btn_connect_ep_sta(): threading.Thread(target=connect_ep_thread_func, args=("sta",), daemon=True).start()
-def btn_connect_ep_ap(): threading.Thread(target=connect_ep_thread_func, args=("ap",), daemon=True).start()
+def btn_connect_ep_sta(s, a): threading.Thread(target=connect_ep_thread_func, args=("sta",), daemon=True).start()
+def btn_connect_ep_ap(s, a): threading.Thread(target=connect_ep_thread_func, args=("ap",), daemon=True).start()
 
 # --- EP Control Loop (with sender2.py Brake Sequence) ---
 def ep_comm_thread():
