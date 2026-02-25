@@ -74,12 +74,23 @@ except ImportError as e:
     print(f"Warning: 'robot_interface' module not found. ({e})")
 
 # ================= [Robomaster SDK Import (EP)] =================
+# ================= [Robomaster SDK Import (EP)] =================
+from unittest.mock import MagicMock
+
+# ★ 핵심 트릭: 파이썬 메모리에 가짜 libmedia_codec 모듈을 주입하여 DJI SDK가 에러를 내지 않게 속입니다!
+sys.modules['libmedia_codec'] = MagicMock()
+sys.modules['libmedia_codec.media_codec'] = MagicMock()
+
 try:
     from robomaster import robot
     HAS_ROBOMASTER_SDK = True
 except ImportError as e:
     HAS_ROBOMASTER_SDK = False
     print(f"Warning: 'robomaster' module not found. ({e})")
+
+# ================= [EP State & Config] =================
+ep_robot_inst = None
+# ... (아래는 기존 코드 그대로 유지)
 
 # ================= [EP State & Config] =================
 ep_robot_inst = None
