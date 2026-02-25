@@ -789,13 +789,17 @@ def go1_v4_comm_thread():
                 if cmd: cmd.gaitType = 1
             else: target_mode = 1; use_grace = True; go1_state['reason'] = "STAND"
 
-        # ★ [핵심] Go1 관련 노드가 있고 RUN 중일 때만 로봇에 개입(송신)합니다!
-        go1_in_use = is_running and any(n.type_str.startswith("GO1_") for n in node_registry.values())
+        # ★ [핵심 2] 송신 전에도 똑같이 안전하게 확인 후, 제어권이 있을 때만 로봇에게 패킷을 발송합니다.
+        try:
+            go1_in_use = is_running and any(n.type_str.startswith("GO1_") for n in list(node_registry.values()))
+        except:
+            go1_in_use = False
+
         if cmd: 
             cmd.mode = target_mode; cmd.velocity = [out_vx, out_vy]; cmd.yawSpeed = out_wz
-            if go1_in_use: # 관전 모드일 때는 패킷 송신을 차단
+            if go1_in_use: 
                 udp.SetSend(cmd); udp.Send()
-
+            
         go1_state['vx_cmd'] = out_vx; go1_state['vy_cmd'] = out_vy; go1_state['wz_cmd'] = out_wz; go1_state['mode'] = target_mode
         dts = tnow - last_dr_time; last_dr_time = tnow
         cy = math.cos(yaw_unity); sy = math.sin(yaw_unity)
@@ -1579,9 +1583,10 @@ while dpg.is_dearpygui_running():
 
     hw_link_str = go1_dashboard.get('hw_link', 'Offline')
     dpg.set_value("go1_dash_link", f"HW: {hw_link_str}")
-    # ★ "Online"이라는 글자가 포함되어 있으면 무조건 초록색으로 표시
+    
+    # ★ "Online"이라는 단어가 포함되어 있으면(Active, Listen 둘 다) 모두 초록색으로 렌더링
     if "Online" in hw_link_str: dpg.configure_item("go1_dash_link", color=(0,255,0))
-    elif hw_link_str == "Simulation": dpg.configure_item("go1_dash_link", color=(255,200,0))
+    elif hw_link_str == "Simulation" or hw_link_str == "Connecting...": dpg.configure_item("go1_dash_link", color=(255,200,0))
     else: dpg.configure_item("go1_dash_link", color=(255,0,0))
     
     dpg.set_value("go1_dash_unity", f"Unity: {go1_dashboard['unity_link']}")
