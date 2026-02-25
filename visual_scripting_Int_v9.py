@@ -722,7 +722,11 @@ def go1_v4_comm_thread():
                 
             # 최근 1초 이내에 데이터가 살아서 움직였다면 Online, 아니면 Offline
             if (tnow - last_go1_recv_time) < 1.0:
-                go1_dashboard["hw_link"] = "Online"
+                # ★ [핵심] 화면에 Go1 노드가 있고 스크립트가 RUN 중인지 확인
+                go1_in_use = is_running and any(n.type_str.startswith("GO1_") for n in node_registry.values())
+                # 상태 텍스트 분리 (조종 중 / 관전 중)
+                go1_dashboard["hw_link"] = "Online (Active)" if go1_in_use else "Online (Listen)"
+
                 try:
                     if hasattr(state.bms, 'SOC'): go1_state['battery'] = int(state.bms.SOC)
                     elif hasattr(state.bms, 'soc'): go1_state['battery'] = int(state.bms.soc)
@@ -785,8 +789,13 @@ def go1_v4_comm_thread():
                 if cmd: cmd.gaitType = 1
             else: target_mode = 1; use_grace = True; go1_state['reason'] = "STAND"
 
-        if cmd: cmd.mode = target_mode; cmd.velocity = [out_vx, out_vy]; cmd.yawSpeed = out_wz; udp.SetSend(cmd); udp.Send()
-            
+        # ★ [핵심] Go1 관련 노드가 있고 RUN 중일 때만 로봇에 개입(송신)합니다!
+        go1_in_use = is_running and any(n.type_str.startswith("GO1_") for n in node_registry.values())
+        if cmd: 
+            cmd.mode = target_mode; cmd.velocity = [out_vx, out_vy]; cmd.yawSpeed = out_wz
+            if go1_in_use: # 관전 모드일 때는 패킷 송신을 차단
+                udp.SetSend(cmd); udp.Send()
+
         go1_state['vx_cmd'] = out_vx; go1_state['vy_cmd'] = out_vy; go1_state['wz_cmd'] = out_wz; go1_state['mode'] = target_mode
         dts = tnow - last_dr_time; last_dr_time = tnow
         cy = math.cos(yaw_unity); sy = math.sin(yaw_unity)
@@ -1570,7 +1579,8 @@ while dpg.is_dearpygui_running():
 
     hw_link_str = go1_dashboard.get('hw_link', 'Offline')
     dpg.set_value("go1_dash_link", f"HW: {hw_link_str}")
-    if hw_link_str == "Online": dpg.configure_item("go1_dash_link", color=(0,255,0))
+    # ★ "Online"이라는 글자가 포함되어 있으면 무조건 초록색으로 표시
+    if "Online" in hw_link_str: dpg.configure_item("go1_dash_link", color=(0,255,0))
     elif hw_link_str == "Simulation": dpg.configure_item("go1_dash_link", color=(255,200,0))
     else: dpg.configure_item("go1_dash_link", color=(255,0,0))
     
