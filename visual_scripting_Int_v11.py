@@ -172,7 +172,7 @@ GO1_UNITY_IP = "192.168.50.246"; UNITY_STATE_PORT = 15101; UNITY_CMD_PORT = 1510
 dt = 0.002; V_MAX, S_MAX, W_MAX = 0.4, 0.4, 2.0; VX_CMD, VY_CMD, WZ_CMD = 0.20, 0.20, 1.00
 hold_timeout_sec = 0.1; repeat_grace_sec = 0.4; min_move_sec = 0.4; stop_brake_sec = 0.0
 
-go1_node_intent = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'yaw_align': False, 'reset_yaw': False, 'stop': False, 'use_unity_cmd': True, 'trigger_time': time.monotonic()}
+go1_node_intent = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'yaw_align': False, 'reset_yaw': False, 'stop': False, 'use_unity_cmd': True, 'send_aruco': False, 'trigger_time': time.monotonic()}
 go1_state = {'world_x': 0.0, 'world_z': 0.0, 'yaw_unity': 0.0, 'vx_cmd': 0.0, 'vy_cmd': 0.0, 'wz_cmd': 0.0, 'mode': 1, 'reason': "NONE", 'battery': -1}
 go1_unity_data = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'estop': 0, 'active': False} 
 go1_dashboard = {"status": "Idle", "hw_link": "Offline", "unity_link": "Waiting"}
@@ -504,8 +504,11 @@ def go1_vision_worker_thread():
                                             [-msize / 2, msize / 2, 0], [msize / 2, msize / 2, 0],
                                             [msize / 2, -msize / 2, 0], [-msize / 2, -msize / 2, 0]
                                         ], dtype=np.float32)
+                                        
+                                        # ★ 이번 프레임에서 인식된 마커들을 담을 빈 리스트
+                                        detected_markers = []
+                                        
                                         for i in range(len(ids)):
-                                            # ★ 핵심: 화면을 폈으면 왜곡이 없는 행렬(0)을, 화면이 둥글면 원본 왜곡 행렬을 넣어서 거리를 계산합니다.
                                             use_dist = zero_dist_coeffs if is_calibrated else orig_dist_coeffs
                                             ret, rvec, tvec = cv2.solvePnP(marker_points, corners[i], orig_camera_matrix, use_dist)
                                             if ret:
@@ -515,13 +518,33 @@ def go1_vision_worker_thread():
                                                 marker_id = int(ids[i][0])
                                                 tx, ty, tz = float(tvec[0][0]), float(tvec[1][0]), float(tvec[2][0])
                                                 
+                                                # 개별 마커 데이터를 딕셔너리로 만들어 리스트에 추가
                                                 data = {"id": marker_id, "x": round(tx, 4), "y": round(ty, 4), "z": round(tz, 4), "cam": camera_id}
-                                                try: sock_aruco.sendto(json.dumps(data).encode(), (GO1_UNITY_IP, 5008))
-                                                except: pass
+                                                detected_markers.append(data)
                                                 
                                                 text = f"[{camera_id}] ID:{marker_id} X:{tx:.2f} Y:{ty:.2f} Z:{tz:.2f}"
                                                 cx, cy = int(corners[i][0][0][0]), int(corners[i][0][0][1])
                                                 cv2.putText(frame, text, (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                                
+                                        # ★ Unity 노드의 체크박스가 켜져 있다면, 마커 리스트를 JSON 형태로 변환
+                                        if go1_node_intent.get('send_aruco', False) and len(detected_markers) > 0:
+                                            # 유니티에서 파싱하기 쉽게 'markers' 배열과 타임스탬프를 포함
+                                            payload_dict = {
+                                                "camera": camera_id,
+                                                "timestamp": round(time.time(), 3),
+                                                "markers": detected_markers
+                                            }
+                                            payload_json = json.dumps(payload_dict)
+                                            
+                                            try:
+                                                # 1. 기존처럼 5008 포트로 UDP 실시간 전송 (Unity 수신용)
+                                                sock_aruco.sendto(payload_json.encode(), (GO1_UNITY_IP, 5008))
+                                                
+                                                # 2. 로컬 디렉토리에 'aruco_data.json' 파일로 계속 덮어쓰기 (파일 갱신용)
+                                                with open("aruco_data.json", "w", encoding="utf-8") as f:
+                                                    f.write(payload_json)
+                                            except Exception as e: 
+                                                pass
                                 
                                 # ★ 3단계: 화면 자르기 (보정 옵션을 켰을 때만 오른쪽 이상한 부분을 반으로 자릅니다)
                                 if is_calibrated:
@@ -1237,21 +1260,40 @@ class MultiSenderNode(BaseNode):
     def load_settings(self, data): dpg.set_value(self.combo_action, data.get("act", "Start Sender")); dpg.set_value(self.field_url, data.get("url", "http://210.110.250.33:5001/upload"))
 
 class Go1UnityNode(BaseNode):
-    def __init__(self, node_id): super().__init__(node_id, "Unity Link", "GO1_UNITY"); self.field_ip = None; self.chk_enable = None; self.out_vx = None; self.out_vy = None; self.out_wz = None; self.out_active = None
+    def __init__(self, node_id): 
+        super().__init__(node_id, "Unity Link", "GO1_UNITY")
+        self.field_ip = None; self.chk_enable = None; self.chk_aruco = None
+        self.out_vx = None; self.out_vy = None; self.out_wz = None; self.out_active = None
+        
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label="Unity Link (Go1)"):
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_text("Unity PC IP:", color=(100,255,100)); self.field_ip = dpg.add_input_text(width=120, default_value=GO1_UNITY_IP); dpg.add_spacer(height=3); self.chk_enable = dpg.add_checkbox(label="Enable Teleop Rx", default_value=True)
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
+                dpg.add_text("Unity PC IP:", color=(100,255,100))
+                self.field_ip = dpg.add_input_text(width=120, default_value=GO1_UNITY_IP)
+                dpg.add_spacer(height=3)
+                self.chk_enable = dpg.add_checkbox(label="Enable Teleop Rx", default_value=True)
+                # ★ ArUco 데이터 전송 체크박스 추가
+                self.chk_aruco = dpg.add_checkbox(label="Send ArUco Data (JSON)", default_value=False) 
+                
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as vx: dpg.add_text("Teleop Vx"); self.outputs[vx] = "Data"; self.out_vx = vx
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as vy: dpg.add_text("Teleop Vy"); self.outputs[vy] = "Data"; self.out_vy = vy
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as wz: dpg.add_text("Teleop Wz"); self.outputs[wz] = "Data"; self.out_wz = wz
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as act: dpg.add_text("Is Active?"); self.outputs[act] = "Data"; self.out_active = act
+            
     def execute(self):
         global GO1_UNITY_IP, go1_node_intent
-        GO1_UNITY_IP = dpg.get_value(self.field_ip); go1_node_intent['use_unity_cmd'] = dpg.get_value(self.chk_enable)
+        GO1_UNITY_IP = dpg.get_value(self.field_ip)
+        go1_node_intent['use_unity_cmd'] = dpg.get_value(self.chk_enable)
+        go1_node_intent['send_aruco'] = dpg.get_value(self.chk_aruco) # ★ 체크박스 상태를 전역 변수에 반영
+        
         self.output_data[self.out_vx] = go1_unity_data['vx']; self.output_data[self.out_vy] = go1_unity_data['vy']; self.output_data[self.out_wz] = go1_unity_data['wz']; self.output_data[self.out_active] = go1_unity_data['active']
         return None
-    def get_settings(self): return {"ip": dpg.get_value(self.field_ip), "en": dpg.get_value(self.chk_enable)}
-    def load_settings(self, data): dpg.set_value(self.field_ip, data.get("ip", "192.168.50.246")); dpg.set_value(self.chk_enable, data.get("en", True))
+        
+    def get_settings(self): return {"ip": dpg.get_value(self.field_ip), "en": dpg.get_value(self.chk_enable), "aruco": dpg.get_value(self.chk_aruco)}
+    def load_settings(self, data): 
+        dpg.set_value(self.field_ip, data.get("ip", "192.168.50.246"))
+        dpg.set_value(self.chk_enable, data.get("en", True))
+        dpg.set_value(self.chk_aruco, data.get("aruco", False))
 
 class Go1CommandActionNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Go1 Action", "GO1_ACTION"); self.combo_id = None; self.in_val1 = None; self.out_flow = None; self.field_v1 = None
