@@ -1,6 +1,7 @@
 # .gitignore 파일 내용에 추가
 Node_File/
 unitree_legged_sdk/
+Node_File_MT4/
 Node_File_Go1/
 path_record/
 result_log/

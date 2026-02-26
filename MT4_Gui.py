@@ -468,6 +468,9 @@ def link_cb(s, a):
 def del_link_cb(s, a): dpg.delete_item(a); link_registry.pop(a, None)
 def add_node_cb(s, a, u): NodeFactory.create_node(u)
 
+def save_cb(s, a): save_graph(dpg.get_value("file_name_input"))
+def load_cb(s, a): load_graph(dpg.get_value("file_list_combo"))
+
 def save_graph(filename):
     if not filename.endswith(".json"): filename += ".json"
     filepath = os.path.join(SAVE_DIR, filename)
