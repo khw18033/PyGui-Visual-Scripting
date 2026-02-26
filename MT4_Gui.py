@@ -50,6 +50,23 @@ def network_monitor_thread():
         except: pass
         time.sleep(2)
 
+def sync_manual_to_node_state():
+    global mt4_target_goal
+    for node in node_registry.values():
+        # 작동 중인 MT4 드라이버 노드를 찾아냅니다.
+        if isinstance(node, UniversalRobotNode) and node.driver.__class__.__name__ == 'MT4RobotDriver':
+            # 노드의 내부 상태를 매뉴얼 조작 좌표로 덮어씁니다.
+            node.state['x'] = mt4_target_goal['x']
+            node.state['y'] = mt4_target_goal['y']
+            node.state['z'] = mt4_target_goal['z']
+            node.state['g'] = mt4_target_goal['gripper']
+            
+            # 노드의 UI 텍스트 박스 숫자도 즉시 변경하여 시각적으로 일치시킵니다.
+            if 'x' in node.ui_fields: dpg.set_value(node.ui_fields['x'], mt4_target_goal['x'])
+            if 'y' in node.ui_fields: dpg.set_value(node.ui_fields['y'], mt4_target_goal['y'])
+            if 'z' in node.ui_fields: dpg.set_value(node.ui_fields['z'], mt4_target_goal['z'])
+            if 'g' in node.ui_fields: dpg.set_value(node.ui_fields['g'], mt4_target_goal['gripper'])
+
 # ================= [MT4 State & Config] =================
 ser = None 
 mt4_current_pos = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0}
@@ -212,6 +229,11 @@ class UniversalRobotNode(BaseNode):
         self.driver = driver
         self.in_pins = {}; self.setting_pins = {}
         self.ui_fields = {}; self.setting_fields = {}
+
+        for k, lbl, def_v in self.driver.get_ui_schema():
+            self.state[k] = def_v
+        for k, lbl, def_v in self.driver.get_settings_schema():
+            self.state[k] = def_v
         
     # [수정 후]
     def execute(self):
@@ -561,6 +583,8 @@ def mt4_apply_limits():
         cmd = f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n"
         ser.write(cmd.encode())
         mt4_current_pos.update(mt4_target_goal)
+    
+    sync_manual_to_node_state()
 
 def toggle_mt4_record(custom_name=None):
     global mt4_record_f, mt4_record_writer, mt4_record_temp_name
