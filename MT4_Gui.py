@@ -30,6 +30,13 @@ def write_log(msg):
     print(f"[{timestamp}] {msg}")
     system_log_buffer.append(f"[{timestamp}] {msg}")
 
+PATH_DIR = "path_record"
+os.makedirs(PATH_DIR, exist_ok=True)
+
+def get_mt4_paths(): 
+    if not os.path.exists(PATH_DIR): return []
+    return [f for f in os.listdir(PATH_DIR) if f.endswith(".csv")]
+
 def get_save_files(): return [f for f in os.listdir(SAVE_DIR) if f.endswith(".json")]
 
 sys_net_str = "Loading Network..."
@@ -81,7 +88,7 @@ class BaseRobotDriver(ABC):
 class MT4RobotDriver(BaseRobotDriver):
     def __init__(self): self.last_cmd = ""; self.last_write_time = 0; self.write_interval = 0.0
     def get_ui_schema(self): return [('x', "X", 200.0), ('y', "Y", 0.0), ('z', "Z", 120.0), ('gripper', "G", 40.0)]
-    def get_settings_schema(self): return [('smooth', "Smth", 1.0)]
+    def get_settings_schema(self): return [('smooth', "Smth", 1.0), ('grip_spd', "G_Spd", 5.0)]
     def execute_command(self, inputs, settings):
         global mt4_current_pos, mt4_target_goal, mt4_manual_override_until, ser
         if time.time() < mt4_collision_lock_until: return 
@@ -175,6 +182,10 @@ class MT4CommandActionNode(BaseNode):
         mt4_target_goal['y'] = max(MT4_LIMITS['min_y'], min(mt4_target_goal['y'], MT4_LIMITS['max_y']))
         mt4_target_goal['z'] = max(MT4_LIMITS['min_z'], min(mt4_target_goal['z'], MT4_LIMITS['max_z']))
         mt4_target_goal['gripper'] = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
+        if ser and ser.is_open:
+            cmd = f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n"
+            ser.write(cmd.encode())
+            
         return self.out_flow
 
 class ConstantNode(BaseNode):
@@ -292,10 +303,11 @@ class MT4UnityNode(BaseNode):
                         mt4_log_event_queue.append("FAIL")
                         send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
                 elif msg_type == "MOVE" and not mt4_mode["playing"] and time.time() > mt4_collision_lock_until:
-                    self.output_data[self.out_x] = parsed.get('z', 0) * 1000.0
-                    self.output_data[self.out_y] = -parsed.get('x', 0) * 1000.0
-                    self.output_data[self.out_z] = (parsed.get('y', 0) * 1000.0) + MT4_Z_OFFSET
-                    self.output_data[self.out_g] = parsed.get('gripper') 
+                    # [수정] 값이 존재할 때만 적용하여 0 고정 현상 방지
+                    if 'z' in parsed: self.output_data[self.out_x] = float(parsed['z']) * 1000.0
+                    if 'x' in parsed: self.output_data[self.out_y] = -float(parsed['x']) * 1000.0
+                    if 'y' in parsed: self.output_data[self.out_z] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
+                    if 'gripper' in parsed: self.output_data[self.out_g] = float(parsed['gripper']) 
             except: pass 
         return self.outputs
 
@@ -495,6 +507,11 @@ class NodeUIRenderer:
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as o: dpg.add_text("Flow Out"); node.outputs[o]=PortType.FLOW; node.out_flow=o
 
 # ================= [MT4 Dashboard Callbacks & Threads] =================
+def send_mt4_direct():
+    global ser, mt4_target_goal
+    if ser and ser.is_open:
+        ser.write(f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n".encode())
+
 def mt4_manual_control_callback(sender, app_data, user_data):
     global mt4_manual_override_until, mt4_target_goal, mt4_current_pos
     mt4_manual_override_until = time.time() + 1.5; axis, step = user_data; mt4_target_goal[axis] = mt4_current_pos[axis] + step; mt4_apply_limits()
@@ -524,7 +541,7 @@ def toggle_mt4_record(custom_name=None):
             try: os.rename(mt4_record_temp_name, final_path)
             except: pass
         dpg.set_item_label("btn_mt4_record", "Start Recording")
-        if dpg.does_item_exist("combo_mt4_path"): dpg.configure_item("combo_mt4_path", items=get_save_files())
+        if dpg.does_item_exist("combo_mt4_path"): dpg.configure_item("combo_mt4_path", items=get_mt4_paths())
         write_log(f"Path Saved: {custom_name}")
         send_unity_ui("STATUS", f"저장 완료: {custom_name}")
         send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
@@ -825,6 +842,10 @@ last_logic_time = 0; LOGIC_RATE = 0.02
 
 while dpg.is_dearpygui_running():
     if mt4_dashboard["last_pkt_time"] > 0: dpg.set_value("mt4_dash_status", f"Status: {mt4_dashboard['status']}")
+    
+    if dpg.does_item_exist("mt4_dash_latency"): 
+        dpg.set_value("mt4_dash_latency", f"Latency: {mt4_dashboard.get('latency', 0.0):.1f} ms")
+
     dpg.set_value("mt4_x", f"X: {mt4_current_pos['x']:.1f}"); dpg.set_value("mt4_y", f"Y: {mt4_current_pos['y']:.1f}")
     dpg.set_value("mt4_z", f"Z: {mt4_current_pos['z']:.1f}"); dpg.set_value("mt4_g", f"G: {mt4_current_pos['gripper']:.1f}")
     
