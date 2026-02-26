@@ -369,8 +369,24 @@ class LogicLoopNode(BaseNode):
     def load_settings(self, data): dpg.set_value(self.field_count, data.get("count", 3))
 
 class ConditionKeyNode(BaseNode):
-    def __init__(self, node_id): super().__init__(node_id, "Check: Key", "COND_KEY"); self.field_key = None; self.out_res = None; self.key_map = {"A": dpg.mvKey_A, "B": dpg.mvKey_B, "C": dpg.mvKey_C, "S": dpg.mvKey_S, "W": dpg.mvKey_W, "SPACE": dpg.mvKey_Spacebar} 
-    def execute(self): k = dpg.get_value(self.field_key).upper(); self.output_data[self.out_res] = dpg.is_key_down(self.key_map.get(k, 0)); return None
+    def __init__(self, node_id): 
+        super().__init__(node_id, "Check: Key", "COND_KEY")
+        self.field_key = None; self.out_res = None
+        self.key_map = {"A": dpg.mvKey_A, "B": dpg.mvKey_B, "C": dpg.mvKey_C, "S": dpg.mvKey_S, "W": dpg.mvKey_W, "SPACE": dpg.mvKey_Spacebar} 
+        self.prev_state = False # ★ 추가: 이전 키 상태 저장
+        
+    def execute(self): 
+        k = dpg.get_value(self.field_key).upper()
+        current_state = dpg.is_key_down(self.key_map.get(k, 0))
+        
+        if current_state and not self.prev_state:
+            self.output_data[self.out_res] = True
+        else:
+            self.output_data[self.out_res] = False
+            
+        self.prev_state = current_state
+        return None
+        
     def get_settings(self): return {"k": dpg.get_value(self.field_key)}
     def load_settings(self, data): dpg.set_value(self.field_key, data.get("k", "A"))
 
