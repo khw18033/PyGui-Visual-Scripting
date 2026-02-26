@@ -182,6 +182,9 @@ class MT4CommandActionNode(BaseNode):
         mt4_target_goal['y'] = max(MT4_LIMITS['min_y'], min(mt4_target_goal['y'], MT4_LIMITS['max_y']))
         mt4_target_goal['z'] = max(MT4_LIMITS['min_z'], min(mt4_target_goal['z'], MT4_LIMITS['max_z']))
         mt4_target_goal['gripper'] = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
+        
+        mt4_current_pos.update(mt4_target_goal)
+        
         if ser and ser.is_open:
             cmd = f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n"
             ser.write(cmd.encode())
@@ -330,9 +333,12 @@ class UDPReceiverNode(BaseNode):
         try:
             while True: 
                 data, _ = self.sock.recvfrom(4096); decoded = data.decode()
+                now = time.time()
+                mt4_dashboard["latency"] = (now - mt4_dashboard.get("last_pkt_time", now)) * 1000.0 
+                mt4_dashboard["last_pkt_time"] = now
+                mt4_dashboard["status"] = "Connected"
                 if decoded != self.last_data_str:
                     self.output_data[self.out_json] = decoded; self.last_data_str = decoded
-                    mt4_dashboard["last_pkt_time"] = time.time(); mt4_dashboard["status"] = "Connected"
         except: pass
         try:
             fb = {"x": -mt4_current_pos['y']/1000.0, "y": (mt4_current_pos['z'] - MT4_Z_OFFSET) / 1000.0, "z": mt4_current_pos['x']/1000.0, "gripper": mt4_current_pos['gripper'], "status": "Running"}
@@ -528,6 +534,11 @@ def mt4_apply_limits():
     mt4_target_goal['y'] = max(MT4_LIMITS['min_y'], min(mt4_target_goal['y'], MT4_LIMITS['max_y']))
     mt4_target_goal['z'] = max(MT4_LIMITS['min_z'], min(mt4_target_goal['z'], MT4_LIMITS['max_z']))
     mt4_target_goal['gripper'] = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
+
+    if not is_running and ser and ser.is_open:
+        cmd = f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n"
+        ser.write(cmd.encode())
+        mt4_current_pos.update(mt4_target_goal)
 
 def toggle_mt4_record(custom_name=None):
     global mt4_record_f, mt4_record_writer, mt4_record_temp_name
