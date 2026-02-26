@@ -213,21 +213,28 @@ class UniversalRobotNode(BaseNode):
         self.in_pins = {}; self.setting_pins = {}
         self.ui_fields = {}; self.setting_fields = {}
         
+    # [수정 후]
     def execute(self):
         inputs = {k: self.fetch_input_data(aid) for k, aid in self.in_pins.items()}
         settings = {k: self.fetch_input_data(aid) for k, aid in self.setting_pins.items()}
+        
+        # ★ 외부에서 값이 안 들어왔을(None) 때만 UI 상태값을 사용하도록 명확히 처리
         for k in inputs:
-            if inputs[k] is None: inputs[k] = self.state.get(k)
+            if inputs[k] is None: 
+                inputs[k] = self.state.get(k, 0.0)
+                
         for k in settings:
-            if settings[k] is None: settings[k] = self.state.get(k, 1.0)
+            if settings[k] is None: 
+                settings[k] = self.state.get(k, 1.0)
             
         new_state = self.driver.execute_command(inputs, settings)
         
-        # ★ [핵심 패치] 로봇의 새 위치를 노드 내부 상태와 GUI 화면에 동기화!
+        # ★ 새로운 상태를 UI에 반영 (유니티에서 들어온 값이 GUI 화면 숫자도 바꾸도록 함)
         if new_state:
             for k, v in new_state.items():
-                if k in self.state: self.state[k] = v
-                if k in self.ui_fields: dpg.set_value(self.ui_fields[k], v)
+                self.state[k] = v
+                if k in self.ui_fields: 
+                    dpg.set_value(self.ui_fields[k], v)
 
         for k, v in self.outputs.items():
             if v == PortType.FLOW: return k
@@ -384,9 +391,20 @@ class NodeUIRenderer:
                 node.state['LEFT'] = dpg.is_key_down(dpg.mvKey_Left); node.state['RIGHT'] = dpg.is_key_down(dpg.mvKey_Right)
                 node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)
                 node.state['J'] = dpg.is_key_down(dpg.mvKey_J); node.state['U'] = dpg.is_key_down(dpg.mvKey_U)
+            # [수정 후]
             elif isinstance(node, UniversalRobotNode):
-                for k, fid in node.ui_fields.items(): node.state[k] = dpg.get_value(fid)
-                for k, fid in node.setting_fields.items(): node.state[k] = dpg.get_value(fid)
+                for k, fid in node.ui_fields.items(): 
+                    # ★ 해당 핀(in_pins[k])에 연결된 선이 '없을 때만' UI 화면의 값을 읽어옵니다.
+                    pin_id = node.in_pins[k]
+                    is_connected = any(l['target'] == pin_id for l in link_registry.values())
+                    if not is_connected:
+                        node.state[k] = dpg.get_value(fid)
+                        
+                for k, fid in node.setting_fields.items(): 
+                    pin_id = node.setting_pins[k]
+                    is_connected = any(l['target'] == pin_id for l in link_registry.values())
+                    if not is_connected:
+                        node.state[k] = dpg.get_value(fid)
 
     @staticmethod
     def sync_state_to_ui(node):
