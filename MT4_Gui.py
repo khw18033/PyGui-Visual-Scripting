@@ -134,6 +134,7 @@ class ConditionKeyNode(BaseNode):
         self.out_res = None; self.prev_state = False 
     def execute(self):
         current = self.state.get("is_down", False)
+        # ★ '딸깍' 감지 로직 완벽 적용
         if current and not self.prev_state: self.output_data[self.out_res] = True
         else: self.output_data[self.out_res] = False
         self.prev_state = current
@@ -142,11 +143,9 @@ class ConditionKeyNode(BaseNode):
 class LogicIfNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Logic: IF", "LOGIC_IF"); self.in_cond = None; self.out_true = None; self.out_false = None
     def execute(self):
-        target_link = next((l for l in link_registry.values() if l['target'] == self.in_cond), None)
-        if target_link and target_link['src_node_id'] in node_registry:
-            src_node = node_registry[target_link['src_node_id']]
-            if src_node.type_str.startswith("COND_"): src_node.execute()
-        return self.out_true if self.fetch_input_data(self.in_cond) else self.out_false
+        # IF가 여러번 평가되어도 Condition 내부 상태가 망가지지 않도록 수정
+        cond_val = self.fetch_input_data(self.in_cond)
+        return self.out_true if cond_val else self.out_false
 
 class LogicLoopNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Logic: LOOP", "LOGIC_LOOP"); self.out_loop = None; self.out_finish = None; self.current_iter = 0; self.is_active = False
@@ -156,7 +155,7 @@ class LogicLoopNode(BaseNode):
         if self.current_iter < target: self.current_iter += 1; return self.out_loop 
         else: self.is_active = False; return self.out_finish
 
-class MT4ActionNode(BaseNode):
+class MT4CommandActionNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "MT4 Action", "MT4_ACTION"); self.in_val1 = None; self.in_val2 = None; self.in_val3 = None; self.out_flow = None
     def execute(self):
         global mt4_manual_override_until, mt4_target_goal
@@ -170,11 +169,17 @@ class MT4ActionNode(BaseNode):
         elif mode.startswith("Move Abs"): mt4_target_goal['x'] = v1; mt4_target_goal['y'] = v2; mt4_target_goal['z'] = v3
         elif mode.startswith("Set Grip"): mt4_target_goal['gripper'] = v1
         elif mode.startswith("Grip Rel"): mt4_target_goal['gripper'] += v1
+        elif mode == "Homing": mt4_homing_callback(None, None, None)
+        
         mt4_target_goal['x'] = max(MT4_LIMITS['min_x'], min(mt4_target_goal['x'], MT4_LIMITS['max_x']))
         mt4_target_goal['y'] = max(MT4_LIMITS['min_y'], min(mt4_target_goal['y'], MT4_LIMITS['max_y']))
         mt4_target_goal['z'] = max(MT4_LIMITS['min_z'], min(mt4_target_goal['z'], MT4_LIMITS['max_z']))
         mt4_target_goal['gripper'] = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
         return self.out_flow
+
+class ConstantNode(BaseNode):
+    def __init__(self, node_id): super().__init__(node_id, "Constant", "CONSTANT"); self.out_val = None
+    def execute(self): self.output_data[self.out_val] = self.state.get("val", 1.0); return None
 
 class PrintNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Print Log", "PRINT"); self.out_flow = None; self.inp_data = None
@@ -183,57 +188,198 @@ class PrintNode(BaseNode):
         if val is not None: write_log(f"PRINT: {val}")
         return self.out_flow
 
-class ConstantNode(BaseNode):
-    def __init__(self, node_id): super().__init__(node_id, "Constant", "CONSTANT"); self.out_val = None
-    def execute(self): self.output_data[self.out_val] = self.state.get("val", 1.0); return None
-
 class LoggerNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "System Log", "LOGGER"); self.txt=None; self.llen=0
     def execute(self): return None 
 
 class UniversalRobotNode(BaseNode):
-    def __init__(self, node_id, driver): super().__init__(node_id, "MT4 Driver", "MT4_DRIVER"); self.driver = driver; self.in_pins = {}; self.setting_pins = {}
+    def __init__(self, node_id, driver): 
+        super().__init__(node_id, "MT4 Driver", "MT4_DRIVER")
+        self.driver = driver
+        self.in_pins = {}; self.setting_pins = {}
+        self.ui_fields = {}; self.setting_fields = {}
+        
     def execute(self):
         inputs = {k: self.fetch_input_data(aid) for k, aid in self.in_pins.items()}
         settings = {k: self.fetch_input_data(aid) for k, aid in self.setting_pins.items()}
+        for k in inputs:
+            if inputs[k] is None: inputs[k] = self.state.get(k)
         for k in settings:
             if settings[k] is None: settings[k] = self.state.get(k, 1.0)
+            
         self.driver.execute_command(inputs, settings)
         for k, v in self.outputs.items():
             if v == PortType.FLOW: return k
         return None
 
-# ================= [Refactoring: UI Renderer & Data Synchronizer] =================
+class MT4KeyboardNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Keyboard (MT4)", "MT4_KEYBOARD")
+        self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None
+        self.step_size = 10.0; self.grip_step = 5.0; self.cooldown = 0.2; self.last_input_time = 0.0
+
+    def execute(self):
+        if self.state.get("is_focused", False):
+            for k, v in self.outputs.items():
+                if v == PortType.FLOW: return k
+            return None
+        
+        global mt4_manual_override_until, mt4_target_goal
+        if time.time() - self.last_input_time > self.cooldown:
+            dx=0; dy=0; dz=0; dg=0
+            key_mode = self.state.get("keys", "WASD")
+            if key_mode == "WASD":
+                if self.state.get("W"): dx=1
+                if self.state.get("S"): dx=-1
+                if self.state.get("A"): dy=1
+                if self.state.get("D"): dy=-1
+            else:
+                if self.state.get("UP"): dx=1
+                if self.state.get("DOWN"): dx=-1
+                if self.state.get("LEFT"): dy=1
+                if self.state.get("RIGHT"): dy=-1
+
+            if self.state.get("Q"): dz=1
+            if self.state.get("E"): dz=-1
+            if self.state.get("J"): dg=1
+            if self.state.get("U"): dg=-1
+            if dx or dy or dz or dg:
+                mt4_manual_override_until = time.time() + 0.5; self.last_input_time = time.time()
+                mt4_target_goal['x']+=dx*self.step_size; mt4_target_goal['y']+=dy*self.step_size; mt4_target_goal['z']+=dz*self.step_size; mt4_target_goal['gripper']+=dg*self.grip_step
+        self.output_data[self.out_x]=mt4_target_goal['x']; self.output_data[self.out_y]=mt4_target_goal['y']; self.output_data[self.out_z]=mt4_target_goal['z']; self.output_data[self.out_g]=mt4_target_goal['gripper']
+        for k, v in self.outputs.items():
+            if v == PortType.FLOW: return k
+        return None
+
+class MT4UnityNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Unity Logic (MT4)", "MT4_UNITY")
+        self.data_in_id = None; self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None
+        self.last_processed_json = ""
+    def execute(self):
+        global mt4_collision_lock_until
+        if time.time() - mt4_dashboard.get("last_pkt_time", 0) > 0.5:
+            self.output_data[self.out_x] = None; self.output_data[self.out_y] = None; self.output_data[self.out_z] = None; self.output_data[self.out_g] = None
+            return self.outputs
+            
+        raw_json = self.fetch_input_data(self.data_in_id)
+        if raw_json and raw_json != self.last_processed_json:
+            self.last_processed_json = raw_json
+            try:
+                parsed = json.loads(raw_json)
+                msg_type = parsed.get("type", "MOVE")
+                if msg_type == "CMD":
+                    val = parsed.get("val", "")
+                    if val == "COLLISION":
+                        mt4_collision_lock_until = time.time() + 2.0 
+                        if ser and ser.is_open: ser.write(b"!") 
+                        write_log("Collision Detected! Robot Locked.")
+                        send_unity_ui("STATUS", "충돌 감지! 로봇 긴급 정지")
+                    elif val == "START_REC":
+                        if not mt4_mode["recording"]: toggle_mt4_record()
+                    elif val.startswith("STOP_REC:"):
+                        fname = val.split(":")[1]
+                        if mt4_mode["recording"]: toggle_mt4_record(custom_name=fname)
+                    elif val == "REQ_FILES":
+                        send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
+                    elif val.startswith("PLAY:"):
+                        fname = val.split(":")[1]
+                        play_mt4_path(filename=fname)
+                    elif val == "LOG_SUCCESS":
+                        mt4_log_event_queue.append("SUCCESS")
+                        send_unity_ui("LOG", "<color=green>SUCCESS 기록 완료</color>")
+                    elif val == "LOG_FAIL":
+                        mt4_log_event_queue.append("FAIL")
+                        send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
+                elif msg_type == "MOVE" and not mt4_mode["playing"] and time.time() > mt4_collision_lock_until:
+                    self.output_data[self.out_x] = parsed.get('z', 0) * 1000.0
+                    self.output_data[self.out_y] = -parsed.get('x', 0) * 1000.0
+                    self.output_data[self.out_z] = (parsed.get('y', 0) * 1000.0) + MT4_Z_OFFSET
+                    self.output_data[self.out_g] = parsed.get('gripper') 
+            except: pass 
+        return self.outputs
+
+class UDPReceiverNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "UDP Receiver", "UDP_RECV")
+        self.out_flow = None; self.out_json = None
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.sock.setblocking(False)
+        self.is_bound = False; self.last_data_str = ""; self.current_port = 0
+    def execute(self):
+        global MT4_UNITY_IP
+        port = self.state.get("port", 6000); MT4_UNITY_IP = self.state.get("ip", "192.168.50.63")
+        if not self.is_bound or self.current_port != port:
+            try:
+                self.sock.close()
+                self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.sock.setblocking(False)
+                self.sock.bind(('0.0.0.0', port)); self.is_bound = True; self.current_port = port
+                write_log(f"UDP: Bound to port {port}")
+            except: self.is_bound = True
+        try:
+            while True: 
+                data, _ = self.sock.recvfrom(4096); decoded = data.decode()
+                if decoded != self.last_data_str:
+                    self.output_data[self.out_json] = decoded; self.last_data_str = decoded
+                    mt4_dashboard["last_pkt_time"] = time.time(); mt4_dashboard["status"] = "Connected"
+        except: pass
+        try:
+            fb = {"x": -mt4_current_pos['y']/1000.0, "y": (mt4_current_pos['z'] - MT4_Z_OFFSET) / 1000.0, "z": mt4_current_pos['x']/1000.0, "gripper": mt4_current_pos['gripper'], "status": "Running"}
+            sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock_send.sendto(json.dumps(fb).encode(), (MT4_UNITY_IP, MT4_FEEDBACK_PORT))
+        except: pass
+        return self.out_flow
+
+
+# ================= [UI Renderer & Data Synchronizer] =================
 class NodeUIRenderer:
     key_map = {"A": 65, "B": 66, "C": 67, "S": 83, "W": 87, "SPACE": 32}
 
     @staticmethod
     def sync_ui_to_state():
+        is_focused = dpg.is_item_focused("file_name_input") or (dpg.does_item_exist("path_name_input") and dpg.is_item_focused("path_name_input"))
         for nid, node in node_registry.items():
             if isinstance(node, ConditionKeyNode) and hasattr(node, 'field_key'):
                 k = dpg.get_value(node.field_key).upper()
                 node.state['key'] = k; node.state['is_down'] = dpg.is_key_down(NodeUIRenderer.key_map.get(k, 0))
             elif isinstance(node, LogicLoopNode) and hasattr(node, 'field_count'):
                 node.state['count'] = dpg.get_value(node.field_count)
-            elif isinstance(node, MT4ActionNode) and hasattr(node, 'combo_id'):
+            elif isinstance(node, MT4CommandActionNode) and hasattr(node, 'combo_id'):
                 node.state['mode'] = dpg.get_value(node.combo_id)
-                node.state['v1'] = dpg.get_value(node.field_v1)
-                node.state['v2'] = dpg.get_value(node.field_v2)
-                node.state['v3'] = dpg.get_value(node.field_v3)
+                node.state['v1'] = dpg.get_value(node.field_v1); node.state['v2'] = dpg.get_value(node.field_v2); node.state['v3'] = dpg.get_value(node.field_v3)
             elif isinstance(node, ConstantNode) and hasattr(node, 'field_val'):
                 node.state['val'] = dpg.get_value(node.field_val)
             elif isinstance(node, LoggerNode) and hasattr(node, 'txt'):
                 if len(system_log_buffer) != node.llen:
                     dpg.set_value(node.txt, "\n".join(list(system_log_buffer)[-8:])); node.llen = len(system_log_buffer)
+            elif isinstance(node, UDPReceiverNode) and hasattr(node, 'port'):
+                node.state['port'] = dpg.get_value(node.port); node.state['ip'] = dpg.get_value(node.ip)
+            elif isinstance(node, MT4KeyboardNode) and hasattr(node, 'combo_keys'):
+                node.state['is_focused'] = is_focused
+                node.state['keys'] = dpg.get_value(node.combo_keys)
+                node.state['W'] = dpg.is_key_down(dpg.mvKey_W); node.state['S'] = dpg.is_key_down(dpg.mvKey_S)
+                node.state['A'] = dpg.is_key_down(dpg.mvKey_A); node.state['D'] = dpg.is_key_down(dpg.mvKey_D)
+                node.state['UP'] = dpg.is_key_down(dpg.mvKey_Up); node.state['DOWN'] = dpg.is_key_down(dpg.mvKey_Down)
+                node.state['LEFT'] = dpg.is_key_down(dpg.mvKey_Left); node.state['RIGHT'] = dpg.is_key_down(dpg.mvKey_Right)
+                node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)
+                node.state['J'] = dpg.is_key_down(dpg.mvKey_J); node.state['U'] = dpg.is_key_down(dpg.mvKey_U)
+            elif isinstance(node, UniversalRobotNode):
+                for k, fid in node.ui_fields.items(): node.state[k] = dpg.get_value(fid)
+                for k, fid in node.setting_fields.items(): node.state[k] = dpg.get_value(fid)
 
     @staticmethod
     def sync_state_to_ui(node):
         if isinstance(node, ConditionKeyNode) and hasattr(node, 'field_key'): dpg.set_value(node.field_key, node.state.get('key', 'SPACE'))
         elif isinstance(node, LogicLoopNode) and hasattr(node, 'field_count'): dpg.set_value(node.field_count, node.state.get('count', 3))
-        elif isinstance(node, MT4ActionNode) and hasattr(node, 'combo_id'):
+        elif isinstance(node, MT4CommandActionNode) and hasattr(node, 'combo_id'):
             dpg.set_value(node.combo_id, node.state.get('mode', 'Move Relative (XYZ)'))
             dpg.set_value(node.field_v1, node.state.get('v1', 0)); dpg.set_value(node.field_v2, node.state.get('v2', 0)); dpg.set_value(node.field_v3, node.state.get('v3', 0))
         elif isinstance(node, ConstantNode) and hasattr(node, 'field_val'): dpg.set_value(node.field_val, node.state.get('val', 1.0))
+        elif isinstance(node, UDPReceiverNode) and hasattr(node, 'port'):
+            dpg.set_value(node.port, node.state.get('port', 6000)); dpg.set_value(node.ip, node.state.get('ip', '192.168.50.63'))
+        elif isinstance(node, MT4KeyboardNode) and hasattr(node, 'combo_keys'): dpg.set_value(node.combo_keys, node.state.get('keys', 'WASD'))
+        elif isinstance(node, UniversalRobotNode):
+            for k, fid in node.ui_fields.items(): dpg.set_value(fid, node.state.get(k, 0.0))
+            for k, fid in node.setting_fields.items(): dpg.set_value(fid, node.state.get(k, 1.0))
 
     @staticmethod
     def render(node):
@@ -241,11 +387,14 @@ class NodeUIRenderer:
         elif isinstance(node, ConditionKeyNode): NodeUIRenderer._render_cond_key(node)
         elif isinstance(node, LogicIfNode): NodeUIRenderer._render_logic_if(node)
         elif isinstance(node, LogicLoopNode): NodeUIRenderer._render_logic_loop(node)
-        elif isinstance(node, MT4ActionNode): NodeUIRenderer._render_mt4_action(node)
+        elif isinstance(node, MT4CommandActionNode): NodeUIRenderer._render_mt4_action(node)
         elif isinstance(node, ConstantNode): NodeUIRenderer._render_constant(node)
         elif isinstance(node, PrintNode): NodeUIRenderer._render_print(node)
         elif isinstance(node, LoggerNode): NodeUIRenderer._render_logger(node)
         elif isinstance(node, UniversalRobotNode): NodeUIRenderer._render_universal(node)
+        elif isinstance(node, MT4KeyboardNode): NodeUIRenderer._render_mt4_keyboard(node)
+        elif isinstance(node, MT4UnityNode): NodeUIRenderer._render_mt4_unity(node)
+        elif isinstance(node, UDPReceiverNode): NodeUIRenderer._render_udp(node)
 
     @staticmethod
     def _render_start(node):
@@ -275,7 +424,7 @@ class NodeUIRenderer:
         with dpg.node(tag=node.node_id, parent="node_editor", label="MT4 Action"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); node.inputs[flow] = PortType.FLOW
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                node.combo_id = dpg.add_combo(["Move Relative (XYZ)", "Move Absolute (XYZ)", "Set Gripper (Abs)"], default_value="Move Relative (XYZ)", width=150)
+                node.combo_id = dpg.add_combo(["Move Relative (XYZ)", "Move Absolute (XYZ)", "Set Gripper (Abs)", "Grip Relative (Add)", "Homing"], default_value="Move Relative (XYZ)", width=150)
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as v1: dpg.add_text("X / Grip"); node.field_v1 = dpg.add_input_float(width=60, default_value=0); node.inputs[v1] = PortType.DATA; node.in_val1 = v1
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as v2: dpg.add_text("Y"); node.field_v2 = dpg.add_input_float(width=60, default_value=0); node.inputs[v2] = PortType.DATA; node.in_val2 = v2
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as v3: dpg.add_text("Z"); node.field_v3 = dpg.add_input_float(width=60, default_value=0); node.inputs[v3] = PortType.DATA; node.in_val3 = v3
@@ -295,16 +444,55 @@ class NodeUIRenderer:
     def _render_logger(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="System Log (Flowless)"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                with dpg.child_window(width=200, height=100): node.txt = dpg.add_text("", wrap=190)
+                with dpg.child_window(width=200, height=100): node.txt=dpg.add_text("", wrap=190)
     @staticmethod
     def _render_universal(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="MT4 Core Driver"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); node.inputs[flow] = PortType.FLOW
             for key, label, default_val in node.driver.get_ui_schema():
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as aid:
-                    with dpg.group(horizontal=True): dpg.add_text(label, color=(255,255,0))
+                    with dpg.group(horizontal=True): 
+                        dpg.add_text(label, color=(255,255,0))
+                        node.ui_fields[key] = dpg.add_input_float(width=80, default_value=default_val, step=0)
                     node.inputs[aid] = PortType.DATA; node.in_pins[key] = aid
+            dpg.add_node_attribute(attribute_type=dpg.mvNode_Attr_Static)
+            for key, label, default_val in node.driver.get_settings_schema():
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as aid:
+                    with dpg.group(horizontal=True): 
+                        dpg.add_text(label)
+                        node.setting_fields[key] = dpg.add_input_float(width=60, default_value=default_val, step=0)
+                    node.inputs[aid] = PortType.DATA; node.setting_pins[key] = aid
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as fout: dpg.add_text("Flow Out"); node.outputs[fout] = PortType.FLOW
+    @staticmethod
+    def _render_mt4_keyboard(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="MT4 Keyboard"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); node.inputs[flow] = PortType.FLOW
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
+                dpg.add_text("XY Move / QE: Z / UJ: Grip", color=(255,150,150))
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as x: dpg.add_text("Target X"); node.outputs[x] = PortType.DATA; node.out_x = x
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as y: dpg.add_text("Target Y"); node.outputs[y] = PortType.DATA; node.out_y = y
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as z: dpg.add_text("Target Z"); node.outputs[z] = PortType.DATA; node.out_z = z
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as g: dpg.add_text("Target Grip"); node.outputs[g] = PortType.DATA; node.out_g = g
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("Flow Out"); node.outputs[f] = PortType.FLOW
+    @staticmethod
+    def _render_mt4_unity(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Unity Logic (MT4)"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as in_flow: dpg.add_text("Flow In"); node.inputs[in_flow] = PortType.FLOW
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as d_in: dpg.add_text("JSON"); node.inputs[d_in] = PortType.DATA; node.data_in_id = d_in
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_x: dpg.add_text("Target X"); node.outputs[out_x] = PortType.DATA; node.out_x = out_x
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_y: dpg.add_text("Target Y"); node.outputs[out_y] = PortType.DATA; node.out_y = out_y
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_z: dpg.add_text("Target Z"); node.outputs[out_z] = PortType.DATA; node.out_z = out_z
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_g: dpg.add_text("Target Grip"); node.outputs[out_g] = PortType.DATA; node.out_g = out_g
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f_out: dpg.add_text("Flow Out"); node.outputs[f_out] = PortType.FLOW
+    @staticmethod
+    def _render_udp(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="UDP Receiver (MT4 JSON)"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as f: dpg.add_text("Flow In"); node.inputs[f]=PortType.FLOW
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_input_int(label="Port", width=80, default_value=6000, tag=f"p_{node.node_id}"); node.port=f"p_{node.node_id}"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_input_text(label="IP", width=100, default_value="192.168.50.63", tag=f"i_{node.node_id}"); node.ip=f"i_{node.node_id}"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as d: dpg.add_text("JSON Out"); node.outputs[d]=PortType.DATA; node.out_json=d
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as o: dpg.add_text("Flow Out"); node.outputs[o]=PortType.FLOW; node.out_flow=o
 
 # ================= [MT4 Dashboard Callbacks & Threads] =================
 def mt4_manual_control_callback(sender, app_data, user_data):
@@ -338,6 +526,8 @@ def toggle_mt4_record(custom_name=None):
         dpg.set_item_label("btn_mt4_record", "Start Recording")
         if dpg.does_item_exist("combo_mt4_path"): dpg.configure_item("combo_mt4_path", items=get_save_files())
         write_log(f"Path Saved: {custom_name}")
+        send_unity_ui("STATUS", f"저장 완료: {custom_name}")
+        send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
     else:
         mt4_mode["recording"] = True
         fname = os.path.join(PATH_DIR, f"path_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
@@ -347,6 +537,7 @@ def toggle_mt4_record(custom_name=None):
         mt4_record_writer.writerow(['x', 'y', 'z', 'gripper'])
         dpg.set_item_label("btn_mt4_record", "Stop Recording")
         write_log("Path Recording Started.")
+        send_unity_ui("STATUS", "경로 녹화 시작...")
 
 def play_mt4_path(sender=None, app_data=None, user_data=None, filename=None):
     if not filename: filename = dpg.get_value("combo_mt4_path")
@@ -356,8 +547,10 @@ def play_mt4_path(sender=None, app_data=None, user_data=None, filename=None):
 
 def play_mt4_path_thread(filepath):
     global mt4_mode, mt4_target_goal, mt4_manual_override_until
-    mt4_mode["playing"] = True; mt4_manual_override_until = time.time() + 86400 
+    mt4_mode["playing"] = True
+    mt4_manual_override_until = time.time() + 86400 
     write_log(f"Playing path: {os.path.basename(filepath)}")
+    send_unity_ui("STATUS", f"재생 중: {os.path.basename(filepath)}")
     try:
         with open(filepath, 'r') as f:
             reader = csv.DictReader(f)
@@ -365,10 +558,11 @@ def play_mt4_path_thread(filepath):
                 if time.time() < mt4_collision_lock_until or not mt4_mode["playing"]: break
                 mt4_target_goal['x'] = float(row['x']); mt4_target_goal['y'] = float(row['y'])
                 mt4_target_goal['z'] = float(row['z']); mt4_target_goal['gripper'] = float(row['gripper'])
-                mt4_apply_limits(); time.sleep(0.05)
+                mt4_apply_limits()
+                time.sleep(0.05)
     except Exception as e: write_log(f"Play Error: {e}")
     mt4_mode["playing"] = False; mt4_manual_override_until = time.time()
-    write_log("Playback finished.")
+    send_unity_ui("STATUS", "경로 재생 완료")
 
 def mt4_background_logger_thread():
     global mt4_record_writer
@@ -390,7 +584,8 @@ def mt4_homing_callback(sender, app_data, user_data): threading.Thread(target=mt
 def mt4_homing_thread_func():
     global ser, mt4_manual_override_until, mt4_target_goal, mt4_current_pos
     if ser:
-        mt4_manual_override_until = time.time() + 20.0; mt4_dashboard["status"] = "HOMING..."; write_log("Homing...")
+        mt4_manual_override_until = time.time() + 20.0
+        mt4_dashboard["status"] = "HOMING..."; write_log("Homing...")
         ser.write(b"$H\r\n"); time.sleep(15); ser.write(b"M20\r\n"); ser.write(b"G90\r\n"); ser.write(b"G1 F2000\r\n")
         mt4_target_goal.update({'x':200.0, 'y':0.0, 'z':120.0, 'gripper':40.0}); mt4_current_pos.update(mt4_target_goal)
         ser.write(b"G0 X200 Y0 Z120 F2000\r\n"); ser.write(b"M3 S40\r\n")
@@ -415,8 +610,13 @@ def auto_reconnect_mt4_thread():
 # ================= [Execution Engine (Hybrid)] =================
 def execute_graph_once():
     start_node = next((n for n in node_registry.values() if isinstance(n, StartNode)), None)
+    
+    # [수정] 센서 및 외부 통신 노드들은 Flow와 무관하게 무조건 1틱에 1번씩 자동 평가
     for node in node_registry.values():
-        if isinstance(node, UniversalRobotNode): node.execute()
+        if isinstance(node, (ConditionKeyNode, UniversalRobotNode, MT4UnityNode, UDPReceiverNode, LoggerNode, ConstantNode)):
+            try: node.execute()
+            except: pass
+
     if not start_node: return
 
     current_node = start_node
@@ -444,14 +644,18 @@ class NodeFactory:
         elif node_type == "COND_KEY": node = ConditionKeyNode(node_id)
         elif node_type == "LOGIC_IF": node = LogicIfNode(node_id)
         elif node_type == "LOGIC_LOOP": node = LogicLoopNode(node_id)
-        elif node_type == "MT4_ACTION": node = MT4ActionNode(node_id)
+        elif node_type == "MT4_ACTION": node = MT4CommandActionNode(node_id)
         elif node_type == "CONSTANT": node = ConstantNode(node_id)
         elif node_type == "PRINT": node = PrintNode(node_id)
         elif node_type == "LOGGER": node = LoggerNode(node_id)
         elif node_type == "MT4_DRIVER": node = UniversalRobotNode(node_id, MT4RobotDriver())
+        elif node_type == "MT4_KEYBOARD": node = MT4KeyboardNode(node_id)
+        elif node_type == "MT4_UNITY": node = MT4UnityNode(node_id)
+        elif node_type == "UDP_RECV": node = UDPReceiverNode(node_id)
         
         if node: 
-            NodeUIRenderer.render(node); node_registry[node_id] = node
+            NodeUIRenderer.render(node)
+            node_registry[node_id] = node
         return node
 
 def toggle_exec(s, a): 
@@ -468,6 +672,7 @@ def link_cb(s, a):
 def del_link_cb(s, a): dpg.delete_item(a); link_registry.pop(a, None)
 def add_node_cb(s, a, u): NodeFactory.create_node(u)
 
+# [수정] UI 선언 전에 콜백 함수들을 미리 명확하게 정의
 def save_cb(s, a): save_graph(dpg.get_value("file_name_input"))
 def load_cb(s, a): load_graph(dpg.get_value("file_list_combo"))
 
@@ -505,7 +710,7 @@ def load_graph(filename):
                 id_map[n_data["id"]] = node.node_id
                 dpg.set_item_pos(node.node_id, n_data["pos"] if n_data["pos"] else [0,0])
                 node.load_settings(n_data.get("settings", {}))
-                NodeUIRenderer.sync_state_to_ui(node) # 로드 후 UI 갱신!
+                NodeUIRenderer.sync_state_to_ui(node)
         for l_data in data["links"]:
             if l_data["src_node"] in id_map and l_data["dst_node"] in id_map:
                 src_node = node_registry[id_map[l_data["src_node"]]]; dst_node = node_registry[id_map[l_data["dst_node"]]]
@@ -542,7 +747,6 @@ dpg.create_context()
 with dpg.handler_registry(): dpg.add_key_press_handler(dpg.mvKey_Delete, callback=delete_selection)
 
 with dpg.window(tag="PrimaryWindow"):
-    # ★ 날려먹었던 대시보드 탭 전격 복구 ★
     with dpg.tab_bar():
         with dpg.tab(label="MT4 Dashboard"):
             with dpg.group(horizontal=True):
@@ -604,18 +808,22 @@ with dpg.window(tag="PrimaryWindow"):
             dpg.add_button(label="CONST", callback=add_node_cb, user_data="CONSTANT")
             dpg.add_button(label="PRINT", callback=add_node_cb, user_data="PRINT")
             dpg.add_button(label="DRIVER", callback=add_node_cb, user_data="MT4_DRIVER")
+            dpg.add_spacer(width=30)
+            dpg.add_text("Adv. Tools:", color=(255,200,0))
+            dpg.add_button(label="KEY", callback=add_node_cb, user_data="MT4_KEYBOARD")
+            dpg.add_button(label="UNITY", callback=add_node_cb, user_data="MT4_UNITY")
+            dpg.add_button(label="UDP", callback=add_node_cb, user_data="UDP_RECV")
             dpg.add_spacer(width=50)
             dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
 
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
-dpg.create_viewport(title='MT4 Educational V24 - 100% Decoupled & UI Restored', width=1280, height=800)
+dpg.create_viewport(title='MT4 Educational V25 - Flawless Master Build', width=1280, height=800)
 dpg.setup_dearpygui(); dpg.set_primary_window("PrimaryWindow", True); dpg.show_viewport()
 
 last_logic_time = 0; LOGIC_RATE = 0.02
 
 while dpg.is_dearpygui_running():
-    # 대시보드 UI 업데이트
     if mt4_dashboard["last_pkt_time"] > 0: dpg.set_value("mt4_dash_status", f"Status: {mt4_dashboard['status']}")
     dpg.set_value("mt4_x", f"X: {mt4_current_pos['x']:.1f}"); dpg.set_value("mt4_y", f"Y: {mt4_current_pos['y']:.1f}")
     dpg.set_value("mt4_z", f"Z: {mt4_current_pos['z']:.1f}"); dpg.set_value("mt4_g", f"G: {mt4_current_pos['gripper']:.1f}")
@@ -627,7 +835,6 @@ while dpg.is_dearpygui_running():
     
     if dpg.does_item_exist("sys_tab_net"): dpg.set_value("sys_tab_net", sys_net_str)
 
-    # 핵심 로직 실행 (UI 동기화 -> 로직 실행)
     if is_running and (time.time() - last_logic_time > LOGIC_RATE):
         NodeUIRenderer.sync_ui_to_state()
         execute_graph_once()           
