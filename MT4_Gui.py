@@ -221,7 +221,14 @@ class UniversalRobotNode(BaseNode):
         for k in settings:
             if settings[k] is None: settings[k] = self.state.get(k, 1.0)
             
-        self.driver.execute_command(inputs, settings)
+        new_state = self.driver.execute_command(inputs, settings)
+        
+        # ★ [핵심 패치] 로봇의 새 위치를 노드 내부 상태와 GUI 화면에 동기화!
+        if new_state:
+            for k, v in new_state.items():
+                if k in self.state: self.state[k] = v
+                if k in self.ui_fields: dpg.set_value(self.ui_fields[k], v)
+
         for k, v in self.outputs.items():
             if v == PortType.FLOW: return k
         return None
@@ -272,9 +279,6 @@ class MT4UnityNode(BaseNode):
         self.last_processed_json = ""
     def execute(self):
         global mt4_collision_lock_until
-        if time.time() - mt4_dashboard.get("last_pkt_time", 0) > 0.5:
-            self.output_data[self.out_x] = None; self.output_data[self.out_y] = None; self.output_data[self.out_z] = None; self.output_data[self.out_g] = None
-            return self.outputs
             
         raw_json = self.fetch_input_data(self.data_in_id)
         if raw_json and raw_json != self.last_processed_json:
@@ -692,7 +696,16 @@ def toggle_exec(s, a):
     dpg.set_item_label("btn_run", "STOP" if is_running else "RUN SCRIPT")
 
 def link_cb(s, a): 
-    src, dst = a[0], a[1] if len(a)==2 else a[1]
+    p1, p2 = a[0], a[1]
+    
+    # ★ [핵심 패치] 마우스를 거꾸로 드래그해도 항상 Output -> Input 방향으로 강제 정렬
+    p1_is_out = False
+    for node in node_registry.values():
+        if p1 in node.outputs: 
+            p1_is_out = True; break
+            
+    src, dst = (p1, p2) if p1_is_out else (p2, p1)
+
     lid = dpg.add_node_link(src, dst, parent=s)
     src_node_id = dpg.get_item_parent(src); dst_node_id = dpg.get_item_parent(dst)
     link_registry[lid] = {'source': src, 'target': dst, 'src_node_id': src_node_id, 'dst_node_id': dst_node_id}
@@ -782,6 +795,7 @@ with dpg.window(tag="PrimaryWindow"):
                     dpg.add_text("MT4 Status", color=(150,150,150)); 
                     dpg.add_text("Status: Idle", tag="mt4_dash_status", color=(0,255,0))
                     dpg.add_text(f"HW: Offline", tag="mt4_dash_link", color=(255,0,0))
+                    dpg.add_text("Latency: 0.0 ms", tag="mt4_dash_latency", color=(255,255,0))
                 with dpg.child_window(width=350, height=130, border=True):
                     dpg.add_text("Manual Control", color=(255,200,0))
                     with dpg.group(horizontal=True):
