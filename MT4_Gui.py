@@ -496,6 +496,7 @@ class NodeUIRenderer:
     def _render_logic_loop(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="For Loop"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); node.inputs[flow] = PortType.FLOW
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow2: dpg.add_text("Loop Back", color=(255,200,100)); node.inputs[flow2] = PortType.FLOW
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_text("Count:"); node.field_count = dpg.add_input_int(width=80, default_value=3, min_value=1)
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as l: dpg.add_text("Loop Body", color=(100,200,255)); node.outputs[l] = PortType.FLOW; node.out_loop = l
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("Finished", color=(200,200,200)); node.outputs[f] = PortType.FLOW; node.out_finish = f
