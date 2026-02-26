@@ -798,7 +798,7 @@ with dpg.window(tag="PrimaryWindow"):
                     dpg.add_text("Record & Play", color=(255,100,200))
                     dpg.add_input_text(tag="path_name_input", default_value="my_path", width=130)
                     dpg.add_button(label="Start Recording", tag="btn_mt4_record", width=130, callback=lambda s,a,u: toggle_mt4_record())
-                    dpg.add_combo(items=get_save_files(), tag="combo_mt4_path", width=130)
+                    dpg.add_combo(items=get_mt4_paths(), tag="combo_mt4_path", width=130)
                     dpg.add_button(label="Play Selected", width=130, callback=play_mt4_path)
 
         with dpg.tab(label="Files & System"):
