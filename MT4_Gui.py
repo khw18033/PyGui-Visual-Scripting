@@ -102,14 +102,31 @@ class BaseRobotDriver(ABC):
     @abstractmethod
     def execute_command(self, inputs, settings): pass
 
+# [수정 후]
 class MT4RobotDriver(BaseRobotDriver):
-    def __init__(self): self.last_cmd = ""; self.last_write_time = 0; self.write_interval = 0.0
+    def __init__(self): 
+        self.last_cmd = ""; self.last_write_time = 0; self.write_interval = 0.0
+        # ★ 이전 입력값을 기억하기 위한 메모리 추가
+        self.last_inputs = {'x': -9999, 'y': -9999, 'z': -9999, 'gripper': -9999} 
+
     def get_ui_schema(self): return [('x', "X", 200.0), ('y', "Y", 0.0), ('z', "Z", 120.0), ('gripper', "G", 40.0)]
     def get_settings_schema(self): return [('smooth', "Smth", 1.0), ('grip_spd', "G_Spd", 5.0)]
+    
     def execute_command(self, inputs, settings):
         global mt4_current_pos, mt4_target_goal, mt4_manual_override_until, ser
         if time.time() < mt4_collision_lock_until: return 
-        if time.time() > mt4_manual_override_until:
+        
+        # ★ 선으로 들어온 유니티 값이 이전 프레임과 '달라졌을 때만' 새로운 명령으로 인정합니다.
+        inputs_changed = False
+        for key, _, _ in self.get_ui_schema():
+            val = inputs.get(key)
+            if val is not None:
+                if abs(float(val) - self.last_inputs[key]) > 0.1:
+                    inputs_changed = True
+                self.last_inputs[key] = float(val)
+
+        # 유니티에서 '새로운' 값을 보냈을 때만 목표 좌표를 덮어씁니다. (매뉴얼 조작 보호)
+        if time.time() > mt4_manual_override_until and inputs_changed:
             for key, _, _ in self.get_ui_schema():
                 if inputs.get(key) is not None: mt4_target_goal[key] = float(inputs[key])
                 
@@ -205,7 +222,8 @@ class MT4CommandActionNode(BaseNode):
         if ser and ser.is_open:
             cmd = f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n"
             ser.write(cmd.encode())
-            
+
+        sync_manual_to_node_state()    
         return self.out_flow
 
 class ConstantNode(BaseNode):
@@ -664,6 +682,7 @@ def mt4_homing_thread_func():
         mt4_target_goal.update({'x':200.0, 'y':0.0, 'z':120.0, 'gripper':40.0}); mt4_current_pos.update(mt4_target_goal)
         ser.write(b"G0 X200 Y0 Z120 F2000\r\n"); ser.write(b"M3 S40\r\n")
         mt4_dashboard["status"] = "Idle"; write_log("Homing Done")
+        sync_manual_to_node_state()
 
 def init_mt4_serial():
     global ser
