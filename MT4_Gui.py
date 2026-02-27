@@ -629,23 +629,49 @@ class NodeUIRenderer:
     @staticmethod
     def _render_sag(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as pin: dpg.add_text("X In"); node.inputs[node.in_x] = PortType.DATA
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as pin: dpg.add_text("Z In"); node.inputs[node.in_z] = PortType.DATA
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): node.ui_sag = dpg.add_input_float(label="Sag Factor", width=80, default_value=0.05, step=0.01)
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as pin: dpg.add_text("Z Out (Comp)", color=(100,255,100)); node.outputs[node.out_z] = PortType.DATA
+            # tag 속성을 추가하고, 기존의 PortType.DATA 등록 코드는 그대로 살립니다!
+            with dpg.node_attribute(tag=node.in_x, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("X In")
+                node.inputs[node.in_x] = PortType.DATA
+            with dpg.node_attribute(tag=node.in_z, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Z In")
+                node.inputs[node.in_z] = PortType.DATA
+                
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
+                node.ui_sag = dpg.add_input_float(label="Sag Factor", width=80, default_value=0.05, step=0.01)
+                
+            with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Z Out (Comp)", color=(100,255,100))
+                node.outputs[node.out_z] = PortType.DATA
 
     @staticmethod
     def _render_calib(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as pin: dpg.add_text("X In"); node.inputs[node.in_x] = PortType.DATA
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as pin: dpg.add_text("Y In"); node.inputs[node.in_y] = PortType.DATA
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as pin: dpg.add_text("Z In"); node.inputs[node.in_z] = PortType.DATA
+            with dpg.node_attribute(tag=node.in_x, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("X In")
+                node.inputs[node.in_x] = PortType.DATA
+            with dpg.node_attribute(tag=node.in_y, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Y In")
+                node.inputs[node.in_y] = PortType.DATA
+            with dpg.node_attribute(tag=node.in_z, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Z In")
+                node.inputs[node.in_z] = PortType.DATA
+                
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.ui_x = dpg.add_input_float(label="X Offset", width=70, default_value=0.0)
                 node.ui_y = dpg.add_input_float(label="Y Offset", width=70, default_value=0.0)
                 node.ui_z = dpg.add_input_float(label="Z Offset", width=70, default_value=0.0)
                 node.ui_s = dpg.add_input_float(label="Scale", width=70, default_value=1.0)
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as pin: dpg.add_text("XYZ Out", color=(100,255,100)); node.outputs[node.out_x] = PortType.DATA; node.outputs[node.out_y] = PortType.DATA; node.outputs[node.out_z] = PortType.DATA
+                
+            with dpg.node_attribute(tag=node.out_x, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("X Out", color=(100,255,100))
+                node.outputs[node.out_x] = PortType.DATA
+            with dpg.node_attribute(tag=node.out_y, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Y Out", color=(100,255,100))
+                node.outputs[node.out_y] = PortType.DATA
+            with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Z Out", color=(100,255,100))
+                node.outputs[node.out_z] = PortType.DATA
 
 # ================= [MT4 Dashboard Callbacks & Threads] =================
 def send_mt4_direct():
