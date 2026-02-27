@@ -598,7 +598,7 @@ def mt4_apply_limits():
     mt4_target_goal['z'] = max(MT4_LIMITS['min_z'], min(mt4_target_goal['z'], MT4_LIMITS['max_z']))
     mt4_target_goal['gripper'] = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
 
-    if not is_running and ser and ser.is_open:
+    if ser and ser.is_open:
         cmd = f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n"
         ser.write(cmd.encode())
         mt4_current_pos.update(mt4_target_goal)
