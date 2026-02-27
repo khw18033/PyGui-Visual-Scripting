@@ -14,6 +14,8 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum, auto
 
+from 작업물_관련.PyGui_관련.Raspi_백업.DearPyGui.dearpygui.dearpygui import node
+
 # ================= [Enum & Core Settings] =================
 class HwStatus(Enum): OFFLINE = auto(); ONLINE = auto(); SIMULATION = auto()
 class PortType(Enum): FLOW = auto(); DATA = auto()
@@ -406,6 +408,78 @@ class MT4CalibrationNode(BaseNode):
         if z_val is not None: self.output_data[self.out_z] = (float(z_val) * scale) + float(self.state.get('z_offset', 0.0))
         return None
 
+class MT4TooltipNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Tool-tip Offset (StR)", "MT4_TOOLTIP")
+        self.in_x = dpg.generate_uuid(); self.inputs[self.in_x] = PortType.DATA
+        self.in_z = dpg.generate_uuid(); self.inputs[self.in_z] = PortType.DATA
+        
+        self.out_x = dpg.generate_uuid(); self.outputs[self.out_x] = PortType.DATA
+        self.out_z = dpg.generate_uuid(); self.outputs[self.out_z] = PortType.DATA
+        
+        # 길이(mm)와 부착 각도(도)
+        self.state.update({'tool_length': 0.0, 'tool_angle': 0.0})
+        
+    def execute(self):
+        x_val = self.fetch_input_data(self.in_x)
+        z_val = self.fetch_input_data(self.in_z)
+        
+        length = float(self.state.get('tool_length', 0.0))
+        angle_deg = float(self.state.get('tool_angle', 0.0))
+        
+        if x_val is not None and z_val is not None:
+            # 삼각함수를 이용한 툴팁 끝점 좌표 역산
+            dx = length * math.cos(math.radians(angle_deg))
+            dz = length * math.sin(math.radians(angle_deg))
+            
+            self.output_data[self.out_x] = float(x_val) + dx
+            self.output_data[self.out_z] = float(z_val) + dz
+        return None
+
+class MT4BacklashNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Backlash & Inertia (StR)", "MT4_BACKLASH")
+        self.in_x = dpg.generate_uuid(); self.inputs[self.in_x] = PortType.DATA
+        self.in_y = dpg.generate_uuid(); self.inputs[self.in_y] = PortType.DATA
+        self.in_z = dpg.generate_uuid(); self.inputs[self.in_z] = PortType.DATA
+        
+        self.out_x = dpg.generate_uuid(); self.outputs[self.out_x] = PortType.DATA
+        self.out_y = dpg.generate_uuid(); self.outputs[self.out_y] = PortType.DATA
+        self.out_z = dpg.generate_uuid(); self.outputs[self.out_z] = PortType.DATA
+        
+        self.state.update({'decel_dist': 15.0, 'stop_delay': 100.0})
+        self.internal_pos = None # 노드 내부적으로 현재 위치를 기억
+        
+    def execute(self):
+        tx = self.fetch_input_data(self.in_x)
+        ty = self.fetch_input_data(self.in_y)
+        tz = self.fetch_input_data(self.in_z)
+        
+        if tx is None or ty is None or tz is None: return None
+        
+        if self.internal_pos is None:
+            self.internal_pos = [float(tx), float(ty), float(tz)]
+            
+        decel_dist = max(1.0, float(self.state.get('decel_dist', 15.0)))
+        delay_factor = max(1.0, float(self.state.get('stop_delay', 100.0)))
+        
+        dx = float(tx) - self.internal_pos[0]
+        dy = float(ty) - self.internal_pos[1]
+        dz = float(tz) - self.internal_pos[2]
+        dist = math.sqrt(dx**2 + dy**2 + dz**2)
+        
+        # 거리가 감속 구간 이내로 들어오면 딜레이 계수에 비례해 속도를 확 줄임 (소프트 랜딩)
+        speed = 1.0 if dist > decel_dist else max(0.01, (dist / decel_dist) * (50.0 / delay_factor))
+        
+        self.internal_pos[0] += dx * speed
+        self.internal_pos[1] += dy * speed
+        self.internal_pos[2] += dz * speed
+        
+        self.output_data[self.out_x] = self.internal_pos[0]
+        self.output_data[self.out_y] = self.internal_pos[1]
+        self.output_data[self.out_z] = self.internal_pos[2]
+        return None
+
 class UDPReceiverNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "UDP Receiver", "UDP_RECV")
@@ -493,6 +567,13 @@ class NodeUIRenderer:
             elif isinstance(node, MT4CalibrationNode) and hasattr(node, 'ui_x'):
                 node.state['x_offset'] = dpg.get_value(node.ui_x); node.state['y_offset'] = dpg.get_value(node.ui_y)
                 node.state['z_offset'] = dpg.get_value(node.ui_z); node.state['scale'] = dpg.get_value(node.ui_s)
+
+            elif isinstance(node, MT4TooltipNode) and hasattr(node, 'ui_len'):
+                node.state['tool_length'] = dpg.get_value(node.ui_len)
+                node.state['tool_angle'] = dpg.get_value(node.ui_ang)
+            elif isinstance(node, MT4BacklashNode) and hasattr(node, 'ui_dist'):
+                node.state['decel_dist'] = dpg.get_value(node.ui_dist)
+                node.state['stop_delay'] = dpg.get_value(node.ui_dly)
             
 
     @staticmethod
@@ -526,6 +607,8 @@ class NodeUIRenderer:
         elif isinstance(node, UDPReceiverNode): NodeUIRenderer._render_udp(node)
         elif isinstance(node, MT4GravitySagNode): NodeUIRenderer._render_sag(node)
         elif isinstance(node, MT4CalibrationNode): NodeUIRenderer._render_calib(node)
+        elif isinstance(node, MT4TooltipNode): NodeUIRenderer._render_tooltip(node)
+        elif isinstance(node, MT4BacklashNode): NodeUIRenderer._render_backlash(node)
 
     @staticmethod
     def _render_start(node):
@@ -672,6 +755,44 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): 
                 dpg.add_text("Z Out", color=(100,255,100))
                 node.outputs[node.out_z] = PortType.DATA
+
+    @staticmethod
+    def _render_tooltip(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=node.in_x, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("X In"); node.inputs[node.in_x] = PortType.DATA
+            with dpg.node_attribute(tag=node.in_z, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Z In"); node.inputs[node.in_z] = PortType.DATA
+                
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.ui_len = dpg.add_input_float(label="Tool Len(mm)", width=70, default_value=0.0)
+                node.ui_ang = dpg.add_input_float(label="Angle(deg)", width=70, default_value=0.0)
+                
+            with dpg.node_attribute(tag=node.out_x, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("X Out (Comp)", color=(100,255,100)); node.outputs[node.out_x] = PortType.DATA
+            with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Z Out (Comp)", color=(100,255,100)); node.outputs[node.out_z] = PortType.DATA
+
+    @staticmethod
+    def _render_backlash(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=node.in_x, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("X In"); node.inputs[node.in_x] = PortType.DATA
+            with dpg.node_attribute(tag=node.in_y, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Y In"); node.inputs[node.in_y] = PortType.DATA
+            with dpg.node_attribute(tag=node.in_z, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Z In"); node.inputs[node.in_z] = PortType.DATA
+                
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.ui_dist = dpg.add_input_float(label="Decel Dist", width=70, default_value=15.0)
+                node.ui_dly = dpg.add_input_float(label="Stop Delay", width=70, default_value=100.0)
+                
+            with dpg.node_attribute(tag=node.out_x, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("X Out", color=(100,255,100)); node.outputs[node.out_x] = PortType.DATA
+            with dpg.node_attribute(tag=node.out_y, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Y Out", color=(100,255,100)); node.outputs[node.out_y] = PortType.DATA
+            with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Z Out", color=(100,255,100)); node.outputs[node.out_z] = PortType.DATA
 
 # ================= [MT4 Dashboard Callbacks & Threads] =================
 def send_mt4_direct():
@@ -846,6 +967,8 @@ class NodeFactory:
         elif node_type == "UDP_RECV": node = UDPReceiverNode(node_id)
         elif node_type == "MT4_SAG": node = MT4GravitySagNode(node_id)
         elif node_type == "MT4_CALIB": node = MT4CalibrationNode(node_id)
+        elif node_type == "MT4_TOOLTIP": node = MT4TooltipNode(node_id)
+        elif node_type == "MT4_BACKLASH": node = MT4BacklashNode(node_id)
         
         if node: 
             NodeUIRenderer.render(node)
@@ -1019,6 +1142,8 @@ with dpg.window(tag="PrimaryWindow"):
             dpg.add_button(label="UDP", callback=add_node_cb, user_data="UDP_RECV")
             dpg.add_button(label="GRAV SAG", callback=add_node_cb, user_data="MT4_SAG")
             dpg.add_button(label="CALIBRATION", callback=add_node_cb, user_data="MT4_CALIB")
+            dpg.add_button(label="TOOL-TIP", callback=add_node_cb, user_data="MT4_TOOLTIP")
+            dpg.add_button(label="BACKLASH", callback=add_node_cb, user_data="MT4_BACKLASH")
             dpg.add_spacer(width=50)
             dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
 
