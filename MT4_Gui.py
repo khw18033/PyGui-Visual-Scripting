@@ -365,6 +365,47 @@ class MT4UnityNode(BaseNode):
             except: pass 
         return self.outputs
 
+class MT4GravitySagNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Gravity Sag Comp (StR)", "MT4_SAG")
+        self.in_x = dpg.generate_uuid(); self.inputs[self.in_x] = PortType.DATA
+        self.in_z = dpg.generate_uuid(); self.inputs[self.in_z] = PortType.DATA
+        self.out_z = dpg.generate_uuid(); self.outputs[self.out_z] = PortType.DATA
+        self.state['sag_factor'] = 0.05 
+        
+    def execute(self):
+        x_val = self.fetch_input_data(self.in_x)
+        z_val = self.fetch_input_data(self.in_z)
+        
+        if x_val is not None and z_val is not None:
+            sag_comp = float(x_val) * float(self.state.get('sag_factor', 0.0))
+            self.output_data[self.out_z] = float(z_val) + sag_comp
+        elif z_val is not None:
+            self.output_data[self.out_z] = float(z_val)
+        return None
+
+class MT4CalibrationNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "3D Calibration (StR)", "MT4_CALIB")
+        self.in_x = dpg.generate_uuid(); self.inputs[self.in_x] = PortType.DATA
+        self.in_y = dpg.generate_uuid(); self.inputs[self.in_y] = PortType.DATA
+        self.in_z = dpg.generate_uuid(); self.inputs[self.in_z] = PortType.DATA
+        self.out_x = dpg.generate_uuid(); self.outputs[self.out_x] = PortType.DATA
+        self.out_y = dpg.generate_uuid(); self.outputs[self.out_y] = PortType.DATA
+        self.out_z = dpg.generate_uuid(); self.outputs[self.out_z] = PortType.DATA
+        self.state.update({'x_offset': 0.0, 'y_offset': 0.0, 'z_offset': 0.0, 'scale': 1.0})
+        
+    def execute(self):
+        x_val = self.fetch_input_data(self.in_x)
+        y_val = self.fetch_input_data(self.in_y)
+        z_val = self.fetch_input_data(self.in_z)
+        
+        scale = float(self.state.get('scale', 1.0))
+        if x_val is not None: self.output_data[self.out_x] = (float(x_val) * scale) + float(self.state.get('x_offset', 0.0))
+        if y_val is not None: self.output_data[self.out_y] = (float(y_val) * scale) + float(self.state.get('y_offset', 0.0))
+        if z_val is not None: self.output_data[self.out_z] = (float(z_val) * scale) + float(self.state.get('z_offset', 0.0))
+        return None
+
 class UDPReceiverNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "UDP Receiver", "UDP_RECV")
@@ -446,6 +487,14 @@ class NodeUIRenderer:
                     if not is_connected:
                         node.state[k] = dpg.get_value(fid)
 
+            elif isinstance(node, MT4GravitySagNode) and hasattr(node, 'ui_sag'):
+                node.state['sag_factor'] = dpg.get_value(node.ui_sag)
+
+            elif isinstance(node, MT4CalibrationNode) and hasattr(node, 'ui_x'):
+                node.state['x_offset'] = dpg.get_value(node.ui_x); node.state['y_offset'] = dpg.get_value(node.ui_y)
+                node.state['z_offset'] = dpg.get_value(node.ui_z); node.state['scale'] = dpg.get_value(node.ui_s)
+            
+
     @staticmethod
     def sync_state_to_ui(node):
         if isinstance(node, ConditionKeyNode) and hasattr(node, 'field_key'): dpg.set_value(node.field_key, node.state.get('key', 'SPACE'))
@@ -475,6 +524,8 @@ class NodeUIRenderer:
         elif isinstance(node, MT4KeyboardNode): NodeUIRenderer._render_mt4_keyboard(node)
         elif isinstance(node, MT4UnityNode): NodeUIRenderer._render_mt4_unity(node)
         elif isinstance(node, UDPReceiverNode): NodeUIRenderer._render_udp(node)
+        elif isinstance(node, MT4GravitySagNode): NodeUIRenderer._render_sag(node)
+        elif isinstance(node, MT4CalibrationNode): NodeUIRenderer._render_calib(node)
 
     @staticmethod
     def _render_start(node):
@@ -574,6 +625,27 @@ class NodeUIRenderer:
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_input_text(label="IP", width=100, default_value="192.168.50.63", tag=f"i_{node.node_id}"); node.ip=f"i_{node.node_id}"
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as d: dpg.add_text("JSON Out"); node.outputs[d]=PortType.DATA; node.out_json=d
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as o: dpg.add_text("Flow Out"); node.outputs[o]=PortType.FLOW; node.out_flow=o
+
+    @staticmethod
+    def _render_sag(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as pin: dpg.add_text("X In"); node.inputs[node.in_x] = PortType.DATA
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as pin: dpg.add_text("Z In"); node.inputs[node.in_z] = PortType.DATA
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): node.ui_sag = dpg.add_input_float(label="Sag Factor", width=80, default_value=0.05, step=0.01)
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as pin: dpg.add_text("Z Out (Comp)", color=(100,255,100)); node.outputs[node.out_z] = PortType.DATA
+
+    @staticmethod
+    def _render_calib(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as pin: dpg.add_text("X In"); node.inputs[node.in_x] = PortType.DATA
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as pin: dpg.add_text("Y In"); node.inputs[node.in_y] = PortType.DATA
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as pin: dpg.add_text("Z In"); node.inputs[node.in_z] = PortType.DATA
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.ui_x = dpg.add_input_float(label="X Offset", width=70, default_value=0.0)
+                node.ui_y = dpg.add_input_float(label="Y Offset", width=70, default_value=0.0)
+                node.ui_z = dpg.add_input_float(label="Z Offset", width=70, default_value=0.0)
+                node.ui_s = dpg.add_input_float(label="Scale", width=70, default_value=1.0)
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as pin: dpg.add_text("XYZ Out", color=(100,255,100)); node.outputs[node.out_x] = PortType.DATA; node.outputs[node.out_y] = PortType.DATA; node.outputs[node.out_z] = PortType.DATA
 
 # ================= [MT4 Dashboard Callbacks & Threads] =================
 def send_mt4_direct():
@@ -746,6 +818,8 @@ class NodeFactory:
         elif node_type == "MT4_KEYBOARD": node = MT4KeyboardNode(node_id)
         elif node_type == "MT4_UNITY": node = MT4UnityNode(node_id)
         elif node_type == "UDP_RECV": node = UDPReceiverNode(node_id)
+        elif node_type == "MT4_SAG": node = MT4GravitySagNode(node_id)
+        elif node_type == "MT4_CALIB": node = MT4CalibrationNode(node_id)
         
         if node: 
             NodeUIRenderer.render(node)
@@ -917,6 +991,8 @@ with dpg.window(tag="PrimaryWindow"):
             dpg.add_button(label="KEY", callback=add_node_cb, user_data="MT4_KEYBOARD")
             dpg.add_button(label="UNITY", callback=add_node_cb, user_data="MT4_UNITY")
             dpg.add_button(label="UDP", callback=add_node_cb, user_data="UDP_RECV")
+            dpg.add_button(label="GRAV SAG", callback=add_node_cb, user_data="MT4_SAG")
+            dpg.add_button(label="CALIBRATION", callback=add_node_cb, user_data="MT4_CALIB")
             dpg.add_spacer(width=50)
             dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
 
