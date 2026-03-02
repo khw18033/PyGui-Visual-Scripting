@@ -9,6 +9,7 @@ import subprocess
 import serial 
 import dearpygui.dearpygui as dpg
 import csv
+import math
 from collections import deque
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -923,7 +924,8 @@ def execute_graph_once():
         if isinstance(node, (ConditionKeyNode, UniversalRobotNode, MT4UnityNode, UDPReceiverNode, LoggerNode, ConstantNode,
                              MT4GravitySagNode, MT4CalibrationNode, MT4TooltipNode, MT4BacklashNode)): 
             try: node.execute()
-            except: pass
+            except Exception as e: 
+                print(f"[{node.label}] Error: {e}")
 
     if not start_node: return
 
