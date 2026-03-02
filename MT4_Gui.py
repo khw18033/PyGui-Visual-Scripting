@@ -106,8 +106,6 @@ class BaseRobotDriver(ABC):
 class MT4RobotDriver(BaseRobotDriver):
     def __init__(self): 
         self.last_cmd = ""; self.last_write_time = 0; self.write_interval = 0.0
-        # ★ 이전 입력값을 기억하기 위한 메모리 추가
-        self.last_inputs = {'x': -9999, 'y': -9999, 'z': -9999, 'gripper': -9999} 
 
     def get_ui_schema(self): return [('x', "X", 200.0), ('y', "Y", 0.0), ('z', "Z", 120.0), ('gripper', "G", 40.0)]
     def get_settings_schema(self): return [('smooth', "Smth", 1.0), ('grip_spd', "G_Spd", 5.0)]
@@ -116,16 +114,14 @@ class MT4RobotDriver(BaseRobotDriver):
         global mt4_current_pos, mt4_target_goal, mt4_manual_override_until, ser
         if time.time() < mt4_collision_lock_until: return 
         
-        # ★ 선으로 들어온 유니티 값이 이전 프레임과 '달라졌을 때만' 새로운 명령으로 인정합니다.
+        # ★ [수정 1] 백래시 노드의 미세한 변화가 버려지지 않도록 비교 대상을 '목표값'으로 변경
         inputs_changed = False
         for key, _, _ in self.get_ui_schema():
             val = inputs.get(key)
             if val is not None:
-                if abs(float(val) - self.last_inputs[key]) > 0.1:
+                if abs(float(val) - mt4_target_goal[key]) > 0.5: # 0.5mm 이상의 유의미한 변화가 쌓였을 때만 갱신
                     inputs_changed = True
-                self.last_inputs[key] = float(val)
 
-        # 유니티에서 '새로운' 값을 보냈을 때만 목표 좌표를 덮어씁니다. (매뉴얼 조작 보호)
         if time.time() > mt4_manual_override_until and inputs_changed:
             for key, _, _ in self.get_ui_schema():
                 if inputs.get(key) is not None: mt4_target_goal[key] = float(inputs[key])
