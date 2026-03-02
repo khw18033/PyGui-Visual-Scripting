@@ -400,7 +400,7 @@ class MT4CalibrationNode(BaseNode):
         if x_val is not None: self.output_data[self.out_x] = (float(x_val) * scale) + float(self.state.get('x_offset', 0.0))
         if y_val is not None: self.output_data[self.out_y] = (float(y_val) * scale) + float(self.state.get('y_offset', 0.0))
         if z_val is not None: self.output_data[self.out_z] = (float(z_val) * scale) + float(self.state.get('z_offset', 0.0))
-        return None
+        return self.outputs
 
 class MT4TooltipNode(BaseNode):
     def __init__(self, node_id):
@@ -428,7 +428,7 @@ class MT4TooltipNode(BaseNode):
             
             self.output_data[self.out_x] = float(x_val) + dx
             self.output_data[self.out_z] = float(z_val) + dz
-        return None
+        return self.outputs
 
 class MT4BacklashNode(BaseNode):
     def __init__(self, node_id):
@@ -472,7 +472,7 @@ class MT4BacklashNode(BaseNode):
         self.output_data[self.out_x] = self.internal_pos[0]
         self.output_data[self.out_y] = self.internal_pos[1]
         self.output_data[self.out_z] = self.internal_pos[2]
-        return None
+        return self.outputs
 
 class UDPReceiverNode(BaseNode):
     def __init__(self, node_id):
