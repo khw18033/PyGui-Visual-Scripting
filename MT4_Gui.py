@@ -918,9 +918,10 @@ def auto_reconnect_mt4_thread():
 def execute_graph_once():
     start_node = next((n for n in node_registry.values() if isinstance(n, StartNode)), None)
     
-    # [수정] 센서 및 외부 통신 노드들은 Flow와 무관하게 무조건 1틱에 1번씩 자동 평가
+    # ★ [핵심 패치] 신규 추가된 4개의 Sim-to-Real 보정 노드들도 1초에 50번씩 무조건 자동 연산하도록 명단(튜플)에 추가합니다!
     for node in node_registry.values():
-        if isinstance(node, (ConditionKeyNode, UniversalRobotNode, MT4UnityNode, UDPReceiverNode, LoggerNode, ConstantNode)):
+        if isinstance(node, (ConditionKeyNode, UniversalRobotNode, MT4UnityNode, UDPReceiverNode, LoggerNode, ConstantNode,
+                             MT4GravitySagNode, MT4CalibrationNode, MT4TooltipNode, MT4BacklashNode)): 
             try: node.execute()
             except: pass
 
