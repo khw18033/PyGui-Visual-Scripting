@@ -323,6 +323,13 @@ class MT4UnityNode(BaseNode):
         self.last_processed_json = ""
     def execute(self):
         global mt4_collision_lock_until
+
+        if time.time() < mt4_manual_override_until or mt4_mode.get("playing", False):
+            self.output_data[self.out_x] = mt4_target_goal['x']
+            self.output_data[self.out_y] = mt4_target_goal['y']
+            self.output_data[self.out_z] = mt4_target_goal['z']
+            self.output_data[self.out_g] = mt4_target_goal['gripper']
+            self.last_processed_json = ""
             
         raw_json = self.fetch_input_data(self.data_in_id)
         if raw_json and raw_json != self.last_processed_json:
