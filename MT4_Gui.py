@@ -321,52 +321,67 @@ class MT4UnityNode(BaseNode):
         super().__init__(node_id, "Unity Logic (MT4)", "MT4_UNITY")
         self.data_in_id = None; self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None
         self.last_processed_json = ""
+        
     def execute(self):
         global mt4_collision_lock_until
+        
+        # 1. UDP 수신 노드로부터 가장 최근 패킷을 가져옴
+        raw_json = self.fetch_input_data(self.data_in_id)
+        
+        # 2. 이 패킷이 이전에 처리한 것과 다른 "새로운" 패킷인지 확인
+        is_new_msg = False
+        if raw_json and raw_json != self.last_processed_json:
+            is_new_msg = True
+            self.last_processed_json = raw_json # ★ [핵심] 읽었으니 찌꺼기가 남지 않게 즉시 캐시 최신화
 
-        if time.time() < mt4_manual_override_until or mt4_mode.get("playing", False):
+        # 3. 현재 파이썬 GUI가 강제 제어 중인지 확인 (수동 조작 후 약 1초, 또는 경로 재생 중)
+        is_overridden = (time.time() < mt4_manual_override_until) or mt4_mode.get("playing", False)
+
+        if is_overridden:
+            # 파이썬 조작 중: 유니티에서 무슨 패킷이 고여있든 철저히 무시하고,
+            # 현재 로봇의 목표 위치로 노드 출력값을 덮어씌움 (완벽한 Active Echo)
             self.output_data[self.out_x] = mt4_target_goal['x']
             self.output_data[self.out_y] = mt4_target_goal['y']
             self.output_data[self.out_z] = mt4_target_goal['z']
             self.output_data[self.out_g] = mt4_target_goal['gripper']
-            self.last_processed_json = ""
-            
-        raw_json = self.fetch_input_data(self.data_in_id)
-        if raw_json and raw_json != self.last_processed_json:
-            self.last_processed_json = raw_json
-            try:
-                parsed = json.loads(raw_json)
-                msg_type = parsed.get("type", "MOVE")
-                if msg_type == "CMD":
-                    val = parsed.get("val", "")
-                    if val == "COLLISION":
-                        mt4_collision_lock_until = time.time() + 2.0 
-                        if ser and ser.is_open: ser.write(b"!") 
-                        write_log("Collision Detected! Robot Locked.")
-                        send_unity_ui("STATUS", "충돌 감지! 로봇 긴급 정지")
-                    elif val == "START_REC":
-                        if not mt4_mode["recording"]: toggle_mt4_record()
-                    elif val.startswith("STOP_REC:"):
-                        fname = val.split(":")[1]
-                        if mt4_mode["recording"]: toggle_mt4_record(custom_name=fname)
-                    elif val == "REQ_FILES":
-                        send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
-                    elif val.startswith("PLAY:"):
-                        fname = val.split(":")[1]
-                        play_mt4_path(filename=fname)
-                    elif val == "LOG_SUCCESS":
-                        mt4_log_event_queue.append("SUCCESS")
-                        send_unity_ui("LOG", "<color=green>SUCCESS 기록 완료</color>")
-                    elif val == "LOG_FAIL":
-                        mt4_log_event_queue.append("FAIL")
-                        send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
-                elif msg_type == "MOVE" and not mt4_mode["playing"] and time.time() > mt4_collision_lock_until:
-                    # [수정] 값이 존재할 때만 적용하여 0 고정 현상 방지
-                    if 'z' in parsed: self.output_data[self.out_x] = float(parsed['z']) * 1000.0
-                    if 'x' in parsed: self.output_data[self.out_y] = -float(parsed['x']) * 1000.0
-                    if 'y' in parsed: self.output_data[self.out_z] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
-                    if 'gripper' in parsed: self.output_data[self.out_g] = float(parsed['gripper']) 
-            except: pass 
+        else:
+            # 파이썬 조작이 끝난 상태 (유니티 대기 모드)
+            if is_new_msg:
+                # "새로운" 유니티 조작(WASD)이 들어왔을 때만 좌표를 업데이트
+                try:
+                    parsed = json.loads(raw_json)
+                    msg_type = parsed.get("type", "MOVE")
+                    if msg_type == "CMD":
+                        val = parsed.get("val", "")
+                        if val == "COLLISION":
+                            mt4_collision_lock_until = time.time() + 2.0 
+                            if ser and ser.is_open: ser.write(b"!") 
+                            write_log("Collision Detected! Robot Locked.")
+                            send_unity_ui("STATUS", "충돌 감지! 로봇 긴급 정지")
+                        elif val == "START_REC":
+                            if not mt4_mode["recording"]: toggle_mt4_record()
+                        elif val.startswith("STOP_REC:"):
+                            fname = val.split(":")[1]
+                            if mt4_mode["recording"]: toggle_mt4_record(custom_name=fname)
+                        elif val == "REQ_FILES":
+                            send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
+                        elif val.startswith("PLAY:"):
+                            fname = val.split(":")[1]
+                            play_mt4_path(filename=fname)
+                        elif val == "LOG_SUCCESS":
+                            mt4_log_event_queue.append("SUCCESS")
+                            send_unity_ui("LOG", "<color=green>SUCCESS 기록 완료</color>")
+                        elif val == "LOG_FAIL":
+                            mt4_log_event_queue.append("FAIL")
+                            send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
+                    elif msg_type == "MOVE":
+                        if time.time() > mt4_collision_lock_until:
+                            if 'z' in parsed: self.output_data[self.out_x] = float(parsed['z']) * 1000.0
+                            if 'x' in parsed: self.output_data[self.out_y] = -float(parsed['x']) * 1000.0
+                            if 'y' in parsed: self.output_data[self.out_z] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
+                            if 'gripper' in parsed: self.output_data[self.out_g] = float(parsed['gripper']) 
+                except: pass 
+                
         return self.outputs
 
 class MT4GravitySagNode(BaseNode):
