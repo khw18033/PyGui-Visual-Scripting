@@ -1150,6 +1150,7 @@ dpg.create_viewport(title='MT4 Educational V25 - Flawless Master Build', width=1
 dpg.setup_dearpygui(); dpg.set_primary_window("PrimaryWindow", True); dpg.show_viewport()
 
 last_logic_time = 0; LOGIC_RATE = 0.02
+last_fb_time = 0
 
 while dpg.is_dearpygui_running():
     if mt4_dashboard["last_pkt_time"] > 0: dpg.set_value("mt4_dash_status", f"Status: {mt4_dashboard['status']}")
