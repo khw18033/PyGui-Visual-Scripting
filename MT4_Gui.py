@@ -70,8 +70,8 @@ def sync_manual_to_node_state():
 
 # ================= [MT4 State & Config] =================
 ser = None 
-mt4_current_pos = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0}
-mt4_target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0} 
+mt4_current_pos = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'roll': 0.0, 'gripper': 40.0}
+mt4_target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'roll': 0.0, 'gripper': 40.0}
 mt4_manual_override_until = 0.0 
 mt4_dashboard = {"status": "Idle", "hw_link": HwStatus.OFFLINE, "latency": 0.0, "last_pkt_time": 0.0}
 
@@ -84,7 +84,7 @@ mt4_record_f = None; mt4_record_writer = None; mt4_record_temp_name = ""
 mt4_log_event_queue = deque()
 
 MT4_UNITY_IP = "192.168.50.63"; MT4_FEEDBACK_PORT = 5005
-MT4_LIMITS = {'min_x': 100, 'max_x': 280, 'min_y': -200, 'max_y': 200, 'min_z': 0, 'max_z': 280}
+MT4_LIMITS = {'min_x': 100, 'max_x': 280, 'min_y': -200, 'max_y': 200, 'min_z': 0, 'max_z': 280, 'min_r': -180.0, 'max_r': 180.0}
 MT4_GRIPPER_MIN = 30.0; MT4_GRIPPER_MAX = 60.0
 MT4_Z_OFFSET = 90.0
 
@@ -133,12 +133,14 @@ class MT4RobotDriver(BaseRobotDriver):
         ny = mt4_current_pos['y'] + dy * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['y']
         nz = mt4_current_pos['z'] + dz * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['z']
         ng = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
+        dr = mt4_target_goal['roll'] - mt4_current_pos['roll']
+        mt4_target_goal['roll'] = max(MT4_LIMITS['min_r'], min(mt4_target_goal['roll'], MT4_LIMITS['max_r']))
         
         nx = max(MT4_LIMITS['min_x'], min(nx, MT4_LIMITS['max_x'])); ny = max(MT4_LIMITS['min_y'], min(ny, MT4_LIMITS['max_y'])); nz = max(MT4_LIMITS['min_z'], min(nz, MT4_LIMITS['max_z']))
-        new_state = {'x': nx, 'y': ny, 'z': nz, 'gripper': ng}
+        new_state = {'x': nx, 'y': ny, 'z': nz, 'gripper': ng, 'roll': mt4_target_goal['roll']}
         
         if time.time() - self.last_write_time >= self.write_interval:
-            cmd = f"G0 X{nx:.1f} Y{ny:.1f} Z{nz:.1f}\nM3 S{int(ng)}\n"
+            cmd = f"G0 X{nx:.1f} Y{ny:.1f} Z{nz:.1f} A{mt4_target_goal['roll']:.1f}\nM3 S{int(ng)}\n"
             if cmd != self.last_cmd:
                 try: 
                     if ser and ser.is_open: ser.write(cmd.encode()); self.last_write_time = time.time()
@@ -217,7 +219,7 @@ class MT4CommandActionNode(BaseNode):
         mt4_current_pos.update(mt4_target_goal)
         
         if ser and ser.is_open:
-            cmd = f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n"
+            cmd = f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f} A{mt4_target_goal['roll']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n"
             ser.write(cmd.encode())
 
         sync_manual_to_node_state()    
@@ -308,9 +310,13 @@ class MT4KeyboardNode(BaseNode):
             if self.state.get("E"): dz=-1
             if self.state.get("J"): dg=1
             if self.state.get("U"): dg=-1
-            if dx or dy or dz or dg:
+
+            dr = 1 if self.state.get("Z") else 0
+
+            if dx or dy or dz or dg or dr:
                 mt4_manual_override_until = time.time() + 0.5; self.last_input_time = time.time()
                 mt4_target_goal['x']+=dx*self.step_size; mt4_target_goal['y']+=dy*self.step_size; mt4_target_goal['z']+=dz*self.step_size; mt4_target_goal['gripper']+=dg*self.grip_step
+                mt4_target_goal['roll']+=dr*5.0
         self.output_data[self.out_x]=mt4_target_goal['x']; self.output_data[self.out_y]=mt4_target_goal['y']; self.output_data[self.out_z]=mt4_target_goal['z']; self.output_data[self.out_g]=mt4_target_goal['gripper']
         for k, v in self.outputs.items():
             if v == PortType.FLOW: return k
@@ -563,7 +569,8 @@ class NodeUIRenderer:
                 node.state['LEFT'] = dpg.is_key_down(dpg.mvKey_Left); node.state['RIGHT'] = dpg.is_key_down(dpg.mvKey_Right)
                 node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)
                 node.state['J'] = dpg.is_key_down(dpg.mvKey_J); node.state['U'] = dpg.is_key_down(dpg.mvKey_U)
-            # [수정 후]
+                node.state['Z'] = dpg.is_key_down(dpg.mvKey_Z)
+            
             elif isinstance(node, UniversalRobotNode):
                 for k, fid in node.ui_fields.items(): 
                     # ★ 해당 핀(in_pins[k])에 연결된 선이 '없을 때만' UI 화면의 값을 읽어옵니다.
@@ -815,7 +822,7 @@ class NodeUIRenderer:
 def send_mt4_direct():
     global ser, mt4_target_goal
     if ser and ser.is_open:
-        ser.write(f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n".encode())
+        ser.write(f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f} A{mt4_target_goal['roll']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n".encode())
 
 def mt4_manual_control_callback(sender, app_data, user_data):
     global mt4_manual_override_until, mt4_target_goal, mt4_current_pos
@@ -833,9 +840,10 @@ def mt4_apply_limits():
     mt4_target_goal['y'] = max(MT4_LIMITS['min_y'], min(mt4_target_goal['y'], MT4_LIMITS['max_y']))
     mt4_target_goal['z'] = max(MT4_LIMITS['min_z'], min(mt4_target_goal['z'], MT4_LIMITS['max_z']))
     mt4_target_goal['gripper'] = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
+    mt4_target_goal['roll'] = max(MT4_LIMITS['min_r'], min(mt4_target_goal['roll'], MT4_LIMITS['max_r']))
 
     if ser and ser.is_open:
-        cmd = f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n"
+        cmd = f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f} A{mt4_target_goal['roll']:.1f}\nM3 S{int(mt4_target_goal['gripper'])} \n"
         ser.write(cmd.encode())
         mt4_current_pos.update(mt4_target_goal)
     
@@ -916,8 +924,8 @@ def mt4_homing_thread_func():
         mt4_manual_override_until = time.time() + 20.0
         mt4_dashboard["status"] = "HOMING..."; write_log("Homing...")
         ser.write(b"$H\r\n"); time.sleep(15); ser.write(b"M20\r\n"); ser.write(b"G90\r\n"); ser.write(b"G1 F2000\r\n")
-        mt4_target_goal.update({'x':200.0, 'y':0.0, 'z':120.0, 'gripper':40.0}); mt4_current_pos.update(mt4_target_goal)
-        ser.write(b"G0 X200 Y0 Z120 F2000\r\n"); ser.write(b"M3 S40\r\n")
+        mt4_target_goal.update({'x':200.0, 'y':0.0, 'z':120.0, 'roll':0.0, 'gripper':40.0}); mt4_current_pos.update(mt4_target_goal)
+        ser.write(b"G0 X200 Y0 Z120 A0 F2000\r\n"); ser.write(b"M3 S40\r\n")
         mt4_dashboard["status"] = "Idle"; write_log("Homing Done")
         sync_manual_to_node_state()
 
@@ -1196,6 +1204,7 @@ while dpg.is_dearpygui_running():
                 "x": -mt4_current_pos['y']/1000.0, 
                 "y": (mt4_current_pos['z'] - MT4_Z_OFFSET) / 1000.0, 
                 "z": mt4_current_pos['x']/1000.0, 
+                "roll": mt4_current_pos['roll'],
                 "gripper": mt4_current_pos['gripper'], 
                 "status": "Running"
             }
