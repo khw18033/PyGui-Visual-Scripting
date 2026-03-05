@@ -108,8 +108,8 @@ class MT4RobotDriver(BaseRobotDriver):
     def __init__(self): 
         self.last_cmd = ""; self.last_write_time = 0; self.write_interval = 0.0
 
-    def get_ui_schema(self): return [('x', "X", 200.0), ('y', "Y", 0.0), ('z', "Z", 120.0), ('gripper', "G", 40.0)]
-    def get_settings_schema(self): return [('smooth', "Smth", 1.0), ('grip_spd', "G_Spd", 5.0)]
+    def get_ui_schema(self): return [('x', "X", 200.0), ('y', "Y", 0.0), ('z', "Z", 120.0), ('roll', "R", 0.0), ('gripper', "G", 40.0)]
+    def get_settings_schema(self): return [('smooth', "Smth", 1.0), ('grip_spd', "G_Spd", 5.0), ('roll_spd', "R_Spd", 5.0)]
     
     def execute_command(self, inputs, settings):
         global mt4_current_pos, mt4_target_goal, mt4_manual_override_until, ser
@@ -284,6 +284,7 @@ class MT4KeyboardNode(BaseNode):
         super().__init__(node_id, "Keyboard (MT4)", "MT4_KEYBOARD")
         self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None
         self.step_size = 10.0; self.grip_step = 5.0; self.cooldown = 0.2; self.last_input_time = 0.0
+        self.roll_step = 5.0
 
     def execute(self):
         if self.state.get("is_focused", False):
@@ -311,12 +312,15 @@ class MT4KeyboardNode(BaseNode):
             if self.state.get("J"): dg=1
             if self.state.get("U"): dg=-1
 
-            dr = 1 if self.state.get("Z") else 0
-
+            dr = 0
+            if self.state.get("Z"): dr = 1
+            if self.state.get("X"): dr = -1
             if dx or dy or dz or dg or dr:
                 mt4_manual_override_until = time.time() + 0.5; self.last_input_time = time.time()
+                roll_step = self.state.get("roll_step", 5.0) # 슬라이더 값 가져오기
                 mt4_target_goal['x']+=dx*self.step_size; mt4_target_goal['y']+=dy*self.step_size; mt4_target_goal['z']+=dz*self.step_size; mt4_target_goal['gripper']+=dg*self.grip_step
-                mt4_target_goal['roll']+=dr*5.0
+                mt4_target_goal['roll']+=dr*roll_step
+
         self.output_data[self.out_x]=mt4_target_goal['x']; self.output_data[self.out_y]=mt4_target_goal['y']; self.output_data[self.out_z]=mt4_target_goal['z']; self.output_data[self.out_g]=mt4_target_goal['gripper']
         for k, v in self.outputs.items():
             if v == PortType.FLOW: return k
@@ -325,7 +329,7 @@ class MT4KeyboardNode(BaseNode):
 class MT4UnityNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Unity Logic (MT4)", "MT4_UNITY")
-        self.data_in_id = None; self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None
+        self.data_in_id = None; self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None; self.out_r = None
         self.last_processed_json = ""
         
     def execute(self):
@@ -350,6 +354,7 @@ class MT4UnityNode(BaseNode):
             self.output_data[self.out_y] = mt4_target_goal['y']
             self.output_data[self.out_z] = mt4_target_goal['z']
             self.output_data[self.out_g] = mt4_target_goal['gripper']
+            self.output_data[self.out_r] = mt4_target_goal['roll']
         else:
             # 파이썬 조작이 끝난 상태 (유니티 대기 모드)
             if is_new_msg:
@@ -386,6 +391,7 @@ class MT4UnityNode(BaseNode):
                             if 'x' in parsed: self.output_data[self.out_y] = -float(parsed['x']) * 1000.0
                             if 'y' in parsed: self.output_data[self.out_z] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
                             if 'gripper' in parsed: self.output_data[self.out_g] = float(parsed['gripper']) 
+                            if 'roll' in parsed: self.output_data[self.out_r] = float(parsed['roll'])
                 except: pass 
                 
         return self.outputs
@@ -570,6 +576,8 @@ class NodeUIRenderer:
                 node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)
                 node.state['J'] = dpg.is_key_down(dpg.mvKey_J); node.state['U'] = dpg.is_key_down(dpg.mvKey_U)
                 node.state['Z'] = dpg.is_key_down(dpg.mvKey_Z)
+                node.state['X'] = dpg.is_key_down(dpg.mvKey_X)
+                if hasattr(node, 'ui_r_step'): node.state['roll_step'] = dpg.get_value(node.ui_r_step)
             
             elif isinstance(node, UniversalRobotNode):
                 for k, fid in node.ui_fields.items(): 
@@ -709,10 +717,13 @@ class NodeUIRenderer:
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
                 dpg.add_text("XY Move / QE: Z / UJ: Grip", color=(255,150,150))
+                dpg.add_text("ZX: Roll", color=(150,255,150))
+                node.ui_r_step = dpg.add_slider_float(label="Roll Step", default_value=5.0, min_value=1.0, max_value=20.0, width=100)
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as x: dpg.add_text("Target X"); node.outputs[x] = PortType.DATA; node.out_x = x
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as y: dpg.add_text("Target Y"); node.outputs[y] = PortType.DATA; node.out_y = y
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as z: dpg.add_text("Target Z"); node.outputs[z] = PortType.DATA; node.out_z = z
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as g: dpg.add_text("Target Grip"); node.outputs[g] = PortType.DATA; node.out_g = g
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_r: dpg.add_text("Target Roll"); node.outputs[out_r] = PortType.DATA; node.out_r = out_r
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("Flow Out"); node.outputs[f] = PortType.FLOW
     @staticmethod
     def _render_mt4_unity(node):
@@ -831,7 +842,9 @@ def mt4_manual_control_callback(sender, app_data, user_data):
 def mt4_move_to_coord_callback(sender, app_data, user_data):
     global mt4_manual_override_until, mt4_target_goal
     mt4_manual_override_until = time.time() + 2.0; mt4_target_goal['x'] = float(dpg.get_value("input_x")); mt4_target_goal['y'] = float(dpg.get_value("input_y"))
-    mt4_target_goal['z'] = float(dpg.get_value("input_z")); mt4_target_goal['gripper'] = float(dpg.get_value("input_g")); mt4_apply_limits()
+    mt4_target_goal['z'] = float(dpg.get_value("input_z")); mt4_target_goal['gripper'] = float(dpg.get_value("input_g"))
+    if dpg.does_item_exist("input_r"): mt4_target_goal['roll'] = float(dpg.get_value("input_r"))
+    mt4_apply_limits()
 
 def mt4_apply_limits():
     global mt4_target_goal
@@ -1116,6 +1129,9 @@ with dpg.window(tag="PrimaryWindow"):
                     with dpg.group(horizontal=True):
                         dpg.add_button(label="Z+", width=60, callback=mt4_manual_control_callback, user_data=('z', 10)); dpg.add_button(label="Z-", width=60, callback=mt4_manual_control_callback, user_data=('z', -10))
                         dpg.add_text("|"); dpg.add_button(label="G+", width=60, callback=mt4_manual_control_callback, user_data=('gripper', 5)); dpg.add_button(label="G-", width=60, callback=mt4_manual_control_callback, user_data=('gripper', -5))
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label="R+", width=60, callback=mt4_manual_control_callback, user_data=('roll', 5))
+                        dpg.add_button(label="R-", width=60, callback=mt4_manual_control_callback, user_data=('roll', -5))
                 with dpg.child_window(width=300, height=130, border=True):
                     dpg.add_text("Direct Coord", color=(0,255,255))
                     with dpg.group(horizontal=True):
@@ -1124,6 +1140,7 @@ with dpg.window(tag="PrimaryWindow"):
                     with dpg.group(horizontal=True):
                         dpg.add_text("Z"); dpg.add_input_int(tag="input_z", width=50, default_value=120, step=0)
                         dpg.add_text("G"); dpg.add_input_int(tag="input_g", width=50, default_value=40, step=0)
+                        dpg.add_text("R"); dpg.add_input_int(tag="input_r", width=50, default_value=0, step=0)
                     with dpg.group(horizontal=True):
                         dpg.add_button(label="Move", width=100, callback=mt4_move_to_coord_callback)
                         dpg.add_button(label="Homing", width=100, callback=mt4_homing_callback)
@@ -1131,6 +1148,7 @@ with dpg.window(tag="PrimaryWindow"):
                     dpg.add_text("Coords", color=(0,255,255))
                     dpg.add_text("X: 0", tag="mt4_x"); dpg.add_text("Y: 0", tag="mt4_y")
                     dpg.add_text("Z: 0", tag="mt4_z"); dpg.add_text("G: 0", tag="mt4_g")
+                    dpg.add_text("R: 0.0", tag="mt4_r")
                 with dpg.child_window(width=200, height=130, border=True):
                     dpg.add_text("Record & Play", color=(255,100,200))
                     dpg.add_input_text(tag="path_name_input", default_value="my_path", width=130)
@@ -1176,7 +1194,7 @@ with dpg.window(tag="PrimaryWindow"):
 
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
-dpg.create_viewport(title='MT4 Educational V25 - Flawless Master Build', width=1280, height=800)
+dpg.create_viewport(title='PyGui MT4 Educational Build', width=1280, height=800)
 dpg.setup_dearpygui(); dpg.set_primary_window("PrimaryWindow", True); dpg.show_viewport()
 
 last_logic_time = 0; LOGIC_RATE = 0.02
@@ -1190,6 +1208,7 @@ while dpg.is_dearpygui_running():
 
     dpg.set_value("mt4_x", f"X: {mt4_current_pos['x']:.1f}"); dpg.set_value("mt4_y", f"Y: {mt4_current_pos['y']:.1f}")
     dpg.set_value("mt4_z", f"Z: {mt4_current_pos['z']:.1f}"); dpg.set_value("mt4_g", f"G: {mt4_current_pos['gripper']:.1f}")
+    if dpg.does_item_exist("mt4_r"): dpg.set_value("mt4_r", f"R: {mt4_current_pos['roll']:.1f}°")
     
     hw_status = mt4_dashboard.get('hw_link', HwStatus.OFFLINE)
     if hw_status == HwStatus.ONLINE: dpg.set_value("mt4_dash_link", "HW: Online"); dpg.configure_item("mt4_dash_link", color=(0,255,0))
