@@ -103,7 +103,6 @@ class BaseRobotDriver(ABC):
     @abstractmethod
     def execute_command(self, inputs, settings): pass
 
-# [수정 후]
 class MT4RobotDriver(BaseRobotDriver):
     def __init__(self): 
         self.last_cmd = ""; self.last_write_time = 0; self.write_interval = 0.0
@@ -132,15 +131,29 @@ class MT4RobotDriver(BaseRobotDriver):
         nx = mt4_current_pos['x'] + dx * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['x']
         ny = mt4_current_pos['y'] + dy * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['y']
         nz = mt4_current_pos['z'] + dz * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['z']
-        ng = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
-        dr = mt4_target_goal['roll'] - mt4_current_pos['roll']
-        mt4_target_goal['roll'] = max(MT4_LIMITS['min_r'], min(mt4_target_goal['roll'], MT4_LIMITS['max_r']))
         
-        nx = max(MT4_LIMITS['min_x'], min(nx, MT4_LIMITS['max_x'])); ny = max(MT4_LIMITS['min_y'], min(ny, MT4_LIMITS['max_y'])); nz = max(MT4_LIMITS['min_z'], min(nz, MT4_LIMITS['max_z']))
-        new_state = {'x': nx, 'y': ny, 'z': nz, 'gripper': ng, 'roll': mt4_target_goal['roll']}
+        nx = max(MT4_LIMITS['min_x'], min(nx, MT4_LIMITS['max_x']))
+        ny = max(MT4_LIMITS['min_y'], min(ny, MT4_LIMITS['max_y']))
+        nz = max(MT4_LIMITS['min_z'], min(nz, MT4_LIMITS['max_z']))
+
+        # ★ UI(Settings)에서 설정한 속도 변수 가져오기
+        g_spd = float(settings.get('grip_spd', 5.0))
+        r_spd = float(settings.get('roll_spd', 5.0))
+        
+        # ★ 그리퍼 목표 도달 시 스무딩(속도 제한) 적용
+        dg_err = mt4_target_goal['gripper'] - mt4_current_pos['gripper']
+        ng = mt4_current_pos['gripper'] + math.copysign(g_spd, dg_err) if abs(dg_err) > g_spd else mt4_target_goal['gripper']
+        ng = max(MT4_GRIPPER_MIN, min(ng, MT4_GRIPPER_MAX))
+        
+        # ★ 회전축(Roll) 목표 도달 시 스무딩(속도 제한) 적용
+        mt4_target_goal['roll'] = max(MT4_LIMITS['min_r'], min(mt4_target_goal['roll'], MT4_LIMITS['max_r']))
+        dr_err = mt4_target_goal['roll'] - mt4_current_pos['roll']
+        nr = mt4_current_pos['roll'] + math.copysign(r_spd, dr_err) if abs(dr_err) > r_spd else mt4_target_goal['roll']
+        
+        new_state = {'x': nx, 'y': ny, 'z': nz, 'gripper': ng, 'roll': nr}
         
         if time.time() - self.last_write_time >= self.write_interval:
-            cmd = f"G0 X{nx:.1f} Y{ny:.1f} Z{nz:.1f} A{mt4_target_goal['roll']:.1f}\nM3 S{int(ng)}\n"
+            cmd = f"G0 X{nx:.1f} Y{ny:.1f} Z{nz:.1f} A{nr:.1f}\nM3 S{int(ng)}\n"
             if cmd != self.last_cmd:
                 try: 
                     if ser and ser.is_open: ser.write(cmd.encode()); self.last_write_time = time.time()
@@ -317,9 +330,8 @@ class MT4KeyboardNode(BaseNode):
             if self.state.get("X"): dr = -1
             if dx or dy or dz or dg or dr:
                 mt4_manual_override_until = time.time() + 0.5; self.last_input_time = time.time()
-                roll_step = self.state.get("roll_step", 5.0) # 슬라이더 값 가져오기
                 mt4_target_goal['x']+=dx*self.step_size; mt4_target_goal['y']+=dy*self.step_size; mt4_target_goal['z']+=dz*self.step_size; mt4_target_goal['gripper']+=dg*self.grip_step
-                mt4_target_goal['roll']+=dr*roll_step
+                mt4_target_goal['roll']+=dr*self.roll_step
 
         self.output_data[self.out_x]=mt4_target_goal['x']; self.output_data[self.out_y]=mt4_target_goal['y']; self.output_data[self.out_z]=mt4_target_goal['z']; self.output_data[self.out_g]=mt4_target_goal['gripper']
         for k, v in self.outputs.items():
@@ -577,7 +589,6 @@ class NodeUIRenderer:
                 node.state['J'] = dpg.is_key_down(dpg.mvKey_J); node.state['U'] = dpg.is_key_down(dpg.mvKey_U)
                 node.state['Z'] = dpg.is_key_down(dpg.mvKey_Z)
                 node.state['X'] = dpg.is_key_down(dpg.mvKey_X)
-                if hasattr(node, 'ui_r_step'): node.state['roll_step'] = dpg.get_value(node.ui_r_step)
             
             elif isinstance(node, UniversalRobotNode):
                 for k, fid in node.ui_fields.items(): 
@@ -718,7 +729,6 @@ class NodeUIRenderer:
                 node.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
                 dpg.add_text("XY Move / QE: Z / UJ: Grip", color=(255,150,150))
                 dpg.add_text("ZX: Roll", color=(150,255,150))
-                # node.ui_r_step = dpg.add_slider_float(label="Roll Step", default_value=5.0, min_value=1.0, max_value=20.0, width=100)
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as x: dpg.add_text("Target X"); node.outputs[x] = PortType.DATA; node.out_x = x
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as y: dpg.add_text("Target Y"); node.outputs[y] = PortType.DATA; node.out_y = y
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as z: dpg.add_text("Target Z"); node.outputs[z] = PortType.DATA; node.out_z = z
@@ -733,6 +743,7 @@ class NodeUIRenderer:
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_x: dpg.add_text("Target X"); node.outputs[out_x] = PortType.DATA; node.out_x = out_x
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_y: dpg.add_text("Target Y"); node.outputs[out_y] = PortType.DATA; node.out_y = out_y
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_z: dpg.add_text("Target Z"); node.outputs[out_z] = PortType.DATA; node.out_z = out_z
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_r: dpg.add_text("Target Roll"); node.outputs[out_r] = PortType.DATA; node.out_r = out_r
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_g: dpg.add_text("Target Grip"); node.outputs[out_g] = PortType.DATA; node.out_g = out_g
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f_out: dpg.add_text("Flow Out"); node.outputs[f_out] = PortType.FLOW
     @staticmethod
