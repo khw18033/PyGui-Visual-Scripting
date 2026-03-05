@@ -718,12 +718,12 @@ class NodeUIRenderer:
                 node.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
                 dpg.add_text("XY Move / QE: Z / UJ: Grip", color=(255,150,150))
                 dpg.add_text("ZX: Roll", color=(150,255,150))
-                node.ui_r_step = dpg.add_slider_float(label="Roll Step", default_value=5.0, min_value=1.0, max_value=20.0, width=100)
+                # node.ui_r_step = dpg.add_slider_float(label="Roll Step", default_value=5.0, min_value=1.0, max_value=20.0, width=100)
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as x: dpg.add_text("Target X"); node.outputs[x] = PortType.DATA; node.out_x = x
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as y: dpg.add_text("Target Y"); node.outputs[y] = PortType.DATA; node.out_y = y
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as z: dpg.add_text("Target Z"); node.outputs[z] = PortType.DATA; node.out_z = z
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as g: dpg.add_text("Target Grip"); node.outputs[g] = PortType.DATA; node.out_g = g
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_r: dpg.add_text("Target Roll"); node.outputs[out_r] = PortType.DATA; node.out_r = out_r
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as g: dpg.add_text("Target Grip"); node.outputs[g] = PortType.DATA; node.out_g = g
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("Flow Out"); node.outputs[f] = PortType.FLOW
     @staticmethod
     def _render_mt4_unity(node):
