@@ -131,25 +131,19 @@ class MT4RobotDriver(BaseRobotDriver):
         nx = mt4_current_pos['x'] + dx * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['x']
         ny = mt4_current_pos['y'] + dy * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['y']
         nz = mt4_current_pos['z'] + dz * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['z']
+        ng = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
         
-        nx = max(MT4_LIMITS['min_x'], min(nx, MT4_LIMITS['max_x']))
-        ny = max(MT4_LIMITS['min_y'], min(ny, MT4_LIMITS['max_y']))
-        nz = max(MT4_LIMITS['min_z'], min(nz, MT4_LIMITS['max_z']))
-
-        # ★ UI(Settings)에서 설정한 속도 변수 가져오기
-        g_spd = float(settings.get('grip_spd', 5.0))
-        r_spd = float(settings.get('roll_spd', 5.0))
-        
-        # ★ 그리퍼 목표 도달 시 스무딩(속도 제한) 적용
-        dg_err = mt4_target_goal['gripper'] - mt4_current_pos['gripper']
-        ng = mt4_current_pos['gripper'] + math.copysign(g_spd, dg_err) if abs(dg_err) > g_spd else mt4_target_goal['gripper']
-        ng = max(MT4_GRIPPER_MIN, min(ng, MT4_GRIPPER_MAX))
-        
-        # ★ 회전축(Roll) 목표 도달 시 스무딩(속도 제한) 적용
+        # Roll 목표값 한계치 적용
         mt4_target_goal['roll'] = max(MT4_LIMITS['min_r'], min(mt4_target_goal['roll'], MT4_LIMITS['max_r']))
+        
+        # ★ [추가] Roll 속도(r_spd) 스무딩 로직만 원본에 덧붙임
+        r_spd = float(settings.get('roll_spd', 5.0))
         dr_err = mt4_target_goal['roll'] - mt4_current_pos['roll']
         nr = mt4_current_pos['roll'] + math.copysign(r_spd, dr_err) if abs(dr_err) > r_spd else mt4_target_goal['roll']
         
+        nx = max(MT4_LIMITS['min_x'], min(nx, MT4_LIMITS['max_x'])); ny = max(MT4_LIMITS['min_y'], min(ny, MT4_LIMITS['max_y'])); nz = max(MT4_LIMITS['min_z'], min(nz, MT4_LIMITS['max_z']))
+        
+        # 딕셔너리와 G-code에 mt4_target_goal['roll'] 대신 스무딩 처리된 nr을 대입
         new_state = {'x': nx, 'y': ny, 'z': nz, 'gripper': ng, 'roll': nr}
         
         if time.time() - self.last_write_time >= self.write_interval:
