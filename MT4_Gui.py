@@ -108,7 +108,7 @@ class MT4RobotDriver(BaseRobotDriver):
         self.last_cmd = ""; self.last_write_time = 0; self.write_interval = 0.0
 
     def get_ui_schema(self): return [('x', "X", 200.0), ('y', "Y", 0.0), ('z', "Z", 120.0), ('roll', "R", 0.0), ('gripper', "G", 40.0)]
-    def get_settings_schema(self): return [('smooth', "Smth", 1.0), ('grip_spd', "G_Spd", 5.0), ('roll_spd', "R_Spd", 5.0)]
+    def get_settings_schema(self): return [('smooth', "Smth", 1.0), ('grip_spd', "G_Spd", 50.0), ('roll_spd', "R_Spd", 50.0)]
     
     def execute_command(self, inputs, settings):
         global mt4_current_pos, mt4_target_goal, mt4_manual_override_until, ser
