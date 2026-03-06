@@ -330,7 +330,7 @@ class MT4KeyboardNode(BaseNode):
                 mt4_target_goal['x']+=dx*self.step_size; mt4_target_goal['y']+=dy*self.step_size; mt4_target_goal['z']+=dz*self.step_size; mt4_target_goal['gripper']+=dg*self.grip_step
                 mt4_target_goal['roll']+=dr*self.roll_step
 
-        self.output_data[self.out_x]=mt4_target_goal['x']; self.output_data[self.out_y]=mt4_target_goal['y']; self.output_data[self.out_z]=mt4_target_goal['z']; self.output_data[self.out_g]=mt4_target_goal['gripper']
+        self.output_data[self.out_x]=mt4_target_goal['x']; self.output_data[self.out_y]=mt4_target_goal['y']; self.output_data[self.out_z]=mt4_target_goal['z']; self.output_data[self.out_r]=mt4_target_goal['roll']; self.output_data[self.out_g]=mt4_target_goal['gripper']
         for k, v in self.outputs.items():
             if v == PortType.FLOW: return k
         return None
