@@ -303,34 +303,14 @@ class MT4KeyboardNode(BaseNode):
             return None
         
         global mt4_manual_override_until, mt4_target_goal
-        if time.time() - self.last_input_time > self.cooldown:
-            dx=0; dy=0; dz=0; dg=0
-            key_mode = self.state.get("keys", "WASD")
-            if key_mode == "WASD":
-                if self.state.get("W"): dx=1
-                if self.state.get("S"): dx=-1
-                if self.state.get("A"): dy=1
-                if self.state.get("D"): dy=-1
-            else:
-                if self.state.get("UP"): dx=1
-                if self.state.get("DOWN"): dx=-1
-                if self.state.get("LEFT"): dy=1
-                if self.state.get("RIGHT"): dy=-1
+        
+        # =========================================================================
+        # [실습 1단계] PyGui 키보드 제어 로직 복구하기
+        # 설명서를 참고해 AI를 활용하여 로직을 복구해보세요.
 
-            if self.state.get("Q"): dz=1
-            if self.state.get("E"): dz=-1
-            if self.state.get("J"): dg=1
-            if self.state.get("U"): dg=-1
-
-            dr = 0
-            if self.state.get("Z"): dr = 1
-            if self.state.get("X"): dr = -1
-            if dx or dy or dz or dg or dr:
-                mt4_manual_override_until = time.time() + 0.5; self.last_input_time = time.time()
-                mt4_target_goal['x']+=dx*self.step_size; mt4_target_goal['y']+=dy*self.step_size; mt4_target_goal['z']+=dz*self.step_size; mt4_target_goal['gripper']+=dg*self.grip_step
-                mt4_target_goal['roll']+=dr*self.roll_step
-
-        self.output_data[self.out_x]=mt4_target_goal['x']; self.output_data[self.out_y]=mt4_target_goal['y']; self.output_data[self.out_z]=mt4_target_goal['z']; self.output_data[self.out_r]=mt4_target_goal['roll']; self.output_data[self.out_g]=mt4_target_goal['gripper']
+        # TODO: 여기에 AI가 생성한 코드를 붙여넣으세요.
+        # =========================================================================
+        
         for k, v in self.outputs.items():
             if v == PortType.FLOW: return k
         return None
@@ -344,64 +324,31 @@ class MT4UnityNode(BaseNode):
     def execute(self):
         global mt4_collision_lock_until
         
-        # 1. UDP 수신 노드로부터 가장 최근 패킷을 가져옴
-        raw_json = self.fetch_input_data(self.data_in_id)
-        
-        # 2. 이 패킷이 이전에 처리한 것과 다른 "새로운" 패킷인지 확인
+        raw_json = self.fetch_input_data(self.data_in_id)        
+
         is_new_msg = False
         if raw_json and raw_json != self.last_processed_json:
             is_new_msg = True
-            self.last_processed_json = raw_json # ★ [핵심] 읽었으니 찌꺼기가 남지 않게 즉시 캐시 최신화
+            self.last_processed_json = raw_json
 
-        # 3. 현재 파이썬 GUI가 강제 제어 중인지 확인 (수동 조작 후 약 1초, 또는 경로 재생 중)
         is_overridden = (time.time() < mt4_manual_override_until) or mt4_mode.get("playing", False)
 
         if is_overridden:
-            # 파이썬 조작 중: 유니티에서 무슨 패킷이 고여있든 철저히 무시하고,
-            # 현재 로봇의 목표 위치로 노드 출력값을 덮어씌움 (완벽한 Active Echo)
             self.output_data[self.out_x] = mt4_target_goal['x']
             self.output_data[self.out_y] = mt4_target_goal['y']
             self.output_data[self.out_z] = mt4_target_goal['z']
             self.output_data[self.out_g] = mt4_target_goal['gripper']
             self.output_data[self.out_r] = mt4_target_goal['roll']
         else:
-            # 파이썬 조작이 끝난 상태 (유니티 대기 모드)
             if is_new_msg:
-                # "새로운" 유니티 조작(WASD)이 들어왔을 때만 좌표를 업데이트
-                try:
-                    parsed = json.loads(raw_json)
-                    msg_type = parsed.get("type", "MOVE")
-                    if msg_type == "CMD":
-                        val = parsed.get("val", "")
-                        if val == "COLLISION":
-                            mt4_collision_lock_until = time.time() + 2.0 
-                            if ser and ser.is_open: ser.write(b"!") 
-                            write_log("Collision Detected! Robot Locked.")
-                            send_unity_ui("STATUS", "충돌 감지! 로봇 긴급 정지")
-                        elif val == "START_REC":
-                            if not mt4_mode["recording"]: toggle_mt4_record()
-                        elif val.startswith("STOP_REC:"):
-                            fname = val.split(":")[1]
-                            if mt4_mode["recording"]: toggle_mt4_record(custom_name=fname)
-                        elif val == "REQ_FILES":
-                            send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
-                        elif val.startswith("PLAY:"):
-                            fname = val.split(":")[1]
-                            play_mt4_path(filename=fname)
-                        elif val == "LOG_SUCCESS":
-                            mt4_log_event_queue.append("SUCCESS")
-                            send_unity_ui("LOG", "<color=green>SUCCESS 기록 완료</color>")
-                        elif val == "LOG_FAIL":
-                            mt4_log_event_queue.append("FAIL")
-                            send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
-                    elif msg_type == "MOVE":
-                        if time.time() > mt4_collision_lock_until:
-                            if 'z' in parsed: self.output_data[self.out_x] = float(parsed['z']) * 1000.0
-                            if 'x' in parsed: self.output_data[self.out_y] = -float(parsed['x']) * 1000.0
-                            if 'y' in parsed: self.output_data[self.out_z] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
-                            if 'gripper' in parsed: self.output_data[self.out_g] = float(parsed['gripper']) 
-                            if 'roll' in parsed: self.output_data[self.out_r] = float(parsed['roll'])
-                except: pass 
+       
+        # =========================================================================
+        # [실습 2단계] 유니티 JSON 파싱 및 로봇 좌표 변환 로직 복구하기
+        # 설명서를 참고해 AI를 활용하여 로직을 복구해보세요.
+
+        # TODO: 여기에 AI가 생성한 코드를 붙여넣으세요.
+                pass
+        # =========================================================================
                 
         return self.outputs
 
