@@ -111,53 +111,13 @@ class MT4RobotDriver(BaseRobotDriver):
     def get_settings_schema(self): return [('smooth', "Smth", 1.0), ('grip_spd', "G_Spd", 50.0), ('roll_spd', "R_Spd", 50.0)]
     
     def execute_command(self, inputs, settings):
-        global mt4_current_pos, mt4_target_goal, mt4_manual_override_until, ser
-        if time.time() < mt4_collision_lock_until: return 
-        
-        # ★ [수정 1] 백래시 노드의 미세한 변화가 버려지지 않도록 비교 대상을 '목표값'으로 변경
-        inputs_changed = False
-        for key, _, _ in self.get_ui_schema():
-            val = inputs.get(key)
-            if val is not None:
-                if abs(float(val) - mt4_target_goal[key]) > 0.5: # 0.5mm 이상의 유의미한 변화가 쌓였을 때만 갱신
-                    inputs_changed = True
+        # =========================================================================
+        # [실습] MT4 로봇 제어 코어 드라이버 복구하기
+        # AI를 활용하여 로직을 복구해보세요.
 
-        if time.time() > mt4_manual_override_until and inputs_changed:
-            for key, _, _ in self.get_ui_schema():
-                if inputs.get(key) is not None: mt4_target_goal[key] = float(inputs[key])
-                
-        smooth = 1.0 if time.time() < mt4_manual_override_until else max(0.01, min(settings.get('smooth', 1.0), 1.0))
-        dx = mt4_target_goal['x'] - mt4_current_pos['x']; dy = mt4_target_goal['y'] - mt4_current_pos['y']; dz = mt4_target_goal['z'] - mt4_current_pos['z']
-        nx = mt4_current_pos['x'] + dx * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['x']
-        ny = mt4_current_pos['y'] + dy * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['y']
-        nz = mt4_current_pos['z'] + dz * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['z']
-        
-        # ★ [핵심 해결] 1프레임당 이동량으로 스케일링 (초당 이동 속도로 보정)
-        g_spd = float(settings.get('grip_spd', 5.0)) * 0.1
-        r_spd = float(settings.get('roll_spd', 5.0)) * 0.1
-
-        # ★ 그리퍼 속도 조절 (G_Spd 연산 복구)
-        dg_err = mt4_target_goal['gripper'] - mt4_current_pos['gripper']
-        ng = mt4_current_pos['gripper'] + math.copysign(g_spd, dg_err) if abs(dg_err) > g_spd else mt4_target_goal['gripper']
-        ng = max(MT4_GRIPPER_MIN, min(ng, MT4_GRIPPER_MAX))
-        
-        # ★ 회전 속도 조절 (R_Spd 연산)
-        mt4_target_goal['roll'] = max(MT4_LIMITS['min_r'], min(mt4_target_goal['roll'], MT4_LIMITS['max_r']))
-        dr_err = mt4_target_goal['roll'] - mt4_current_pos['roll']
-        nr = mt4_current_pos['roll'] + math.copysign(r_spd, dr_err) if abs(dr_err) > r_spd else mt4_target_goal['roll']
-        
-        nx = max(MT4_LIMITS['min_x'], min(nx, MT4_LIMITS['max_x'])); ny = max(MT4_LIMITS['min_y'], min(ny, MT4_LIMITS['max_y'])); nz = max(MT4_LIMITS['min_z'], min(nz, MT4_LIMITS['max_z']))
-        new_state = {'x': nx, 'y': ny, 'z': nz, 'gripper': ng, 'roll': nr}
-        
-        if time.time() - self.last_write_time >= self.write_interval:
-            cmd = f"G0 X{nx:.1f} Y{ny:.1f} Z{nz:.1f} A{nr:.1f}\nM3 S{int(ng)}\n"
-            if cmd != self.last_cmd:
-                try: 
-                    if ser and ser.is_open: ser.write(cmd.encode()); self.last_write_time = time.time()
-                except: mt4_dashboard["hw_link"] = HwStatus.OFFLINE
-                self.last_cmd = cmd
-        mt4_current_pos.update(new_state)
-        return new_state
+        # TODO: 여기에 AI가 생성한 코드를 붙여넣으세요.
+        pass
+        # =========================================================================
 
 class BaseNode(ABC):
     def __init__(self, node_id, label, type_str):
@@ -176,7 +136,14 @@ class BaseNode(ABC):
 
 class StartNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "START", "START"); self.out = None
-    def execute(self): return self.out 
+    def execute(self):
+        # =========================================================================
+        # [실습] 시작 노드 복구하기
+        # AI를 활용하여 로직을 복구해보세요.
+
+        # TODO: 여기에 AI가 생성한 코드를 붙여넣으세요.
+        pass
+        # =========================================================================
 
 class ConditionKeyNode(BaseNode):
     def __init__(self, node_id): 
@@ -184,7 +151,6 @@ class ConditionKeyNode(BaseNode):
         self.out_res = None; self.prev_state = False 
     def execute(self):
         current = self.state.get("is_down", False)
-        # ★ '딸깍' 감지 로직 완벽 적용
         if current and not self.prev_state: self.output_data[self.out_res] = True
         else: self.output_data[self.out_res] = False
         self.prev_state = current
@@ -193,7 +159,6 @@ class ConditionKeyNode(BaseNode):
 class LogicIfNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Logic: IF", "LOGIC_IF"); self.in_cond = None; self.out_true = None; self.out_false = None
     def execute(self):
-        # IF가 여러번 평가되어도 Condition 내부 상태가 망가지지 않도록 수정
         cond_val = self.fetch_input_data(self.in_cond)
         return self.out_true if cond_val else self.out_false
 
@@ -261,33 +226,16 @@ class UniversalRobotNode(BaseNode):
             self.state[k] = def_v
         for k, lbl, def_v in self.driver.get_settings_schema():
             self.state[k] = def_v
-        
-    # [수정 후]
-    def execute(self):
-        inputs = {k: self.fetch_input_data(aid) for k, aid in self.in_pins.items()}
-        settings = {k: self.fetch_input_data(aid) for k, aid in self.setting_pins.items()}
-        
-        # ★ 외부에서 값이 안 들어왔을(None) 때만 UI 상태값을 사용하도록 명확히 처리
-        for k in inputs:
-            if inputs[k] is None: 
-                inputs[k] = self.state.get(k, 0.0)
-                
-        for k in settings:
-            if settings[k] is None: 
-                settings[k] = self.state.get(k, 1.0)
-            
-        new_state = self.driver.execute_command(inputs, settings)
-        
-        # ★ 새로운 상태를 UI에 반영 (유니티에서 들어온 값이 GUI 화면 숫자도 바꾸도록 함)
-        if new_state:
-            for k, v in new_state.items():
-                self.state[k] = v
-                if k in self.ui_fields: 
-                    dpg.set_value(self.ui_fields[k], v)
 
-        for k, v in self.outputs.items():
-            if v == PortType.FLOW: return k
-        return None
+    def execute(self):
+
+        # =========================================================================
+        # [실습] MT4 통합 노드 로직 복구하기
+        # AI를 활용하여 로직을 복구해보세요.
+
+        # TODO: 여기에 AI가 생성한 코드를 붙여넣으세요.
+        pass
+        # =========================================================================
 
 class MT4KeyboardNode(BaseNode):
     def __init__(self, node_id):
@@ -297,23 +245,15 @@ class MT4KeyboardNode(BaseNode):
         self.roll_step = 5.0
 
     def execute(self):
-        if self.state.get("is_focused", False):
-            for k, v in self.outputs.items():
-                if v == PortType.FLOW: return k
-            return None
-        
-        global mt4_manual_override_until, mt4_target_goal
-        
         # =========================================================================
-        # [실습 1단계] PyGui 키보드 제어 로직 복구하기
-        # 설명서를 참고해 AI를 활용하여 로직을 복구해보세요.
+        # [실습] PyGui 키보드 제어 로직 복구하기
+        # AI를 활용하여 로직을 복구해보세요.
 
         # TODO: 여기에 AI가 생성한 코드를 붙여넣으세요.
+        pass
         # =========================================================================
         
-        for k, v in self.outputs.items():
-            if v == PortType.FLOW: return k
-        return None
+        
 
 class MT4UnityNode(BaseNode):
     def __init__(self, node_id):
@@ -322,35 +262,15 @@ class MT4UnityNode(BaseNode):
         self.last_processed_json = ""
         
     def execute(self):
-        global mt4_collision_lock_until
-        
-        raw_json = self.fetch_input_data(self.data_in_id)        
-
-        is_new_msg = False
-        if raw_json and raw_json != self.last_processed_json:
-            is_new_msg = True
-            self.last_processed_json = raw_json
-
-        is_overridden = (time.time() < mt4_manual_override_until) or mt4_mode.get("playing", False)
-
-        if is_overridden:
-            self.output_data[self.out_x] = mt4_target_goal['x']
-            self.output_data[self.out_y] = mt4_target_goal['y']
-            self.output_data[self.out_z] = mt4_target_goal['z']
-            self.output_data[self.out_g] = mt4_target_goal['gripper']
-            self.output_data[self.out_r] = mt4_target_goal['roll']
-        else:
-            if is_new_msg:
        
         # =========================================================================
-        # [실습 2단계] 유니티 JSON 파싱 및 로봇 좌표 변환 로직 복구하기
-        # 설명서를 참고해 AI를 활용하여 로직을 복구해보세요.
+        # [실습] Unity Json 파싱 로직 복구하기
+        # AI를 활용하여 로직을 복구해보세요.
 
         # TODO: 여기에 AI가 생성한 코드를 붙여넣으세요.
-                pass
+        pass
         # =========================================================================
                 
-        return self.outputs
 
 class MT4GravitySagNode(BaseNode):
     def __init__(self, node_id):
@@ -472,31 +392,13 @@ class UDPReceiverNode(BaseNode):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.sock.setblocking(False)
         self.is_bound = False; self.last_data_str = ""; self.current_port = 0
     def execute(self):
-        global MT4_UNITY_IP
-        port = self.state.get("port", 6000); MT4_UNITY_IP = self.state.get("ip", "192.168.50.63")
-        if not self.is_bound or self.current_port != port:
-            try:
-                self.sock.close()
-                self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.sock.setblocking(False)
-                self.sock.bind(('0.0.0.0', port)); self.is_bound = True; self.current_port = port
-                write_log(f"UDP: Bound to port {port}")
-            except: self.is_bound = True
-        try:
-            while True: 
-                data, _ = self.sock.recvfrom(4096); decoded = data.decode()
-                now = time.time()
-                mt4_dashboard["latency"] = (now - mt4_dashboard.get("last_pkt_time", now)) * 1000.0 
-                mt4_dashboard["last_pkt_time"] = now
-                mt4_dashboard["status"] = "Connected"
-                if decoded != self.last_data_str:
-                    self.output_data[self.out_json] = decoded; self.last_data_str = decoded
-        except: pass
-        # try:
-        #     fb = {"x": -mt4_current_pos['y']/1000.0, "y": (mt4_current_pos['z'] - MT4_Z_OFFSET) / 1000.0, "z": mt4_current_pos['x']/1000.0, "gripper": mt4_current_pos['gripper'], "status": "Running"}
-        #     sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        #     sock_send.sendto(json.dumps(fb).encode(), (MT4_UNITY_IP, MT4_FEEDBACK_PORT))
-        # except: pass
-        return self.out_flow
+        # =========================================================================
+        # [실습] UDP 통신 수신 로직 복구하기
+        # AI를 활용하여 로직을 복구해보세요.
+
+        # TODO: 여기에 AI가 생성한 코드를 붙여넣으세요.
+        pass
+        # =========================================================================
 
 
 # ================= [UI Renderer & Data Synchronizer] =================
