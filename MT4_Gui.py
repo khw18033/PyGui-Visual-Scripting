@@ -892,7 +892,7 @@ def toggle_mt4_record(custom_name=None):
         mt4_record_temp_name = fname
         mt4_record_f = open(fname, 'w', newline='')
         mt4_record_writer = csv.writer(mt4_record_f)
-        mt4_record_writer.writerow(['x', 'y', 'z', 'gripper'])
+        mt4_record_writer.writerow(['x', 'y', 'z', 'roll','gripper'])
         dpg.set_item_label("btn_mt4_record", "Stop Recording")
         write_log("Path Recording Started.")
         send_unity_ui("STATUS", "경로 녹화 시작...")
@@ -916,6 +916,7 @@ def play_mt4_path_thread(filepath):
                 if time.time() < mt4_collision_lock_until or not mt4_mode["playing"]: break
                 mt4_target_goal['x'] = float(row['x']); mt4_target_goal['y'] = float(row['y'])
                 mt4_target_goal['z'] = float(row['z']); mt4_target_goal['gripper'] = float(row['gripper'])
+                mt4_target_goal['roll'] = float(row.get('roll', 0.0))
                 mt4_apply_limits()
                 time.sleep(0.05)
     except Exception as e: write_log(f"Play Error: {e}")
@@ -927,15 +928,23 @@ def mt4_background_logger_thread():
     log_filename = os.path.join(LOG_DIR, f"mt4_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
     with open(log_filename, 'w', newline='') as mt4_log_f:
         mt4_log_writer = csv.writer(mt4_log_f)
-        mt4_log_writer.writerow(['timestamp', 'event', 'target_x', 'target_y', 'target_z', 'target_g', 'current_x', 'current_y', 'current_z', 'current_g'])
+        mt4_log_writer.writerow(['timestamp', 'event', 'target_x', 'target_y', 'target_z', 'target_r', 'target_g', 'current_x', 'current_y', 'current_z', 'current_r', 'current_g'])
         while True:
             time.sleep(0.05)
             event_str = "TICK"
             if mt4_log_event_queue: event_str = mt4_log_event_queue.popleft()
-            mt4_log_writer.writerow([time.time(), event_str, mt4_target_goal['x'], mt4_target_goal['y'], mt4_target_goal['z'], mt4_target_goal['gripper'], mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['gripper']])
+            
+            # ★ 시스템 로그 데이터 줄에 roll 값 추가
+            mt4_log_writer.writerow([
+                time.time(), event_str, 
+                mt4_target_goal['x'], mt4_target_goal['y'], mt4_target_goal['z'], mt4_target_goal['roll'], mt4_target_goal['gripper'], 
+                mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['roll'], mt4_current_pos['gripper']
+            ])
             mt4_log_f.flush()
+            
             if mt4_mode["recording"] and mt4_record_writer:
-                mt4_record_writer.writerow((mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['gripper']))
+                # ★ 경로 녹화(Record) 중일 때 저장되는 CSV 데이터에도 roll 값 추가
+                mt4_record_writer.writerow((mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['roll'], mt4_current_pos['gripper']))
                 mt4_record_f.flush()
 
 def mt4_homing_callback(sender, app_data, user_data): threading.Thread(target=mt4_homing_thread_func, daemon=True).start()
@@ -1198,6 +1207,7 @@ with dpg.window(tag="PrimaryWindow"):
             dpg.add_button(label="TOOL-TIP", callback=add_node_cb, user_data="MT4_TOOLTIP")
             dpg.add_button(label="BACKLASH", callback=add_node_cb, user_data="MT4_BACKLASH")
             dpg.add_spacer(width=50)
+        with dpg.group(horizontal=True):
             dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
 
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
