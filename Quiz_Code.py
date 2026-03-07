@@ -438,7 +438,6 @@ class NodeUIRenderer:
             
             elif isinstance(node, UniversalRobotNode):
                 for k, fid in node.ui_fields.items(): 
-                    # ★ 해당 핀(in_pins[k])에 연결된 선이 '없을 때만' UI 화면의 값을 읽어옵니다.
                     pin_id = node.in_pins[k]
                     is_connected = any(l['target'] == pin_id for l in link_registry.values())
                     if not is_connected:
@@ -604,7 +603,6 @@ class NodeUIRenderer:
     @staticmethod
     def _render_sag(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
-            # tag 속성을 추가하고, 기존의 PortType.DATA 등록 코드는 그대로 살립니다!
             with dpg.node_attribute(tag=node.in_x, attribute_type=dpg.mvNode_Attr_Input): 
                 dpg.add_text("X In")
                 node.inputs[node.in_x] = PortType.DATA
@@ -819,7 +817,6 @@ def auto_reconnect_mt4_thread():
 def execute_graph_once():
     start_node = next((n for n in node_registry.values() if isinstance(n, StartNode)), None)
     
-    # ★ [핵심 패치] 신규 추가된 4개의 Sim-to-Real 보정 노드들도 1초에 50번씩 무조건 자동 연산하도록 명단(튜플)에 추가합니다!
     for node in node_registry.values():
         if isinstance(node, (ConditionKeyNode, UniversalRobotNode, MT4UnityNode, UDPReceiverNode, LoggerNode, ConstantNode,
                              MT4GravitySagNode, MT4CalibrationNode, MT4TooltipNode, MT4BacklashNode)): 
@@ -880,7 +877,6 @@ def toggle_exec(s, a):
 def link_cb(s, a): 
     p1, p2 = a[0], a[1]
     
-    # ★ [핵심 패치] 마우스를 거꾸로 드래그해도 항상 Output -> Input 방향으로 강제 정렬
     p1_is_out = False
     for node in node_registry.values():
         if p1 in node.outputs: 
@@ -895,7 +891,6 @@ def link_cb(s, a):
 def del_link_cb(s, a): dpg.delete_item(a); link_registry.pop(a, None)
 def add_node_cb(s, a, u): NodeFactory.create_node(u)
 
-# [수정] UI 선언 전에 콜백 함수들을 미리 명확하게 정의
 def save_cb(s, a): save_graph(dpg.get_value("file_name_input"))
 def load_cb(s, a): load_graph(dpg.get_value("file_list_combo"))
 
@@ -1047,6 +1042,7 @@ with dpg.window(tag="PrimaryWindow"):
             dpg.add_button(label="TOOL-TIP", callback=add_node_cb, user_data="MT4_TOOLTIP")
             dpg.add_button(label="BACKLASH", callback=add_node_cb, user_data="MT4_BACKLASH")
             dpg.add_spacer(width=50)
+        with dpg.group(horizontal=True):
             dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
 
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
