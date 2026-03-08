@@ -994,9 +994,7 @@ while dpg.is_dearpygui_running():
             sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock_send.sendto(json.dumps(fb).encode(), (MT4_UNITY_IP, MT4_FEEDBACK_PORT))
         except: pass
-        with open("network_spam_debug.log", "a") as debug_f:
-            debug_f.write(str(fb) + "\n")
-
+        
     if is_running and (time.time() - last_logic_time > LOGIC_RATE):
         NodeUIRenderer.sync_ui_to_state()
         execute_graph_once()           
