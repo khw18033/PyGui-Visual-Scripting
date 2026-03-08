@@ -408,11 +408,6 @@ class UDPReceiverNode(BaseNode):
                 if decoded != self.last_data_str:
                     self.output_data[self.out_json] = decoded; self.last_data_str = decoded
         except: pass
-        # try:
-        #     fb = {"x": -mt4_current_pos['y']/1000.0, "y": (mt4_current_pos['z'] - MT4_Z_OFFSET) / 1000.0, "z": mt4_current_pos['x']/1000.0, "gripper": mt4_current_pos['gripper'], "status": "Running"}
-        #     sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        #     sock_send.sendto(json.dumps(fb).encode(), (MT4_UNITY_IP, MT4_FEEDBACK_PORT))
-        # except: pass
         return self.out_flow
 
 
