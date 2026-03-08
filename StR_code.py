@@ -123,7 +123,7 @@ class MT4RobotDriver(BaseRobotDriver):
         if time.time() > mt4_manual_override_until and inputs_changed:
             for key, _, _ in self.get_ui_schema():
                 if inputs.get(key) is not None: mt4_target_goal[key] = float(inputs[key])
-        
+                
         nx = mt4_target_goal['x']
         ny = mt4_target_goal['y']
         nz = mt4_target_goal['z']
@@ -131,7 +131,7 @@ class MT4RobotDriver(BaseRobotDriver):
         ng = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
         
         mt4_target_goal['roll'] = max(MT4_LIMITS['min_r'], min(mt4_target_goal['roll'], MT4_LIMITS['max_r']))
-        nr = mt4_target_goal['roll']        
+        nr = mt4_target_goal['roll']
         
         nx = max(MT4_LIMITS['min_x'], min(nx, MT4_LIMITS['max_x'])); ny = max(MT4_LIMITS['min_y'], min(ny, MT4_LIMITS['max_y'])); nz = max(MT4_LIMITS['min_z'], min(nz, MT4_LIMITS['max_z']))
         new_state = {'x': nx, 'y': ny, 'z': nz, 'gripper': ng, 'roll': nr}
@@ -463,6 +463,7 @@ class NodeUIRenderer:
                     is_connected = any(l['target'] == pin_id for l in link_registry.values())
                     if not is_connected:
                         node.state[k] = dpg.get_value(fid)
+            
 
     @staticmethod
     def sync_state_to_ui(node):
@@ -493,7 +494,6 @@ class NodeUIRenderer:
         elif isinstance(node, MT4KeyboardNode): NodeUIRenderer._render_mt4_keyboard(node)
         elif isinstance(node, MT4UnityNode): NodeUIRenderer._render_mt4_unity(node)
         elif isinstance(node, UDPReceiverNode): NodeUIRenderer._render_udp(node)
-
     @staticmethod
     def _render_start(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="START"):
@@ -596,6 +596,89 @@ class NodeUIRenderer:
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as d: dpg.add_text("JSON Out"); node.outputs[d]=PortType.DATA; node.out_json=d
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as o: dpg.add_text("Flow Out"); node.outputs[o]=PortType.FLOW; node.out_flow=o
 
+    @staticmethod
+    def _render_sag(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=node.in_x, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("X In")
+                node.inputs[node.in_x] = PortType.DATA
+            with dpg.node_attribute(tag=node.in_z, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Z In")
+                node.inputs[node.in_z] = PortType.DATA
+                
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
+                node.ui_sag = dpg.add_input_float(label="Sag Factor", width=80, default_value=0.05, step=0.01)
+                
+            with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Z Out (Comp)", color=(100,255,100))
+                node.outputs[node.out_z] = PortType.DATA
+
+    @staticmethod
+    def _render_calib(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=node.in_x, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("X In")
+                node.inputs[node.in_x] = PortType.DATA
+            with dpg.node_attribute(tag=node.in_y, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Y In")
+                node.inputs[node.in_y] = PortType.DATA
+            with dpg.node_attribute(tag=node.in_z, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Z In")
+                node.inputs[node.in_z] = PortType.DATA
+                
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.ui_x = dpg.add_input_float(label="X Offset", width=70, default_value=0.0)
+                node.ui_y = dpg.add_input_float(label="Y Offset", width=70, default_value=0.0)
+                node.ui_z = dpg.add_input_float(label="Z Offset", width=70, default_value=0.0)
+                node.ui_s = dpg.add_input_float(label="Scale", width=70, default_value=1.0)
+                
+            with dpg.node_attribute(tag=node.out_x, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("X Out", color=(100,255,100))
+                node.outputs[node.out_x] = PortType.DATA
+            with dpg.node_attribute(tag=node.out_y, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Y Out", color=(100,255,100))
+                node.outputs[node.out_y] = PortType.DATA
+            with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Z Out", color=(100,255,100))
+                node.outputs[node.out_z] = PortType.DATA
+
+    @staticmethod
+    def _render_tooltip(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=node.in_x, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("X In"); node.inputs[node.in_x] = PortType.DATA
+            with dpg.node_attribute(tag=node.in_z, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Z In"); node.inputs[node.in_z] = PortType.DATA
+                
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.ui_len = dpg.add_input_float(label="Tool Len(mm)", width=70, default_value=0.0)
+                node.ui_ang = dpg.add_input_float(label="Angle(deg)", width=70, default_value=0.0)
+                
+            with dpg.node_attribute(tag=node.out_x, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("X Out (Comp)", color=(100,255,100)); node.outputs[node.out_x] = PortType.DATA
+            with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Z Out (Comp)", color=(100,255,100)); node.outputs[node.out_z] = PortType.DATA
+
+    @staticmethod
+    def _render_backlash(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=node.in_x, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("X In"); node.inputs[node.in_x] = PortType.DATA
+            with dpg.node_attribute(tag=node.in_y, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Y In"); node.inputs[node.in_y] = PortType.DATA
+            with dpg.node_attribute(tag=node.in_z, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Z In"); node.inputs[node.in_z] = PortType.DATA
+                
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.ui_dist = dpg.add_input_float(label="Decel Dist", width=70, default_value=15.0)
+                node.ui_dly = dpg.add_input_float(label="Stop Delay", width=70, default_value=100.0)
+                
+            with dpg.node_attribute(tag=node.out_x, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("X Out", color=(100,255,100)); node.outputs[node.out_x] = PortType.DATA
+            with dpg.node_attribute(tag=node.out_y, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Y Out", color=(100,255,100)); node.outputs[node.out_y] = PortType.DATA
+            with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Z Out", color=(100,255,100)); node.outputs[node.out_z] = PortType.DATA
 
 # ================= [MT4 Dashboard Callbacks & Threads] =================
 def send_mt4_direct():
@@ -738,7 +821,7 @@ def execute_graph_once():
     start_node = next((n for n in node_registry.values() if isinstance(n, StartNode)), None)
     
     for node in node_registry.values():
-        if isinstance(node, (ConditionKeyNode, UniversalRobotNode, MT4UnityNode, UDPReceiverNode, LoggerNode, ConstantNode)):
+        if isinstance(node, (ConditionKeyNode, UniversalRobotNode, MT4UnityNode, UDPReceiverNode, LoggerNode, ConstantNode)): 
             try: node.execute()
             except Exception as e: 
                 print(f"[{node.label}] Error: {e}")
@@ -958,7 +1041,7 @@ with dpg.window(tag="PrimaryWindow"):
 
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
-dpg.create_viewport(title='PyGui MT4 Educational Build(Sim to Real)', width=1280, height=800)
+dpg.create_viewport(title='PyGui MT4 Educational Build', width=1280, height=800)
 dpg.setup_dearpygui(); dpg.set_primary_window("PrimaryWindow", True); dpg.show_viewport()
 
 last_logic_time = 0; LOGIC_RATE = 0.02
@@ -994,7 +1077,8 @@ while dpg.is_dearpygui_running():
             sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock_send.sendto(json.dumps(fb).encode(), (MT4_UNITY_IP, MT4_FEEDBACK_PORT))
         except: pass
-        
+        last_fb_time = time.time()
+
     if is_running and (time.time() - last_logic_time > LOGIC_RATE):
         NodeUIRenderer.sync_ui_to_state()
         execute_graph_once()           
