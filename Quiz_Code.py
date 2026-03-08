@@ -84,7 +84,7 @@ mt4_record_f = None; mt4_record_writer = None; mt4_record_temp_name = ""
 mt4_log_event_queue = deque()
 
 MT4_UNITY_IP = "192.168.50.63"; MT4_FEEDBACK_PORT = 5005
-MT4_LIMITS = {'min_x': 100, 'max_x': 280, 'min_y': -200, 'max_y': 200, 'min_z': 0, 'max_z': 280, 'min_r': -180.0, 'max_r': 180.0}
+MT4_LIMITS = {'min_x': 200, 'max_x': 280, 'min_y': -200, 'max_y': 200, 'min_z': 0, 'max_z': 280, 'min_r': -180.0, 'max_r': 180.0}
 MT4_GRIPPER_MIN = 30.0; MT4_GRIPPER_MAX = 60.0
 MT4_Z_OFFSET = 90.0
 
