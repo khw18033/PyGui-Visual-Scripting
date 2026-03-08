@@ -54,19 +54,18 @@ def network_monitor_thread():
 def sync_manual_to_node_state():
     global mt4_target_goal
     for node in node_registry.values():
-        # 작동 중인 MT4 드라이버 노드를 찾아냅니다.
         if isinstance(node, UniversalRobotNode) and node.driver.__class__.__name__ == 'MT4RobotDriver':
-            # 노드의 내부 상태를 매뉴얼 조작 좌표로 덮어씁니다.
             node.state['x'] = mt4_target_goal['x']
             node.state['y'] = mt4_target_goal['y']
             node.state['z'] = mt4_target_goal['z']
-            node.state['g'] = mt4_target_goal['gripper']
+            node.state['gripper'] = mt4_target_goal['gripper']
+            node.state['roll'] = mt4_target_goal['roll']
             
-            # 노드의 UI 텍스트 박스 숫자도 즉시 변경하여 시각적으로 일치시킵니다.
             if 'x' in node.ui_fields: dpg.set_value(node.ui_fields['x'], mt4_target_goal['x'])
             if 'y' in node.ui_fields: dpg.set_value(node.ui_fields['y'], mt4_target_goal['y'])
             if 'z' in node.ui_fields: dpg.set_value(node.ui_fields['z'], mt4_target_goal['z'])
-            if 'g' in node.ui_fields: dpg.set_value(node.ui_fields['g'], mt4_target_goal['gripper'])
+            if 'gripper' in node.ui_fields: dpg.set_value(node.ui_fields['gripper'], mt4_target_goal['gripper'])
+            if 'roll' in node.ui_fields: dpg.set_value(node.ui_fields['roll'], mt4_target_goal['roll'])
 
 # ================= [MT4 State & Config] =================
 ser = None 
@@ -322,7 +321,6 @@ class MT4TooltipNode(BaseNode):
         self.out_x = dpg.generate_uuid(); self.outputs[self.out_x] = PortType.DATA
         self.out_z = dpg.generate_uuid(); self.outputs[self.out_z] = PortType.DATA
         
-        # 길이(mm)와 부착 각도(도)
         self.state.update({'tool_length': 0.0, 'tool_angle': 0.0})
         
     def execute(self):
@@ -333,7 +331,6 @@ class MT4TooltipNode(BaseNode):
         angle_deg = float(self.state.get('tool_angle', 0.0))
         
         if x_val is not None and z_val is not None:
-            # 삼각함수를 이용한 툴팁 끝점 좌표 역산
             dx = length * math.cos(math.radians(angle_deg))
             dz = length * math.sin(math.radians(angle_deg))
             
@@ -353,7 +350,7 @@ class MT4BacklashNode(BaseNode):
         self.out_z = dpg.generate_uuid(); self.outputs[self.out_z] = PortType.DATA
         
         self.state.update({'decel_dist': 15.0, 'stop_delay': 100.0})
-        self.internal_pos = None # 노드 내부적으로 현재 위치를 기억
+        self.internal_pos = None
         
     def execute(self):
         tx = self.fetch_input_data(self.in_x)
@@ -373,7 +370,6 @@ class MT4BacklashNode(BaseNode):
         dz = float(tz) - self.internal_pos[2]
         dist = math.sqrt(dx**2 + dy**2 + dz**2)
         
-        # 거리가 감속 구간 이내로 들어오면 딜레이 계수에 비례해 속도를 확 줄임 (소프트 랜딩)
         speed = 1.0 if dist > decel_dist else max(0.01, (dist / decel_dist) * (50.0 / delay_factor))
         
         self.internal_pos[0] += dx * speed
@@ -739,7 +735,7 @@ def toggle_mt4_record(custom_name=None):
         mt4_record_temp_name = fname
         mt4_record_f = open(fname, 'w', newline='')
         mt4_record_writer = csv.writer(mt4_record_f)
-        mt4_record_writer.writerow(['x', 'y', 'z', 'gripper'])
+        mt4_record_writer.writerow(['x', 'y', 'z', 'roll','gripper'])
         dpg.set_item_label("btn_mt4_record", "Stop Recording")
         write_log("Path Recording Started.")
         send_unity_ui("STATUS", "경로 녹화 시작...")
@@ -763,6 +759,7 @@ def play_mt4_path_thread(filepath):
                 if time.time() < mt4_collision_lock_until or not mt4_mode["playing"]: break
                 mt4_target_goal['x'] = float(row['x']); mt4_target_goal['y'] = float(row['y'])
                 mt4_target_goal['z'] = float(row['z']); mt4_target_goal['gripper'] = float(row['gripper'])
+                mt4_target_goal['roll'] = float(row.get('roll', 0.0))
                 mt4_apply_limits()
                 time.sleep(0.05)
     except Exception as e: write_log(f"Play Error: {e}")
@@ -774,15 +771,21 @@ def mt4_background_logger_thread():
     log_filename = os.path.join(LOG_DIR, f"mt4_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
     with open(log_filename, 'w', newline='') as mt4_log_f:
         mt4_log_writer = csv.writer(mt4_log_f)
-        mt4_log_writer.writerow(['timestamp', 'event', 'target_x', 'target_y', 'target_z', 'target_g', 'current_x', 'current_y', 'current_z', 'current_g'])
+        mt4_log_writer.writerow(['timestamp', 'event', 'target_x', 'target_y', 'target_z', 'target_r', 'target_g', 'current_x', 'current_y', 'current_z', 'current_r', 'current_g'])
         while True:
             time.sleep(0.05)
             event_str = "TICK"
             if mt4_log_event_queue: event_str = mt4_log_event_queue.popleft()
-            mt4_log_writer.writerow([time.time(), event_str, mt4_target_goal['x'], mt4_target_goal['y'], mt4_target_goal['z'], mt4_target_goal['gripper'], mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['gripper']])
+            
+            mt4_log_writer.writerow([
+                time.time(), event_str, 
+                mt4_target_goal['x'], mt4_target_goal['y'], mt4_target_goal['z'], mt4_target_goal['roll'], mt4_target_goal['gripper'], 
+                mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['roll'], mt4_current_pos['gripper']
+            ])
             mt4_log_f.flush()
+            
             if mt4_mode["recording"] and mt4_record_writer:
-                mt4_record_writer.writerow((mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['gripper']))
+                mt4_record_writer.writerow((mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['roll'], mt4_current_pos['gripper']))
                 mt4_record_f.flush()
 
 def mt4_homing_callback(sender, app_data, user_data): threading.Thread(target=mt4_homing_thread_func, daemon=True).start()

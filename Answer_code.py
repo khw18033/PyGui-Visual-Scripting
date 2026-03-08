@@ -54,19 +54,18 @@ def network_monitor_thread():
 def sync_manual_to_node_state():
     global mt4_target_goal
     for node in node_registry.values():
-        # 작동 중인 MT4 드라이버 노드를 찾아냅니다.
         if isinstance(node, UniversalRobotNode) and node.driver.__class__.__name__ == 'MT4RobotDriver':
-            # 노드의 내부 상태를 매뉴얼 조작 좌표로 덮어씁니다.
             node.state['x'] = mt4_target_goal['x']
             node.state['y'] = mt4_target_goal['y']
             node.state['z'] = mt4_target_goal['z']
-            node.state['g'] = mt4_target_goal['gripper']
+            node.state['gripper'] = mt4_target_goal['gripper'] 
+            node.state['roll'] = mt4_target_goal['roll']
             
-            # 노드의 UI 텍스트 박스 숫자도 즉시 변경하여 시각적으로 일치시킵니다.
             if 'x' in node.ui_fields: dpg.set_value(node.ui_fields['x'], mt4_target_goal['x'])
             if 'y' in node.ui_fields: dpg.set_value(node.ui_fields['y'], mt4_target_goal['y'])
             if 'z' in node.ui_fields: dpg.set_value(node.ui_fields['z'], mt4_target_goal['z'])
-            if 'g' in node.ui_fields: dpg.set_value(node.ui_fields['g'], mt4_target_goal['gripper'])
+            if 'gripper' in node.ui_fields: dpg.set_value(node.ui_fields['gripper'], mt4_target_goal['gripper']) 
+            if 'roll' in node.ui_fields: dpg.set_value(node.ui_fields['roll'], mt4_target_goal['roll']) 
 
 # ================= [MT4 State & Config] =================
 ser = None 
@@ -114,12 +113,11 @@ class MT4RobotDriver(BaseRobotDriver):
         global mt4_current_pos, mt4_target_goal, mt4_manual_override_until, ser
         if time.time() < mt4_collision_lock_until: return 
         
-        # ★ [수정 1] 백래시 노드의 미세한 변화가 버려지지 않도록 비교 대상을 '목표값'으로 변경
         inputs_changed = False
         for key, _, _ in self.get_ui_schema():
             val = inputs.get(key)
             if val is not None:
-                if abs(float(val) - mt4_target_goal[key]) > 0.5: # 0.5mm 이상의 유의미한 변화가 쌓였을 때만 갱신
+                if abs(float(val) - mt4_target_goal[key]) > 0.5:
                     inputs_changed = True
 
         if time.time() > mt4_manual_override_until and inputs_changed:
@@ -132,16 +130,13 @@ class MT4RobotDriver(BaseRobotDriver):
         ny = mt4_current_pos['y'] + dy * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['y']
         nz = mt4_current_pos['z'] + dz * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['z']
         
-        # ★ [핵심 해결] 1프레임당 이동량으로 스케일링 (초당 이동 속도로 보정)
         g_spd = float(settings.get('grip_spd', 5.0)) * 0.1
         r_spd = float(settings.get('roll_spd', 5.0)) * 0.1
 
-        # ★ 그리퍼 속도 조절 (G_Spd 연산 복구)
         dg_err = mt4_target_goal['gripper'] - mt4_current_pos['gripper']
         ng = mt4_current_pos['gripper'] + math.copysign(g_spd, dg_err) if abs(dg_err) > g_spd else mt4_target_goal['gripper']
         ng = max(MT4_GRIPPER_MIN, min(ng, MT4_GRIPPER_MAX))
         
-        # ★ 회전 속도 조절 (R_Spd 연산)
         mt4_target_goal['roll'] = max(MT4_LIMITS['min_r'], min(mt4_target_goal['roll'], MT4_LIMITS['max_r']))
         dr_err = mt4_target_goal['roll'] - mt4_current_pos['roll']
         nr = mt4_current_pos['roll'] + math.copysign(r_spd, dr_err) if abs(dr_err) > r_spd else mt4_target_goal['roll']
@@ -184,7 +179,6 @@ class ConditionKeyNode(BaseNode):
         self.out_res = None; self.prev_state = False 
     def execute(self):
         current = self.state.get("is_down", False)
-        # ★ '딸깍' 감지 로직 완벽 적용
         if current and not self.prev_state: self.output_data[self.out_res] = True
         else: self.output_data[self.out_res] = False
         self.prev_state = current
@@ -193,7 +187,6 @@ class ConditionKeyNode(BaseNode):
 class LogicIfNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Logic: IF", "LOGIC_IF"); self.in_cond = None; self.out_true = None; self.out_false = None
     def execute(self):
-        # IF가 여러번 평가되어도 Condition 내부 상태가 망가지지 않도록 수정
         cond_val = self.fetch_input_data(self.in_cond)
         return self.out_true if cond_val else self.out_false
 
@@ -267,7 +260,6 @@ class UniversalRobotNode(BaseNode):
         inputs = {k: self.fetch_input_data(aid) for k, aid in self.in_pins.items()}
         settings = {k: self.fetch_input_data(aid) for k, aid in self.setting_pins.items()}
         
-        # ★ 외부에서 값이 안 들어왔을(None) 때만 UI 상태값을 사용하도록 명확히 처리
         for k in inputs:
             if inputs[k] is None: 
                 inputs[k] = self.state.get(k, 0.0)
@@ -277,8 +269,7 @@ class UniversalRobotNode(BaseNode):
                 settings[k] = self.state.get(k, 1.0)
             
         new_state = self.driver.execute_command(inputs, settings)
-        
-        # ★ 새로운 상태를 UI에 반영 (유니티에서 들어온 값이 GUI 화면 숫자도 바꾸도록 함)
+
         if new_state:
             for k, v in new_state.items():
                 self.state[k] = v
@@ -344,30 +335,24 @@ class MT4UnityNode(BaseNode):
     def execute(self):
         global mt4_collision_lock_until
         
-        # 1. UDP 수신 노드로부터 가장 최근 패킷을 가져옴
         raw_json = self.fetch_input_data(self.data_in_id)
         
-        # 2. 이 패킷이 이전에 처리한 것과 다른 "새로운" 패킷인지 확인
         is_new_msg = False
         if raw_json and raw_json != self.last_processed_json:
             is_new_msg = True
-            self.last_processed_json = raw_json # ★ [핵심] 읽었으니 찌꺼기가 남지 않게 즉시 캐시 최신화
+            self.last_processed_json = raw_json
 
-        # 3. 현재 파이썬 GUI가 강제 제어 중인지 확인 (수동 조작 후 약 1초, 또는 경로 재생 중)
         is_overridden = (time.time() < mt4_manual_override_until) or mt4_mode.get("playing", False)
 
         if is_overridden:
-            # 파이썬 조작 중: 유니티에서 무슨 패킷이 고여있든 철저히 무시하고,
-            # 현재 로봇의 목표 위치로 노드 출력값을 덮어씌움 (완벽한 Active Echo)
             self.output_data[self.out_x] = mt4_target_goal['x']
             self.output_data[self.out_y] = mt4_target_goal['y']
             self.output_data[self.out_z] = mt4_target_goal['z']
             self.output_data[self.out_g] = mt4_target_goal['gripper']
             self.output_data[self.out_r] = mt4_target_goal['roll']
         else:
-            # 파이썬 조작이 끝난 상태 (유니티 대기 모드)
+
             if is_new_msg:
-                # "새로운" 유니티 조작(WASD)이 들어왔을 때만 좌표를 업데이트
                 try:
                     parsed = json.loads(raw_json)
                     msg_type = parsed.get("type", "MOVE")
@@ -454,8 +439,7 @@ class MT4TooltipNode(BaseNode):
         
         self.out_x = dpg.generate_uuid(); self.outputs[self.out_x] = PortType.DATA
         self.out_z = dpg.generate_uuid(); self.outputs[self.out_z] = PortType.DATA
-        
-        # 길이(mm)와 부착 각도(도)
+    
         self.state.update({'tool_length': 0.0, 'tool_angle': 0.0})
         
     def execute(self):
@@ -466,7 +450,6 @@ class MT4TooltipNode(BaseNode):
         angle_deg = float(self.state.get('tool_angle', 0.0))
         
         if x_val is not None and z_val is not None:
-            # 삼각함수를 이용한 툴팁 끝점 좌표 역산
             dx = length * math.cos(math.radians(angle_deg))
             dz = length * math.sin(math.radians(angle_deg))
             
@@ -486,7 +469,7 @@ class MT4BacklashNode(BaseNode):
         self.out_z = dpg.generate_uuid(); self.outputs[self.out_z] = PortType.DATA
         
         self.state.update({'decel_dist': 15.0, 'stop_delay': 100.0})
-        self.internal_pos = None # 노드 내부적으로 현재 위치를 기억
+        self.internal_pos = None
         
     def execute(self):
         tx = self.fetch_input_data(self.in_x)
@@ -506,7 +489,6 @@ class MT4BacklashNode(BaseNode):
         dz = float(tz) - self.internal_pos[2]
         dist = math.sqrt(dx**2 + dy**2 + dz**2)
         
-        # 거리가 감속 구간 이내로 들어오면 딜레이 계수에 비례해 속도를 확 줄임 (소프트 랜딩)
         speed = 1.0 if dist > decel_dist else max(0.01, (dist / decel_dist) * (50.0 / delay_factor))
         
         self.internal_pos[0] += dx * speed
@@ -589,7 +571,6 @@ class NodeUIRenderer:
             
             elif isinstance(node, UniversalRobotNode):
                 for k, fid in node.ui_fields.items(): 
-                    # ★ 해당 핀(in_pins[k])에 연결된 선이 '없을 때만' UI 화면의 값을 읽어옵니다.
                     pin_id = node.in_pins[k]
                     is_connected = any(l['target'] == pin_id for l in link_registry.values())
                     if not is_connected:
@@ -755,7 +736,6 @@ class NodeUIRenderer:
     @staticmethod
     def _render_sag(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
-            # tag 속성을 추가하고, 기존의 PortType.DATA 등록 코드는 그대로 살립니다!
             with dpg.node_attribute(tag=node.in_x, attribute_type=dpg.mvNode_Attr_Input): 
                 dpg.add_text("X In")
                 node.inputs[node.in_x] = PortType.DATA
@@ -934,7 +914,6 @@ def mt4_background_logger_thread():
             event_str = "TICK"
             if mt4_log_event_queue: event_str = mt4_log_event_queue.popleft()
             
-            # ★ 시스템 로그 데이터 줄에 roll 값 추가
             mt4_log_writer.writerow([
                 time.time(), event_str, 
                 mt4_target_goal['x'], mt4_target_goal['y'], mt4_target_goal['z'], mt4_target_goal['roll'], mt4_target_goal['gripper'], 
@@ -943,7 +922,6 @@ def mt4_background_logger_thread():
             mt4_log_f.flush()
             
             if mt4_mode["recording"] and mt4_record_writer:
-                # ★ 경로 녹화(Record) 중일 때 저장되는 CSV 데이터에도 roll 값 추가
                 mt4_record_writer.writerow((mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['roll'], mt4_current_pos['gripper']))
                 mt4_record_f.flush()
 
@@ -979,7 +957,6 @@ def auto_reconnect_mt4_thread():
 def execute_graph_once():
     start_node = next((n for n in node_registry.values() if isinstance(n, StartNode)), None)
     
-    # ★ [핵심 패치] 신규 추가된 4개의 Sim-to-Real 보정 노드들도 1초에 50번씩 무조건 자동 연산하도록 명단(튜플)에 추가합니다!
     for node in node_registry.values():
         if isinstance(node, (ConditionKeyNode, UniversalRobotNode, MT4UnityNode, UDPReceiverNode, LoggerNode, ConstantNode,
                              MT4GravitySagNode, MT4CalibrationNode, MT4TooltipNode, MT4BacklashNode)): 
@@ -1040,7 +1017,6 @@ def toggle_exec(s, a):
 def link_cb(s, a): 
     p1, p2 = a[0], a[1]
     
-    # ★ [핵심 패치] 마우스를 거꾸로 드래그해도 항상 Output -> Input 방향으로 강제 정렬
     p1_is_out = False
     for node in node_registry.values():
         if p1 in node.outputs: 
@@ -1055,7 +1031,6 @@ def link_cb(s, a):
 def del_link_cb(s, a): dpg.delete_item(a); link_registry.pop(a, None)
 def add_node_cb(s, a, u): NodeFactory.create_node(u)
 
-# [수정] UI 선언 전에 콜백 함수들을 미리 명확하게 정의
 def save_cb(s, a): save_graph(dpg.get_value("file_name_input"))
 def load_cb(s, a): load_graph(dpg.get_value("file_list_combo"))
 
