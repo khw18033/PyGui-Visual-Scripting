@@ -958,7 +958,7 @@ with dpg.window(tag="PrimaryWindow"):
 
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
-dpg.create_viewport(title='PyGui MT4 Educational Build', width=1280, height=800)
+dpg.create_viewport(title='PyGui MT4 Educational Build(Sim to Real)', width=1280, height=800)
 dpg.setup_dearpygui(); dpg.set_primary_window("PrimaryWindow", True); dpg.show_viewport()
 
 last_logic_time = 0; LOGIC_RATE = 0.02
@@ -994,6 +994,8 @@ while dpg.is_dearpygui_running():
             sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock_send.sendto(json.dumps(fb).encode(), (MT4_UNITY_IP, MT4_FEEDBACK_PORT))
         except: pass
+        with open("network_spam_debug.log", "a") as debug_f:
+            debug_f.write(str(fb) + "\n")
 
     if is_running and (time.time() - last_logic_time > LOGIC_RATE):
         NodeUIRenderer.sync_ui_to_state()
