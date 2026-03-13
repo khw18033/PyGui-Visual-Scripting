@@ -380,10 +380,10 @@ class MT4UnityNode(BaseNode):
                             send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
                     elif msg_type == "MOVE":
                         if time.time() > mt4_collision_lock_until:
-                            if 'z' in parsed: self.output_data[self.out_x] = float(parsed['z']) * 1000.0
-                            if 'x' in parsed: self.output_data[self.out_y] = -float(parsed['x']) * 1000.0
-                            if 'y' in parsed: self.output_data[self.out_z] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
-                            if 'gripper' in parsed: self.output_data[self.out_g] = float(parsed['gripper']) 
+                            if 'x' in parsed: self.output_data[self.out_x] = float(parsed['x'])
+                            if 'y' in parsed: self.output_data[self.out_y] = float(parsed['y'])
+                            if 'z' in parsed: self.output_data[self.out_z] = float(parsed['z'])
+                            if 'gripper' in parsed: self.output_data[self.out_g] = float(parsed['gripper'])
                             if 'roll' in parsed: self.output_data[self.out_r] = float(parsed['roll'])
                 except: pass 
                 
