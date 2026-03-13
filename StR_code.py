@@ -141,7 +141,25 @@ class MT4RobotDriver(BaseRobotDriver):
         dr_err = mt4_target_goal['roll'] - mt4_current_pos['roll']
         nr = mt4_current_pos['roll'] + math.copysign(r_spd, dr_err) if abs(dr_err) > r_spd else mt4_target_goal['roll']
         
-        nx = max(MT4_LIMITS['min_x'], min(nx, MT4_LIMITS['max_x'])); ny = max(MT4_LIMITS['min_y'], min(ny, MT4_LIMITS['max_y'])); nz = max(MT4_LIMITS['min_z'], min(nz, MT4_LIMITS['max_z']))
+        # =====================================================================
+        # [여기서부터 덮어쓰기] 로봇 하드웨어 절대 보호 구역 설정 (Fail-Safe)
+        safe_x = max(MT4_LIMITS['min_x'], min(nx, MT4_LIMITS['max_x']))
+        safe_y = max(MT4_LIMITS['min_y'], min(ny, MT4_LIMITS['max_y']))
+        safe_z = max(MT4_LIMITS['min_z'], min(nz, MT4_LIMITS['max_z']))
+        safe_g = max(MT4_GRIPPER_MIN, min(ng, MT4_GRIPPER_MAX))
+        safe_r = max(MT4_LIMITS['min_r'], min(nr, MT4_LIMITS['max_r']))
+
+        # 학생이 연결한 데이터(nx, nz 등)가 안전 범위를 벗어났다면? 경고 출력!
+        if (safe_x != nx or safe_y != ny or safe_z != nz or safe_g != ng):
+            warning_msg = f"⚠️ [보호 잠금] 위험 수치 차단됨! (요청 X:{nx:.1f}, Z:{nz:.1f}, G:{ng:.1f})"
+            # 파이썬 콘솔 창에 출력해서 학생/선생님이 바로 볼 수 있게 함
+            print(warning_msg) 
+            # PyGUI 내부 시스템 로그 창에도 빨간색 느낌으로 남김
+            write_log(warning_msg)
+
+        # 최종적으로 진짜 로봇에게 보낼 변수는 "안전하게 클램프된 좌표(safe_)"로 강제 덮어씌움
+        nx, ny, nz, ng, nr = safe_x, safe_y, safe_z, safe_g, safe_r
+        # =====================================================================
         new_state = {'x': nx, 'y': ny, 'z': nz, 'gripper': ng, 'roll': nr}
         
         if time.time() - self.last_write_time >= self.write_interval:

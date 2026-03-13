@@ -7,6 +7,5 @@ path_record/
 result_log/
 RoboMaster-SDK/
 aruco_data.json
-# Answer_code.py
 robot_test.py
 PyGui_Base/
