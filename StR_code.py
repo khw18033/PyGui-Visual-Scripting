@@ -394,7 +394,7 @@ class MT4UnityNode(BaseNode):
                             if 'z' in parsed: 
                                  self.output_data[self.out_x] = (float(parsed['z']) * 100.0) + 200.0 
                             if 'x' in parsed: 
-                                self.output_data[self.out_y] = (float(parsed['x']) * 100.0)
+                                self.output_data[self.out_y] = -(float(parsed['x']) * 100.0)
                             if 'y' in parsed: 
                                 self.output_data[self.out_z] = (float(parsed['y']) * 100.0) + 120.0
                             if 'gripper' in parsed: 
