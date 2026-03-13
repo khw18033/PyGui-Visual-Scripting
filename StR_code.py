@@ -124,14 +124,22 @@ class MT4RobotDriver(BaseRobotDriver):
             for key, _, _ in self.get_ui_schema():
                 if inputs.get(key) is not None: mt4_target_goal[key] = float(inputs[key])
                 
-        nx = mt4_target_goal['x']
-        ny = mt4_target_goal['y']
-        nz = mt4_target_goal['z']
+        smooth = 1.0 if time.time() < mt4_manual_override_until else max(0.01, min(settings.get('smooth', 1.0), 1.0))
+        dx = mt4_target_goal['x'] - mt4_current_pos['x']; dy = mt4_target_goal['y'] - mt4_current_pos['y']; dz = mt4_target_goal['z'] - mt4_current_pos['z']
+        nx = mt4_current_pos['x'] + dx * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['x']
+        ny = mt4_current_pos['y'] + dy * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['y']
+        nz = mt4_current_pos['z'] + dz * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['z']
         
-        ng = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
+        g_spd = float(settings.get('grip_spd', 5.0)) * 0.1
+        r_spd = float(settings.get('roll_spd', 5.0)) * 0.1
+
+        dg_err = mt4_target_goal['gripper'] - mt4_current_pos['gripper']
+        ng = mt4_current_pos['gripper'] + math.copysign(g_spd, dg_err) if abs(dg_err) > g_spd else mt4_target_goal['gripper']
+        ng = max(MT4_GRIPPER_MIN, min(ng, MT4_GRIPPER_MAX))
         
         mt4_target_goal['roll'] = max(MT4_LIMITS['min_r'], min(mt4_target_goal['roll'], MT4_LIMITS['max_r']))
-        nr = mt4_target_goal['roll']
+        dr_err = mt4_target_goal['roll'] - mt4_current_pos['roll']
+        nr = mt4_current_pos['roll'] + math.copysign(r_spd, dr_err) if abs(dr_err) > r_spd else mt4_target_goal['roll']
         
         nx = max(MT4_LIMITS['min_x'], min(nx, MT4_LIMITS['max_x'])); ny = max(MT4_LIMITS['min_y'], min(ny, MT4_LIMITS['max_y'])); nz = max(MT4_LIMITS['min_z'], min(nz, MT4_LIMITS['max_z']))
         new_state = {'x': nx, 'y': ny, 'z': nz, 'gripper': ng, 'roll': nr}
@@ -247,7 +255,6 @@ class UniversalRobotNode(BaseNode):
         for k, lbl, def_v in self.driver.get_settings_schema():
             self.state[k] = def_v
         
-    # [수정 후]
     def execute(self):
         inputs = {k: self.fetch_input_data(aid) for k, aid in self.in_pins.items()}
         settings = {k: self.fetch_input_data(aid) for k, aid in self.setting_pins.items()}
@@ -382,6 +389,116 @@ class MT4UnityNode(BaseNode):
                 
         return self.outputs
 
+class MT4GravitySagNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Gravity Sag Comp (StR)", "MT4_SAG")
+        self.in_x = dpg.generate_uuid(); self.inputs[self.in_x] = PortType.DATA
+        self.in_z = dpg.generate_uuid(); self.inputs[self.in_z] = PortType.DATA
+        self.out_z = dpg.generate_uuid(); self.outputs[self.out_z] = PortType.DATA
+        self.state['sag_factor'] = 0.05 
+        
+    def execute(self):
+        x_val = self.fetch_input_data(self.in_x)
+        z_val = self.fetch_input_data(self.in_z)
+        
+        if x_val is not None and z_val is not None:
+            sag_comp = float(x_val) * float(self.state.get('sag_factor', 0.0))
+            self.output_data[self.out_z] = float(z_val) + sag_comp
+        elif z_val is not None:
+            self.output_data[self.out_z] = float(z_val)
+        return None
+
+class MT4CalibrationNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "3D Calibration (StR)", "MT4_CALIB")
+        self.in_x = dpg.generate_uuid(); self.inputs[self.in_x] = PortType.DATA
+        self.in_y = dpg.generate_uuid(); self.inputs[self.in_y] = PortType.DATA
+        self.in_z = dpg.generate_uuid(); self.inputs[self.in_z] = PortType.DATA
+        self.out_x = dpg.generate_uuid(); self.outputs[self.out_x] = PortType.DATA
+        self.out_y = dpg.generate_uuid(); self.outputs[self.out_y] = PortType.DATA
+        self.out_z = dpg.generate_uuid(); self.outputs[self.out_z] = PortType.DATA
+        self.state.update({'x_offset': 0.0, 'y_offset': 0.0, 'z_offset': 0.0, 'scale': 1.0})
+        
+    def execute(self):
+        x_val = self.fetch_input_data(self.in_x)
+        y_val = self.fetch_input_data(self.in_y)
+        z_val = self.fetch_input_data(self.in_z)
+        
+        scale = float(self.state.get('scale', 1.0))
+        if x_val is not None: self.output_data[self.out_x] = (float(x_val) * scale) + float(self.state.get('x_offset', 0.0))
+        if y_val is not None: self.output_data[self.out_y] = (float(y_val) * scale) + float(self.state.get('y_offset', 0.0))
+        if z_val is not None: self.output_data[self.out_z] = (float(z_val) * scale) + float(self.state.get('z_offset', 0.0))
+        return self.outputs
+
+class MT4TooltipNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Tool-tip Offset (StR)", "MT4_TOOLTIP")
+        self.in_x = dpg.generate_uuid(); self.inputs[self.in_x] = PortType.DATA
+        self.in_z = dpg.generate_uuid(); self.inputs[self.in_z] = PortType.DATA
+        
+        self.out_x = dpg.generate_uuid(); self.outputs[self.out_x] = PortType.DATA
+        self.out_z = dpg.generate_uuid(); self.outputs[self.out_z] = PortType.DATA
+    
+        self.state.update({'tool_length': 0.0, 'tool_angle': 0.0})
+        
+    def execute(self):
+        x_val = self.fetch_input_data(self.in_x)
+        z_val = self.fetch_input_data(self.in_z)
+        
+        length = float(self.state.get('tool_length', 0.0))
+        angle_deg = float(self.state.get('tool_angle', 0.0))
+        
+        if x_val is not None and z_val is not None:
+            dx = length * math.cos(math.radians(angle_deg))
+            dz = length * math.sin(math.radians(angle_deg))
+            
+            self.output_data[self.out_x] = float(x_val) + dx
+            self.output_data[self.out_z] = float(z_val) + dz
+        return self.outputs
+
+class MT4BacklashNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Backlash & Inertia (StR)", "MT4_BACKLASH")
+        self.in_x = dpg.generate_uuid(); self.inputs[self.in_x] = PortType.DATA
+        self.in_y = dpg.generate_uuid(); self.inputs[self.in_y] = PortType.DATA
+        self.in_z = dpg.generate_uuid(); self.inputs[self.in_z] = PortType.DATA
+        
+        self.out_x = dpg.generate_uuid(); self.outputs[self.out_x] = PortType.DATA
+        self.out_y = dpg.generate_uuid(); self.outputs[self.out_y] = PortType.DATA
+        self.out_z = dpg.generate_uuid(); self.outputs[self.out_z] = PortType.DATA
+        
+        self.state.update({'decel_dist': 15.0, 'stop_delay': 100.0})
+        self.internal_pos = None
+        
+    def execute(self):
+        tx = self.fetch_input_data(self.in_x)
+        ty = self.fetch_input_data(self.in_y)
+        tz = self.fetch_input_data(self.in_z)
+        
+        if tx is None or ty is None or tz is None: return None
+        
+        if self.internal_pos is None:
+            self.internal_pos = [float(tx), float(ty), float(tz)]
+            
+        decel_dist = max(1.0, float(self.state.get('decel_dist', 15.0)))
+        delay_factor = max(1.0, float(self.state.get('stop_delay', 100.0)))
+        
+        dx = float(tx) - self.internal_pos[0]
+        dy = float(ty) - self.internal_pos[1]
+        dz = float(tz) - self.internal_pos[2]
+        dist = math.sqrt(dx**2 + dy**2 + dz**2)
+        
+        speed = 1.0 if dist > decel_dist else max(0.01, (dist / decel_dist) * (50.0 / delay_factor))
+        
+        self.internal_pos[0] += dx * speed
+        self.internal_pos[1] += dy * speed
+        self.internal_pos[2] += dz * speed
+        
+        self.output_data[self.out_x] = self.internal_pos[0]
+        self.output_data[self.out_y] = self.internal_pos[1]
+        self.output_data[self.out_z] = self.internal_pos[2]
+        return self.outputs
+
 class UDPReceiverNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "UDP Receiver", "UDP_RECV")
@@ -408,7 +525,40 @@ class UDPReceiverNode(BaseNode):
                 if decoded != self.last_data_str:
                     self.output_data[self.out_json] = decoded; self.last_data_str = decoded
         except: pass
+        # try:
+        #     fb = {"x": -mt4_current_pos['y']/1000.0, "y": (mt4_current_pos['z'] - MT4_Z_OFFSET) / 1000.0, "z": mt4_current_pos['x']/1000.0, "gripper": mt4_current_pos['gripper'], "status": "Running"}
+        #     sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        #     sock_send.sendto(json.dumps(fb).encode(), (MT4_UNITY_IP, MT4_FEEDBACK_PORT))
+        # except: pass
         return self.out_flow
+    
+class MathNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Math Operation", "MATH")
+        self.in_a = dpg.generate_uuid(); self.inputs[self.in_a] = PortType.DATA
+        self.in_b = dpg.generate_uuid(); self.inputs[self.in_b] = PortType.DATA
+        self.out_res = dpg.generate_uuid(); self.outputs[self.out_res] = PortType.DATA
+        self.state.update({'op': "Multiply (*)", 'const_b': 1.0})
+        
+    def execute(self):
+        val_a = self.fetch_input_data(self.in_a)
+        val_b_in = self.fetch_input_data(self.in_b)
+        
+        if val_a is None: return None
+        
+        val_b = float(val_b_in) if val_b_in is not None else float(self.state.get('const_b', 1.0))
+        va = float(val_a)
+        op = self.state.get('op', "Multiply (*)")
+        
+        res = 0.0
+        if "Add" in op: res = va + val_b
+        elif "Subtract" in op: res = va - val_b
+        elif "Multiply" in op: res = va * val_b
+        elif "Divide" in op: res = va / val_b if val_b != 0 else 0.0
+        
+        self.output_data[self.out_res] = res
+        return None
+
 
 
 # ================= [UI Renderer & Data Synchronizer] =================
@@ -458,6 +608,23 @@ class NodeUIRenderer:
                     is_connected = any(l['target'] == pin_id for l in link_registry.values())
                     if not is_connected:
                         node.state[k] = dpg.get_value(fid)
+
+            elif isinstance(node, MT4GravitySagNode) and hasattr(node, 'ui_sag'):
+                node.state['sag_factor'] = dpg.get_value(node.ui_sag)
+
+            elif isinstance(node, MT4CalibrationNode) and hasattr(node, 'ui_x'):
+                node.state['x_offset'] = dpg.get_value(node.ui_x); node.state['y_offset'] = dpg.get_value(node.ui_y)
+                node.state['z_offset'] = dpg.get_value(node.ui_z); node.state['scale'] = dpg.get_value(node.ui_s)
+
+            elif isinstance(node, MT4TooltipNode) and hasattr(node, 'ui_len'):
+                node.state['tool_length'] = dpg.get_value(node.ui_len)
+                node.state['tool_angle'] = dpg.get_value(node.ui_ang)
+            elif isinstance(node, MT4BacklashNode) and hasattr(node, 'ui_dist'):
+                node.state['decel_dist'] = dpg.get_value(node.ui_dist)
+                node.state['stop_delay'] = dpg.get_value(node.ui_dly)
+            elif isinstance(node, MathNode) and hasattr(node, 'ui_op'):
+                node.state['op'] = dpg.get_value(node.ui_op)
+                node.state['const_b'] = dpg.get_value(node.ui_const)
             
 
     @staticmethod
@@ -474,6 +641,9 @@ class NodeUIRenderer:
         elif isinstance(node, UniversalRobotNode):
             for k, fid in node.ui_fields.items(): dpg.set_value(fid, node.state.get(k, 0.0))
             for k, fid in node.setting_fields.items(): dpg.set_value(fid, node.state.get(k, 1.0))
+        elif isinstance(node, MathNode) and hasattr(node, 'ui_op'): 
+            dpg.set_value(node.ui_op, node.state.get('op', "Multiply (*)"))
+            dpg.set_value(node.ui_const, node.state.get('const_b', 1.0))
 
     @staticmethod
     def render(node):
@@ -489,6 +659,12 @@ class NodeUIRenderer:
         elif isinstance(node, MT4KeyboardNode): NodeUIRenderer._render_mt4_keyboard(node)
         elif isinstance(node, MT4UnityNode): NodeUIRenderer._render_mt4_unity(node)
         elif isinstance(node, UDPReceiverNode): NodeUIRenderer._render_udp(node)
+        elif isinstance(node, MT4GravitySagNode): NodeUIRenderer._render_sag(node)
+        elif isinstance(node, MT4CalibrationNode): NodeUIRenderer._render_calib(node)
+        elif isinstance(node, MT4TooltipNode): NodeUIRenderer._render_tooltip(node)
+        elif isinstance(node, MT4BacklashNode): NodeUIRenderer._render_backlash(node)
+        elif isinstance(node, MathNode): NodeUIRenderer._render_math(node)
+
     @staticmethod
     def _render_start(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="START"):
@@ -675,6 +851,19 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): 
                 dpg.add_text("Z Out", color=(100,255,100)); node.outputs[node.out_z] = PortType.DATA
 
+    @staticmethod
+    def _render_math(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=node.in_a, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Value A")
+            with dpg.node_attribute(tag=node.in_b, attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Value B")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.ui_op = dpg.add_combo(["Add (+)", "Subtract (-)", "Multiply (*)", "Divide (/)"], default_value="Multiply (*)", width=100)
+                node.ui_const = dpg.add_input_float(label="Const B", width=70, default_value=1.0)
+            with dpg.node_attribute(tag=node.out_res, attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Result", color=(100,255,100))
+
 # ================= [MT4 Dashboard Callbacks & Threads] =================
 def send_mt4_direct():
     global ser, mt4_target_goal
@@ -816,7 +1005,8 @@ def execute_graph_once():
     start_node = next((n for n in node_registry.values() if isinstance(n, StartNode)), None)
     
     for node in node_registry.values():
-        if isinstance(node, (ConditionKeyNode, UniversalRobotNode, MT4UnityNode, UDPReceiverNode, LoggerNode, ConstantNode)): 
+        if isinstance(node, (ConditionKeyNode, UniversalRobotNode, MT4UnityNode, UDPReceiverNode, LoggerNode, ConstantNode,
+                             MT4GravitySagNode, MT4CalibrationNode, MT4TooltipNode, MT4BacklashNode, MathNode)): # <--- 괄호 맨 끝에 MathNode 추가!
             try: node.execute()
             except Exception as e: 
                 print(f"[{node.label}] Error: {e}")
@@ -856,6 +1046,11 @@ class NodeFactory:
         elif node_type == "MT4_KEYBOARD": node = MT4KeyboardNode(node_id)
         elif node_type == "MT4_UNITY": node = MT4UnityNode(node_id)
         elif node_type == "UDP_RECV": node = UDPReceiverNode(node_id)
+        elif node_type == "MT4_SAG": node = MT4GravitySagNode(node_id)
+        elif node_type == "MT4_CALIB": node = MT4CalibrationNode(node_id)
+        elif node_type == "MT4_TOOLTIP": node = MT4TooltipNode(node_id)
+        elif node_type == "MT4_BACKLASH": node = MT4BacklashNode(node_id)
+        elif node_type == "MATH": node = MathNode(node_id)
         
         if node: 
             NodeUIRenderer.render(node)
@@ -1030,6 +1225,11 @@ with dpg.window(tag="PrimaryWindow"):
             dpg.add_button(label="KEY", callback=add_node_cb, user_data="MT4_KEYBOARD")
             dpg.add_button(label="UNITY", callback=add_node_cb, user_data="MT4_UNITY")
             dpg.add_button(label="UDP", callback=add_node_cb, user_data="UDP_RECV")
+            dpg.add_button(label="MATH", callback=add_node_cb, user_data="MATH")
+            dpg.add_button(label="GRAV SAG", callback=add_node_cb, user_data="MT4_SAG")
+            dpg.add_button(label="CALIBRATION", callback=add_node_cb, user_data="MT4_CALIB")
+            dpg.add_button(label="TOOL-TIP", callback=add_node_cb, user_data="MT4_TOOLTIP")
+            dpg.add_button(label="BACKLASH", callback=add_node_cb, user_data="MT4_BACKLASH")
             dpg.add_spacer(width=50)
         with dpg.group(horizontal=True):
             dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
