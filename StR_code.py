@@ -83,7 +83,7 @@ mt4_record_f = None; mt4_record_writer = None; mt4_record_temp_name = ""
 mt4_log_event_queue = deque()
 
 MT4_UNITY_IP = "192.168.50.63"; MT4_FEEDBACK_PORT = 5005
-MT4_LIMITS = {'min_x': 200, 'max_x': 280, 'min_y': -200, 'max_y': 200, 'min_z': 0, 'max_z': 280, 'min_r': -180.0, 'max_r': 180.0}
+MT4_LIMITS = {'min_x': 200, 'max_x': 280, 'min_y': -200, 'max_y': 200, 'min_z': 90, 'max_z': 280, 'min_r': -180.0, 'max_r': 180.0}
 MT4_GRIPPER_MIN = 30.0; MT4_GRIPPER_MAX = 60.0
 MT4_Z_OFFSET = 90.0
 
@@ -141,25 +141,18 @@ class MT4RobotDriver(BaseRobotDriver):
         dr_err = mt4_target_goal['roll'] - mt4_current_pos['roll']
         nr = mt4_current_pos['roll'] + math.copysign(r_spd, dr_err) if abs(dr_err) > r_spd else mt4_target_goal['roll']
         
-        # =====================================================================
-        # [여기서부터 덮어쓰기] 로봇 하드웨어 절대 보호 구역 설정 (Fail-Safe)
-        safe_x = max(MT4_LIMITS['min_x'], min(nx, MT4_LIMITS['max_x']))
-        safe_y = max(MT4_LIMITS['min_y'], min(ny, MT4_LIMITS['max_y']))
-        safe_z = max(MT4_LIMITS['min_z'], min(nz, MT4_LIMITS['max_z']))
-        safe_g = max(MT4_GRIPPER_MIN, min(ng, MT4_GRIPPER_MAX))
-        safe_r = max(MT4_LIMITS['min_r'], min(nr, MT4_LIMITS['max_r']))
+        safe_x = max(150.0, min(float(nx), 300.0))
+        safe_y = max(-150.0, min(float(ny), 150.0))
+        safe_z = max(90.0,  min(float(nz), 250.0))  # ★ Z축이 80 밑으로 절대 못 내려가게 하드코딩 방어!
+        safe_g = max(30.0,  min(float(ng), 60.0))
+        safe_r = max(-180.0, min(float(nr), 180.0))
 
-        # 학생이 연결한 데이터(nx, nz 등)가 안전 범위를 벗어났다면? 경고 출력!
         if (safe_x != nx or safe_y != ny or safe_z != nz or safe_g != ng):
-            warning_msg = f"⚠️ [보호 잠금] 위험 수치 차단됨! (요청 X:{nx:.1f}, Z:{nz:.1f}, G:{ng:.1f})"
-            # 파이썬 콘솔 창에 출력해서 학생/선생님이 바로 볼 수 있게 함
+            warning_msg = f"⚠️ [보호 잠금] 위험 차단! (요청 Z:{nz:.1f} -> 강제 Z:{safe_z:.1f})"
             print(warning_msg) 
-            # PyGUI 내부 시스템 로그 창에도 빨간색 느낌으로 남김
             write_log(warning_msg)
 
-        # 최종적으로 진짜 로봇에게 보낼 변수는 "안전하게 클램프된 좌표(safe_)"로 강제 덮어씌움
         nx, ny, nz, ng, nr = safe_x, safe_y, safe_z, safe_g, safe_r
-        # =====================================================================
         new_state = {'x': nx, 'y': ny, 'z': nz, 'gripper': ng, 'roll': nr}
         
         if time.time() - self.last_write_time >= self.write_interval:
@@ -398,10 +391,14 @@ class MT4UnityNode(BaseNode):
                             send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
                     elif msg_type == "MOVE":
                         if time.time() > mt4_collision_lock_until:
-                            if 'x' in parsed: self.output_data[self.out_x] = float(parsed['x'])
-                            if 'y' in parsed: self.output_data[self.out_y] = float(parsed['y'])
-                            if 'z' in parsed: self.output_data[self.out_z] = float(parsed['z'])
-                            if 'gripper' in parsed: self.output_data[self.out_g] = float(parsed['gripper'])
+                            if 'x' in parsed: 
+                                 self.output_data[self.out_x] = (float(parsed['x']) * 100.0) + 200.0 
+                            if 'y' in parsed: 
+                                self.output_data[self.out_y] = (float(parsed['y']) * 100.0)
+                            if 'z' in parsed: 
+                                self.output_data[self.out_z] = (float(parsed['z']) * 100.0) + 120.0
+                            if 'gripper' in parsed: 
+                                self.output_data[self.out_g] = float(parsed['gripper']) 
                             if 'roll' in parsed: self.output_data[self.out_r] = float(parsed['roll'])
                 except: pass 
                 
