@@ -56,7 +56,7 @@ class GraphSerializer:
             print(f"[Serializer] Saved: {filename}")
         except Exception as e: print(f"[Serializer] Save Error: {e}")
 
-   @classmethod
+    @classmethod
     def load_graph(cls, filename, engine, ui_manager):
         if not filename.endswith(".json"): filename += ".json"
         filepath = os.path.join(cls.SAVE_DIR, filename)
