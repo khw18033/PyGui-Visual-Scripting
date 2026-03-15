@@ -70,6 +70,7 @@ def main():
 
         # 2. 메인 파이프라인 연산
         if current_time - last_logic_time > LOGIC_RATE:
+            ui_manager.sync_ui_to_nodes()
             has_keyboard_consumers = any(
                 node.type_str in ("MT4_KEYBOARD", "COND_KEY")
                 for node in engine.nodes.values()

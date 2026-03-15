@@ -23,10 +23,27 @@ MT4_LIMITS = {'min_x': 200, 'max_x': 280, 'min_y': -200, 'max_y': 200, 'min_z': 
 MT4_GRIPPER_MIN = 30.0
 MT4_GRIPPER_MAX = 60.0
 MT4_Z_OFFSET = 90.0
+MT4_UNITY_IP = "192.168.50.63"
+MT4_FEEDBACK_PORT = 5005
 
 # (Unity 기록용)
 mt4_mode = {"recording": False, "playing": False}
 mt4_log_event_queue = deque()
+
+
+def get_mt4_paths():
+    if not os.path.exists("path_record"):
+        return []
+    return [f for f in os.listdir("path_record") if f.endswith(".csv")]
+
+
+def send_unity_ui(msg_type, extra_data):
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.sendto(f"type:{msg_type},extra:{extra_data}".encode("utf-8"), (MT4_UNITY_IP, 5007))
+        sock.close()
+    except:
+        pass
 
 
 # ==========================================
@@ -285,17 +302,27 @@ class MT4UnityNode(BaseNode):
                         val = parsed.get("val", "")
                         if val == "COLLISION":
                             mt4_collision_lock_until = time.time() + 2.0 
-                            if ser and ser.is_open: ser.write(b"!") 
+                            if ser and ser.is_open:
+                                ser.write(b"!")
+                            send_unity_ui("STATUS", "충돌 감지! 로봇 긴급 정지")
                         elif val == "START_REC":
-                            if not mt4_mode["recording"]: toggle_mt4_record()
+                            if not mt4_mode["recording"]:
+                                toggle_mt4_record()
                         elif val.startswith("STOP_REC:"):
                             fname = val.split(":")[1]
-                            if mt4_mode["recording"]: toggle_mt4_record(custom_name=fname)
+                            if mt4_mode["recording"]:
+                                toggle_mt4_record(custom_name=fname)
+                        elif val == "REQ_FILES":
+                            send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
                         elif val.startswith("PLAY:"):
                             fname = val.split(":")[1]
                             play_mt4_path(filename=fname)
-                        elif val == "LOG_SUCCESS": mt4_log_event_queue.append("SUCCESS")
-                        elif val == "LOG_FAIL": mt4_log_event_queue.append("FAIL")
+                        elif val == "LOG_SUCCESS":
+                            mt4_log_event_queue.append("SUCCESS")
+                            send_unity_ui("LOG", "<color=green>SUCCESS 기록 완료</color>")
+                        elif val == "LOG_FAIL":
+                            mt4_log_event_queue.append("FAIL")
+                            send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
                     elif msg_type == "MOVE" and time.time() > mt4_collision_lock_until:
                         # 파이프라인으로 안전하게 다음 노드로 타겟값 넘기기
                         if 'z' in parsed: self.outputs["Target X"] = float(parsed['z']) * 1000.0
@@ -422,7 +449,9 @@ class UDPReceiverNode(BaseNode):
     def get_settings_schema(self): return [("port", 6000), ("ip", "192.168.50.63")]
     
     def execute(self):
+        global MT4_UNITY_IP
         port = int(self.settings.get("port", 6000))
+        MT4_UNITY_IP = str(self.settings.get("ip", MT4_UNITY_IP))
         if not self.is_bound or self.current_port != port:
             try:
                 self.sock.close()
@@ -445,6 +474,21 @@ class UDPReceiverNode(BaseNode):
                 if decoded != self.last_data:
                     self.outputs["JSON Out"] = decoded; self.last_data = decoded
         except: pass
+
+        try:
+            fb = {
+                "x": -mt4_current_pos['y'] / 1000.0,
+                "y": (mt4_current_pos['z'] - MT4_Z_OFFSET) / 1000.0,
+                "z": mt4_current_pos['x'] / 1000.0,
+                "gripper": mt4_current_pos['gripper'],
+                "status": "Running"
+            }
+            sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock_send.sendto(json.dumps(fb).encode("utf-8"), (MT4_UNITY_IP, MT4_FEEDBACK_PORT))
+            sock_send.close()
+        except:
+            pass
+
         return "Flow Out"
     
 # ==========================================

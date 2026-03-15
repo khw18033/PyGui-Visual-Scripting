@@ -197,6 +197,21 @@ class UIManager:
             self.engine.stop()
             dpg.set_item_label(sender, "RUN SCRIPT")
 
+    def sync_ui_to_nodes(self):
+        # 노드 UI 위젯 값을 매 프레임 노드 런타임 상태로 동기화합니다.
+        for node in self.engine.nodes.values():
+            for pin_type, label, default_val in node.get_ui_schema():
+                if pin_type != "IN_DATA":
+                    continue
+                value_tag = f"val_{node.node_id}_{label}"
+                if default_val is not None and dpg.does_item_exist(value_tag):
+                    node.inputs[label] = dpg.get_value(value_tag)
+
+            for param_name, _ in node.get_settings_schema():
+                setting_tag = f"{node.node_id}_set_{param_name}"
+                if dpg.does_item_exist(setting_tag):
+                    node.settings[param_name] = dpg.get_value(setting_tag)
+
     def render_frame(self): dpg.render_dearpygui_frame()
     def is_running(self): return dpg.is_dearpygui_running()
     def cleanup(self): dpg.destroy_context()

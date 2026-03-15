@@ -13,18 +13,35 @@ class GraphSerializer:
         filepath = os.path.join(cls.SAVE_DIR, filename)
         
         data = {"nodes": [], "links": []}
-        for nid, node in engine.nodes.items():
+        stale_nodes = []
+        for nid, node in list(engine.nodes.items()):
+            if not dpg.does_item_exist(nid):
+                stale_nodes.append(nid)
+                continue
             pos = dpg.get_item_pos(nid) or [0,0]
             data["nodes"].append({
                 "type": node.type_str, "id": nid, "pos": pos, 
                 "settings": getattr(node, 'settings', {})
             })
+
+        for stale_nid in stale_nodes:
+            engine.remove_node(stale_nid)
         
-        for link in engine.links:
+        stale_links = []
+        for link in list(engine.links):
+            lid = link.get('id')
+            src_id = link.get('src_id')
+            dst_id = link.get('dst_id')
+            if (lid is not None and not dpg.does_item_exist(lid)) or src_id not in engine.nodes or dst_id not in engine.nodes:
+                stale_links.append(lid)
+                continue
             data["links"].append({
                 "src_node": link['src_id'], "src_pin": link['src_pin'],
                 "dst_node": link['dst_id'], "dst_pin": link['dst_pin']
             })
+
+        for stale_lid in stale_links:
+            engine.remove_link(stale_lid)
         
         try:
             with open(filepath, 'w') as f: json.dump(data, f, indent=4)
