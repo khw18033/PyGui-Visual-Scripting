@@ -438,15 +438,14 @@ class MT4KeyboardNode(BaseNode):
         ]
 
     def execute(self):
-        global mt4_manual_override_until, mt4_target_goal
+        global mt4_target_goal
         
-        # 쿨다운 체크 (너무 빠른 연속 입력 방지)
+        # 쿨다운 체크
         if time.time() - self.last_input_time < self.cooldown:
             return "Flow Out"
 
         dx = dy = dz = dg = dr = 0
         
-        # DPG UI 코드 없이, 외부의 InputManager 장부에서 순수 상태만 읽어옵니다.
         if global_input_manager.get_key('W'): dx = 1
         if global_input_manager.get_key('S'): dx = -1
         if global_input_manager.get_key('A'): dy = 1
@@ -458,33 +457,23 @@ class MT4KeyboardNode(BaseNode):
         if global_input_manager.get_key('J'): dg = 1
         if global_input_manager.get_key('U'): dg = -1
         
-        # 첨부하신 코드의 핵심인 Roll 제어 (Z/X 키)
         if global_input_manager.get_key('Z'): dr = 1
         if global_input_manager.get_key('X'): dr = -1
 
-        # 입력이 하나라도 발생했다면
         if any([dx, dy, dz, dg, dr]):
             self.last_input_time = time.time()
-            mt4_manual_override_until = time.time() + 0.5
             
-            # 노드의 Settings에서 보폭값(Step Size)을 읽어와서 곱해줍니다.
             step = float(self.settings.get("step_size", 10.0))
             g_step = float(self.settings.get("grip_step", 5.0))
             r_step = float(self.settings.get("roll_step", 5.0))
 
-            mt4_target_goal['x'] += dx * step
-            mt4_target_goal['y'] += dy * step
-            mt4_target_goal['z'] += dz * step
-            mt4_target_goal['gripper'] += dg * g_step
-            mt4_target_goal['roll'] += dr * r_step
+            # ★ 핵심 수정: 수동 조작 오버라이드를 걸지 않고 mt4_target_goal을 기준으로 누적하여 핀으로만 내보냅니다.
+            self.outputs["Target X"] = mt4_target_goal['x'] + (dx * step)
+            self.outputs["Target Y"] = mt4_target_goal['y'] + (dy * step)
+            self.outputs["Target Z"] = mt4_target_goal['z'] + (dz * step)
+            self.outputs["Target Grip"] = mt4_target_goal['gripper'] + (dg * g_step)
+            self.outputs["Target Roll"] = mt4_target_goal['roll'] + (dr * r_step)
 
-        # 다음 노드로 전달할 출력 데이터 저장
-        self.outputs["Target X"] = mt4_target_goal['x']
-        self.outputs["Target Y"] = mt4_target_goal['y']
-        self.outputs["Target Z"] = mt4_target_goal['z']
-        self.outputs["Target Roll"] = mt4_target_goal['roll']
-        self.outputs["Target Grip"] = mt4_target_goal['gripper']
-        
         return "Flow Out"
     
 class MT4CommandActionNode(BaseNode):

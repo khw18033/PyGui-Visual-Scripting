@@ -56,7 +56,7 @@ class GraphSerializer:
             print(f"[Serializer] Saved: {filename}")
         except Exception as e: print(f"[Serializer] Save Error: {e}")
 
-    @classmethod
+   @classmethod
     def load_graph(cls, filename, engine, ui_manager):
         if not filename.endswith(".json"): filename += ".json"
         filepath = os.path.join(cls.SAVE_DIR, filename)
@@ -65,17 +65,21 @@ class GraphSerializer:
         try:
             ui_manager.is_bulk_loading = True
 
-            # Answer_code 방식과 유사하게 링크/노드를 순차 삭제합니다.
-            for link in list(engine.links):
+            # 🚨 1. 안전한 삭제 (튕김 완벽 방지): 무조건 선(Link)을 먼저 모두 지웁니다.
+            links_to_delete = list(engine.links)
+            for link in links_to_delete:
                 lid = link.get('id')
                 if lid is not None and dpg.does_item_exist(lid):
                     dpg.delete_item(lid)
+            engine.links.clear()
 
-            for nid in list(engine.nodes.keys()):
+            # 🚨 2. 선이 모두 제거된 안전한 상태에서 노드(Node)를 지웁니다.
+            nodes_to_delete = list(engine.nodes.keys())
+            for nid in nodes_to_delete:
                 if dpg.does_item_exist(nid):
                     dpg.delete_item(nid)
-
-            engine.nodes.clear(); engine.links.clear()
+            engine.nodes.clear()
+            
             ui_manager.pin_label_map.clear()
 
             with open(filepath, 'r') as f: data = json.load(f)
@@ -106,22 +110,6 @@ class GraphSerializer:
 
                     src_pin = l_data.get('src_pin')
                     dst_pin = l_data.get('dst_pin')
-
-                    # 구버전(src_idx/dst_idx) 저장 포맷도 복구 지원
-                    if src_pin is None or dst_pin is None:
-                        src_node = engine.nodes.get(src_node_id)
-                        dst_node = engine.nodes.get(dst_node_id)
-                        if src_node is None or dst_node is None:
-                            continue
-
-                        src_labels = cls._get_pin_labels(src_node, {"OUT_FLOW", "OUT_DATA"})
-                        dst_labels = cls._get_pin_labels(dst_node, {"IN_FLOW", "IN_DATA"})
-                        src_idx = l_data.get('src_idx')
-                        dst_idx = l_data.get('dst_idx')
-                        if isinstance(src_idx, int) and 0 <= src_idx < len(src_labels):
-                            src_pin = src_labels[src_idx]
-                        if isinstance(dst_idx, int) and 0 <= dst_idx < len(dst_labels):
-                            dst_pin = dst_labels[dst_idx]
 
                     if src_pin is None or dst_pin is None:
                         continue
