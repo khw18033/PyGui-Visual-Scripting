@@ -17,6 +17,8 @@ mt4_target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'roll': 0.0, 'gripper': 40.
 mt4_manual_override_until = 0.0 
 mt4_collision_lock_until = 0.0
 
+mt4_dashboard = {"status": "Idle", "hw_link": "Offline", "latency": 0.0, "last_pkt_time": 0.0}
+
 MT4_LIMITS = {'min_x': 200, 'max_x': 280, 'min_y': -200, 'max_y': 200, 'min_z': 0, 'max_z': 280, 'min_r': -180.0, 'max_r': 180.0}
 MT4_GRIPPER_MIN = 30.0
 MT4_GRIPPER_MAX = 60.0
@@ -544,3 +546,19 @@ def init_mt4_serial():
     except Exception: 
         mt4_dashboard["hw_link"] = "Simulation"
         ser = None
+
+# 👇 파일 맨 끝에 붙여넣기 (호밍 기능)
+def mt4_homing_callback(sender, app_data, user_data): 
+    import threading
+    threading.Thread(target=mt4_homing_thread_func, daemon=True).start()
+
+def mt4_homing_thread_func():
+    global ser, mt4_manual_override_until, mt4_target_goal, mt4_current_pos, mt4_dashboard
+    if ser:
+        mt4_manual_override_until = time.time() + 20.0
+        mt4_dashboard["status"] = "HOMING..."
+        ser.write(b"$H\r\n"); time.sleep(15); ser.write(b"M20\r\n"); ser.write(b"G90\r\n"); ser.write(b"G1 F2000\r\n")
+        mt4_target_goal.update({'x':200.0, 'y':0.0, 'z':120.0, 'roll':0.0, 'gripper':40.0})
+        mt4_current_pos.update(mt4_target_goal)
+        ser.write(b"G0 X200 Y0 Z120 A0 F2000\r\n"); ser.write(b"M3 S40\r\n")
+        mt4_dashboard["status"] = "Idle"
