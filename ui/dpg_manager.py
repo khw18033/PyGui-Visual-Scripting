@@ -89,8 +89,8 @@ class UIManager:
                     dpg.add_text("Adv. Tools:", color=(255,200,0))
                     for n in ["MT4_KEYBOARD", "MT4_UNITY", "UDP_RECV", "MT4_SAG", "MT4_CALIB", "MT4_TOOLTIP", "MT4_BACKLASH"]:
                         dpg.add_button(label=n.replace("MT4_", ""), callback=lambda s,a,u: self.create_and_draw(u), user_data=n)
-                    dpg.add_spacer(width=30)
-                    dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=self.toggle_run, width=150)
+                dpg.add_spacer(width=30)
+                dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=self.toggle_run, width=150)
                 
             # 3. 메인 노드 에디터
             with dpg.node_editor(tag=self.editor_tag, callback=self.link_callback, delink_callback=self.delink_callback): pass 
