@@ -199,11 +199,41 @@ class UIManager:
 
     def sync_ui_to_nodes(self):
         # 노드 UI 위젯 값을 매 프레임 노드 런타임 상태로 동기화합니다.
+        focused_item = dpg.get_focused_item()
+        driver_label_to_key = {
+            "X": "x",
+            "Y": "y",
+            "Z": "z",
+            "Roll": "roll",
+            "Gripper": "gripper",
+        }
+
         for node in self.engine.nodes.values():
             for pin_type, label, default_val in node.get_ui_schema():
                 if pin_type != "IN_DATA":
                     continue
+
+                has_incoming_link = any(
+                    link.get("dst_id") == node.node_id and link.get("dst_pin") == label
+                    for link in self.engine.links
+                )
                 value_tag = f"val_{node.node_id}_{label}"
+
+                if has_incoming_link:
+                    continue
+
+                # MT4 드라이버는 링크 입력이 없을 때 고정 기본값으로 덮어쓰지 않고,
+                # 현재 타겟 상태를 UI에 반영하면서 실행 입력은 None으로 유지합니다.
+                if node.type_str == "MT4_DRIVER" and label in driver_label_to_key:
+                    if default_val is not None and dpg.does_item_exist(value_tag):
+                        if focused_item == value_tag:
+                            node.inputs[label] = dpg.get_value(value_tag)
+                        else:
+                            from nodes.robots.mt4 import mt4_target_goal
+                            dpg.set_value(value_tag, float(mt4_target_goal[driver_label_to_key[label]]))
+                            node.inputs[label] = None
+                    continue
+
                 if default_val is not None and dpg.does_item_exist(value_tag):
                     node.inputs[label] = dpg.get_value(value_tag)
 

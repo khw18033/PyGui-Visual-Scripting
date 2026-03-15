@@ -6,6 +6,14 @@ from core.factory import NodeFactory
 class GraphSerializer:
     SAVE_DIR = "Node_File_MT4"
 
+    @staticmethod
+    def _get_pin_labels(node, pin_types):
+        labels = []
+        for pin_type, label, _ in node.get_ui_schema():
+            if pin_type in pin_types:
+                labels.append(label)
+        return labels
+
     @classmethod
     def save_graph(cls, filename, engine):
         os.makedirs(cls.SAVE_DIR, exist_ok=True)
@@ -20,7 +28,7 @@ class GraphSerializer:
                 continue
             pos = dpg.get_item_pos(nid) or [0,0]
             data["nodes"].append({
-                "type": node.type_str, "id": nid, "pos": pos, 
+                "type": node.type_str, "id": str(nid), "pos": pos,
                 "settings": getattr(node, 'settings', {})
             })
 
@@ -36,8 +44,8 @@ class GraphSerializer:
                 stale_links.append(lid)
                 continue
             data["links"].append({
-                "src_node": link['src_id'], "src_pin": link['src_pin'],
-                "dst_node": link['dst_id'], "dst_pin": link['dst_pin']
+                "src_node": str(link['src_id']), "src_pin": link['src_pin'],
+                "dst_node": str(link['dst_id']), "dst_pin": link['dst_pin']
             })
 
         for stale_lid in stale_links:
@@ -69,21 +77,47 @@ class GraphSerializer:
             
             id_map = {}
             for n_data in data.get("nodes", []):
-                node = NodeFactory.create_node(n_data["type"], n_data["id"])
+                src_node_id = str(n_data["id"])
+                node = NodeFactory.create_node(n_data["type"], src_node_id)
                 if node:
-                    id_map[n_data["id"]] = node.node_id
+                    id_map[src_node_id] = node.node_id
                     if hasattr(node, 'settings'):
                         node.settings.update(n_data.get("settings", {}))
                     ui_manager.draw_node(node)
-                    dpg.set_item_pos(node.node_id, n_data["pos"])
+                    if dpg.does_item_exist(node.node_id):
+                        dpg.set_item_pos(node.node_id, n_data.get("pos", [0, 0]))
                     engine.add_node(node)
                     
             for l_data in data.get("links", []):
-                if l_data["src_node"] in id_map and l_data["dst_node"] in id_map:
-                    src_node_id = id_map[l_data['src_node']]
-                    dst_node_id = id_map[l_data['dst_node']]
-                    src_pin = l_data['src_pin']
-                    dst_pin = l_data['dst_pin']
+                saved_src_node = str(l_data.get("src_node", ""))
+                saved_dst_node = str(l_data.get("dst_node", ""))
+
+                if saved_src_node in id_map and saved_dst_node in id_map:
+                    src_node_id = id_map[saved_src_node]
+                    dst_node_id = id_map[saved_dst_node]
+
+                    src_pin = l_data.get('src_pin')
+                    dst_pin = l_data.get('dst_pin')
+
+                    # 구버전(src_idx/dst_idx) 저장 포맷도 복구 지원
+                    if src_pin is None or dst_pin is None:
+                        src_node = engine.nodes.get(src_node_id)
+                        dst_node = engine.nodes.get(dst_node_id)
+                        if src_node is None or dst_node is None:
+                            continue
+
+                        src_labels = cls._get_pin_labels(src_node, {"OUT_FLOW", "OUT_DATA"})
+                        dst_labels = cls._get_pin_labels(dst_node, {"IN_FLOW", "IN_DATA"})
+                        src_idx = l_data.get('src_idx')
+                        dst_idx = l_data.get('dst_idx')
+                        if isinstance(src_idx, int) and 0 <= src_idx < len(src_labels):
+                            src_pin = src_labels[src_idx]
+                        if isinstance(dst_idx, int) and 0 <= dst_idx < len(dst_labels):
+                            dst_pin = dst_labels[dst_idx]
+
+                    if src_pin is None or dst_pin is None:
+                        continue
+
                     src_tag = f"{src_node_id}_{src_pin}"
                     dst_tag = f"{dst_node_id}_{dst_pin}"
 
