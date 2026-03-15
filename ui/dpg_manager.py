@@ -167,19 +167,20 @@ class UIManager:
         self.engine.remove_link(lid)
 
     def delete_selection(self, sender, app_data):
-        selected_links = list(dpg.get_selected_links(self.editor_tag))
-        selected_nodes = list(dpg.get_selected_nodes(self.editor_tag))
+        selected_links = list(dpg.get_selected_links(self.editor_tag) or [])
+        selected_nodes = list(dpg.get_selected_nodes(self.editor_tag) or [])
 
         for lid in selected_links:
             if dpg.does_item_exist(lid):
                 dpg.delete_item(lid)
             self.engine.remove_link(lid)
 
-        # DPG 내부 상태 안정성을 위해 노드 삭제 전에 연결선을 명시적으로 정리합니다.
+        # 🚨 핵심 수정: DPG의 int ID를 str로 명시적 변환하여 엔진 데이터와 완벽 매칭
         for nid in selected_nodes:
+            str_nid = str(nid)
             connected = [
                 link for link in list(self.engine.links)
-                if link["src_id"] == nid or link["dst_id"] == nid
+                if link["src_id"] == str_nid or link["dst_id"] == str_nid
             ]
             for link in connected:
                 lid = link.get("id")
@@ -189,7 +190,7 @@ class UIManager:
 
             if dpg.does_item_exist(nid):
                 dpg.delete_item(nid)
-            self.engine.remove_node(nid)
+            self.engine.remove_node(str_nid)
 
     def toggle_run(self, sender, app_data):
         """엔진의 실행/정지 상태를 토글하는 콜백"""

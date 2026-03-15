@@ -46,7 +46,7 @@ def send_unity_ui(msg_type, extra_data):
         pass
 
 # ==========================================
-# 🤖 1. MT4 메인 드라이버 노드 (하드웨어 통신 전담)
+# [수정 1] MT4 핵심 드라이버 노드
 # ==========================================
 class MT4DriverNode(BaseNode):
     def __init__(self, node_id: str):
@@ -54,95 +54,67 @@ class MT4DriverNode(BaseNode):
         self.last_cmd = ""
         self.last_write_time = 0
         self.write_interval = 0.0
+        self.outputs["Flow Out"] = True # 파이프라인 개통
 
     def get_ui_schema(self):
         return [
             ("IN_FLOW", "Flow In", None),
-            ("IN_DATA", "X", 200.0),
-            ("IN_DATA", "Y", 0.0),
-            ("IN_DATA", "Z", 120.0),
-            ("IN_DATA", "Roll", 0.0),
-            ("IN_DATA", "Gripper", 40.0),
+            ("IN_DATA", "X", 200.0), ("IN_DATA", "Y", 0.0), ("IN_DATA", "Z", 120.0),
+            ("IN_DATA", "Roll", 0.0), ("IN_DATA", "Gripper", 40.0),
             ("OUT_FLOW", "Flow Out", None)
         ]
 
-    def get_settings_schema(self):
-        return [
-            ("smooth", 1.0),
-            ("grip_spd", 50.0),
-            ("roll_spd", 50.0)
-        ]
+    def get_settings_schema(self): return [("smooth", 1.0), ("grip_spd", 50.0), ("roll_spd", 50.0)]
 
     def execute(self):
         global mt4_current_pos, mt4_target_goal, mt4_manual_override_until, ser
-        
-        if time.time() < mt4_collision_lock_until:
-            return "Flow Out"
+        if time.time() < mt4_collision_lock_until: return "Flow Out"
 
-        # Answer_code.py와 100% 동일한 입력 상태 변경 감지 로직 적용
         inputs = {
-            'x': self.inputs.get("X"),
-            'y': self.inputs.get("Y"),
-            'z': self.inputs.get("Z"),
-            'roll': self.inputs.get("Roll"),
-            'gripper': self.inputs.get("Gripper")
+            'x': self.inputs.get("X"), 'y': self.inputs.get("Y"), 'z': self.inputs.get("Z"),
+            'roll': self.inputs.get("Roll"), 'gripper': self.inputs.get("Gripper")
         }
 
         inputs_changed = False
         for key in ['x', 'y', 'z', 'roll', 'gripper']:
             val = inputs.get(key)
             if val is not None:
-                if abs(float(val) - mt4_target_goal[key]) > 0.5:
-                    inputs_changed = True
+                if abs(float(val) - mt4_target_goal[key]) > 0.5: inputs_changed = True
 
-        # 강제 조작(수동) 중이 아니고, 입력값이 실제로 변경되었을 때만 목표값 갱신
         if time.time() > mt4_manual_override_until and inputs_changed:
             for key in ['x', 'y', 'z', 'roll', 'gripper']:
-                if inputs.get(key) is not None:
-                    mt4_target_goal[key] = float(inputs[key])
+                if inputs.get(key) is not None: mt4_target_goal[key] = float(inputs[key])
 
-        # 3. 보간 연산 (Smooth & Speed)
         smooth = 1.0 if time.time() < mt4_manual_override_until else max(0.01, min(self.settings.get('smooth', 1.0), 1.0))
-        
-        dx = mt4_target_goal['x'] - mt4_current_pos['x']
-        dy = mt4_target_goal['y'] - mt4_current_pos['y']
-        dz = mt4_target_goal['z'] - mt4_current_pos['z']
+        dx = mt4_target_goal['x'] - mt4_current_pos['x']; dy = mt4_target_goal['y'] - mt4_current_pos['y']; dz = mt4_target_goal['z'] - mt4_current_pos['z']
         
         nx = mt4_current_pos['x'] + dx * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['x']
         ny = mt4_current_pos['y'] + dy * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['y']
         nz = mt4_current_pos['z'] + dz * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['z']
 
-        g_spd = float(self.settings.get('grip_spd', 50.0)) * 0.1
-        r_spd = float(self.settings.get('roll_spd', 50.0)) * 0.1
+        g_spd = float(self.settings.get('grip_spd', 50.0)) * 0.1; r_spd = float(self.settings.get('roll_spd', 50.0)) * 0.1
 
-        # Roll 및 Gripper 속도 제어
         dr_err = mt4_target_goal['roll'] - mt4_current_pos['roll']
         nr = mt4_current_pos['roll'] + math.copysign(r_spd, dr_err) if abs(dr_err) > r_spd else mt4_target_goal['roll']
         
         dg_err = mt4_target_goal['gripper'] - mt4_current_pos['gripper']
         ng = mt4_current_pos['gripper'] + math.copysign(g_spd, dg_err) if abs(dg_err) > g_spd else mt4_target_goal['gripper']
 
-        # 4. Limit 안전장치 적용
-        nx = max(MT4_LIMITS['min_x'], min(nx, MT4_LIMITS['max_x']))
-        ny = max(MT4_LIMITS['min_y'], min(ny, MT4_LIMITS['max_y']))
-        nz = max(MT4_LIMITS['min_z'], min(nz, MT4_LIMITS['max_z']))
-        nr = max(MT4_LIMITS['min_r'], min(nr, MT4_LIMITS['max_r']))
+        nx = max(MT4_LIMITS['min_x'], min(nx, MT4_LIMITS['max_x'])); ny = max(MT4_LIMITS['min_y'], min(ny, MT4_LIMITS['max_y']))
+        nz = max(MT4_LIMITS['min_z'], min(nz, MT4_LIMITS['max_z'])); nr = max(MT4_LIMITS['min_r'], min(nr, MT4_LIMITS['max_r']))
         ng = max(MT4_GRIPPER_MIN, min(ng, MT4_GRIPPER_MAX))
 
         mt4_current_pos.update({'x': nx, 'y': ny, 'z': nz, 'roll': nr, 'gripper': ng})
 
-        # 5. 시리얼 통신 전송
         if time.time() - self.last_write_time >= self.write_interval:
             cmd = f"G0 X{nx:.1f} Y{ny:.1f} Z{nz:.1f} A{nr:.1f}\nM3 S{int(ng)}\n"
             if cmd != self.last_cmd:
                 if ser and ser.is_open:
-                    try:
-                        ser.write(cmd.encode())
-                        self.last_write_time = time.time()
-                    except:
-                        pass
+                    try: ser.write(cmd.encode()); self.last_write_time = time.time()
+                    except: pass
                 self.last_cmd = cmd
 
+        self.outputs["Flow Out"] = True # 파이프라인 개통
         return "Flow Out"
 
 
@@ -266,20 +238,22 @@ class MT4BacklashNode(BaseNode):
         return None
 
 # ==========================================
-# 🎮 3. 외부 통신 및 제어 로직 노드 (Unity & Keyboard)
+# [수정 2] MT4 유니티 노드
 # ==========================================
 class MT4UnityNode(BaseNode):
     def __init__(self, node_id: str):
         super().__init__(node_id, "Unity Logic (MT4)", "MT4_UNITY")
         self.last_processed_json = ""
-        
+        global mt4_target_goal
+        self.outputs["Target X"] = mt4_target_goal['x']; self.outputs["Target Y"] = mt4_target_goal['y']
+        self.outputs["Target Z"] = mt4_target_goal['z']; self.outputs["Target Roll"] = mt4_target_goal['roll']
+        self.outputs["Target Grip"] = mt4_target_goal['gripper']; self.outputs["Flow Out"] = True
+
     def get_ui_schema(self): 
-        # ★ 해결: 누락되었던 OUT_DATA (Target X~Grip) 핀들을 100% 복구했습니다.
         return [
             ("IN_FLOW", "Flow In", None), ("IN_DATA", "JSON", None),
             ("OUT_DATA", "Target X", None), ("OUT_DATA", "Target Y", None), ("OUT_DATA", "Target Z", None),
-            ("OUT_DATA", "Target Roll", None), ("OUT_DATA", "Target Grip", None), 
-            ("OUT_FLOW", "Flow Out", None)
+            ("OUT_DATA", "Target Roll", None), ("OUT_DATA", "Target Grip", None), ("OUT_FLOW", "Flow Out", None)
         ]
         
     def get_settings_schema(self): return []
@@ -291,103 +265,82 @@ class MT4UnityNode(BaseNode):
         is_new_msg = (raw_json and raw_json != self.last_processed_json)
         if is_new_msg: self.last_processed_json = raw_json
 
-        is_overridden = (time.time() < mt4_manual_override_until) or mt4_mode.get("playing", False)
-
-        if is_overridden:
-            self.outputs["Target X"] = mt4_target_goal['x']
-            self.outputs["Target Y"] = mt4_target_goal['y']
-            self.outputs["Target Z"] = mt4_target_goal['z']
-            self.outputs["Target Roll"] = mt4_target_goal['roll']
+        if (time.time() < mt4_manual_override_until) or mt4_mode.get("playing", False):
+            self.outputs["Target X"] = mt4_target_goal['x']; self.outputs["Target Y"] = mt4_target_goal['y']
+            self.outputs["Target Z"] = mt4_target_goal['z']; self.outputs["Target Roll"] = mt4_target_goal['roll']
             self.outputs["Target Grip"] = mt4_target_goal['gripper']
         else:
             if is_new_msg:
                 try:
-                    # Answer_code.py와 동일하게 순수 JSON 파싱만 시도
                     parsed = json.loads(raw_json)
-
                     msg_type = parsed.get("type", "MOVE")
                     if msg_type == "CMD":
                         val = parsed.get("val", "")
                         if val == "COLLISION":
                             mt4_collision_lock_until = time.time() + 2.0 
-                            if ser and ser.is_open:
-                                ser.write(b"!")
+                            if ser and ser.is_open: ser.write(b"!")
                             send_unity_ui("STATUS", "충돌 감지! 로봇 긴급 정지")
                         elif val == "START_REC":
-                            if not mt4_mode["recording"]:
-                                toggle_mt4_record()
+                            if not mt4_mode["recording"]: toggle_mt4_record()
                         elif val.startswith("STOP_REC:"):
                             fname = val.split(":")[1]
-                            if mt4_mode["recording"]:
-                                toggle_mt4_record(custom_name=fname)
-                        elif val == "REQ_FILES":
-                            send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
+                            if mt4_mode["recording"]: toggle_mt4_record(custom_name=fname)
+                        elif val == "REQ_FILES": send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
                         elif val.startswith("PLAY:"):
-                            fname = val.split(":")[1]
-                            play_mt4_path(filename=fname)
+                            fname = val.split(":")[1]; play_mt4_path(filename=fname)
                         elif val == "LOG_SUCCESS":
-                            mt4_log_event_queue.append("SUCCESS")
-                            send_unity_ui("LOG", "<color=green>SUCCESS 기록 완료</color>")
+                            mt4_log_event_queue.append("SUCCESS"); send_unity_ui("LOG", "<color=green>SUCCESS 기록 완료</color>")
                         elif val == "LOG_FAIL":
-                            mt4_log_event_queue.append("FAIL")
-                            send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
-                    elif msg_type == "MOVE":
-                        if time.time() > mt4_collision_lock_until:
-                            if 'z' in parsed: self.outputs["Target X"] = float(parsed['z']) * 1000.0
-                            if 'x' in parsed: self.outputs["Target Y"] = -float(parsed['x']) * 1000.0
-                            if 'y' in parsed: self.outputs["Target Z"] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
-                            if 'roll' in parsed: self.outputs["Target Roll"] = float(parsed['roll'])
-                            if 'gripper' in parsed: self.outputs["Target Grip"] = float(parsed['gripper']) 
+                            mt4_log_event_queue.append("FAIL"); send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
+                    elif msg_type == "MOVE" and time.time() > mt4_collision_lock_until:
+                        if 'z' in parsed: self.outputs["Target X"] = float(parsed['z']) * 1000.0
+                        if 'x' in parsed: self.outputs["Target Y"] = -float(parsed['x']) * 1000.0
+                        if 'y' in parsed: self.outputs["Target Z"] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
+                        if 'roll' in parsed: self.outputs["Target Roll"] = float(parsed['roll'])
+                        if 'gripper' in parsed: self.outputs["Target Grip"] = float(parsed['gripper']) 
                 except: pass 
+
+        self.outputs["Flow Out"] = True
         return "Flow Out"
     
 from core.input_manager import global_input_manager  # InputManager 수입
 
 # ==========================================
-# ⌨️ MT4 키보드 제어 노드 (InputManager 연동)
+# [수정 3] 키보드 제어 노드
 # ==========================================
+from core.input_manager import global_input_manager 
+
 class MT4KeyboardNode(BaseNode):
     def __init__(self, node_id: str):
         super().__init__(node_id, "Keyboard (MT4)", "MT4_KEYBOARD")
-        self.last_input_time = 0.0
-        self.cooldown = 0.2
+        self.last_input_time = 0.0; self.cooldown = 0.2
+        global mt4_target_goal
+        self.outputs["Target X"] = mt4_target_goal['x']; self.outputs["Target Y"] = mt4_target_goal['y']
+        self.outputs["Target Z"] = mt4_target_goal['z']; self.outputs["Target Roll"] = mt4_target_goal['roll']
+        self.outputs["Target Grip"] = mt4_target_goal['gripper']; self.outputs["Flow Out"] = True
 
     def get_ui_schema(self):
         return [
             ("IN_FLOW", "Flow In", None),
-            ("OUT_DATA", "Target X", None),
-            ("OUT_DATA", "Target Y", None),
-            ("OUT_DATA", "Target Z", None),
-            ("OUT_DATA", "Target Roll", None),
-            ("OUT_DATA", "Target Grip", None),
-            ("OUT_FLOW", "Flow Out", None)
+            ("OUT_DATA", "Target X", None), ("OUT_DATA", "Target Y", None), ("OUT_DATA", "Target Z", None),
+            ("OUT_DATA", "Target Roll", None), ("OUT_DATA", "Target Grip", None), ("OUT_FLOW", "Flow Out", None)
         ]
 
-    def get_settings_schema(self):
-        return [
-            ("step_size", 10.0),
-            ("grip_step", 5.0),
-            ("roll_step", 5.0)
-        ]
+    def get_settings_schema(self): return [("step_size", 10.0), ("grip_step", 5.0), ("roll_step", 5.0)]
 
     def execute(self):
         global mt4_target_goal, mt4_manual_override_until
         
-        # 쿨다운 체크
         if time.time() - self.last_input_time > self.cooldown:
             dx = dy = dz = dg = dr = 0
-            
             if global_input_manager.get_key('W'): dx = 1
             if global_input_manager.get_key('S'): dx = -1
             if global_input_manager.get_key('A'): dy = 1
             if global_input_manager.get_key('D'): dy = -1
-            
             if global_input_manager.get_key('Q'): dz = 1
             if global_input_manager.get_key('E'): dz = -1
-            
             if global_input_manager.get_key('J'): dg = 1
             if global_input_manager.get_key('U'): dg = -1
-            
             if global_input_manager.get_key('Z'): dr = 1
             if global_input_manager.get_key('X'): dr = -1
 
@@ -396,22 +349,16 @@ class MT4KeyboardNode(BaseNode):
                 self.last_input_time = time.time()
                 
                 step = float(self.settings.get("step_size", 10.0))
-                g_step = float(self.settings.get("grip_step", 5.0))
-                r_step = float(self.settings.get("roll_step", 5.0))
+                g_step = float(self.settings.get("grip_step", 5.0)); r_step = float(self.settings.get("roll_step", 5.0))
 
-                # Answer_code.py와 동일하게 직접 goal을 변경
-                mt4_target_goal['x'] += dx * step
-                mt4_target_goal['y'] += dy * step
-                mt4_target_goal['z'] += dz * step
-                mt4_target_goal['gripper'] += dg * g_step
-                mt4_target_goal['roll'] += dr * r_step
+                mt4_target_goal['x'] += dx * step; mt4_target_goal['y'] += dy * step; mt4_target_goal['z'] += dz * step
+                mt4_target_goal['gripper'] += dg * g_step; mt4_target_goal['roll'] += dr * r_step
 
-        self.outputs["Target X"] = mt4_target_goal['x']
-        self.outputs["Target Y"] = mt4_target_goal['y']
-        self.outputs["Target Z"] = mt4_target_goal['z']
-        self.outputs["Target Grip"] = mt4_target_goal['gripper']
+        self.outputs["Target X"] = mt4_target_goal['x']; self.outputs["Target Y"] = mt4_target_goal['y']
+        self.outputs["Target Z"] = mt4_target_goal['z']; self.outputs["Target Grip"] = mt4_target_goal['gripper']
         self.outputs["Target Roll"] = mt4_target_goal['roll']
 
+        self.outputs["Flow Out"] = True
         return "Flow Out"
     
 class MT4CommandActionNode(BaseNode):
@@ -442,15 +389,18 @@ class MT4CommandActionNode(BaseNode):
             
         return "Flow Out"
 
+# ==========================================
+# [수정 4] UDP 수신 노드
+# ==========================================
 class UDPReceiverNode(BaseNode):
     def __init__(self, node_id: str): 
         super().__init__(node_id, "UDP Receiver", "UDP_RECV")
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.sock.setblocking(False)
         self.is_bound = False; self.current_port = 0; self.last_data = ""
+        self.outputs["JSON Out"] = "{}"; self.outputs["Flow Out"] = True
 
     def get_ui_schema(self): return [("IN_FLOW", "Flow In", None), ("OUT_DATA", "JSON Out", None), ("OUT_FLOW", "Flow Out", None)]
     
-    # ★ 해결: 6000.0(float)이 아니라 6000(int)으로 기본값을 주어 소수점을 없앱니다!
     def get_settings_schema(self): return [("port", 6000), ("ip", "192.168.50.63")]
     
     def execute(self):
@@ -461,20 +411,15 @@ class UDPReceiverNode(BaseNode):
             try:
                 self.sock.close()
                 self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.sock.setblocking(False)
-                self.sock.bind(('0.0.0.0', port))
-                self.is_bound = True; self.current_port = port
-            except:
-                self.is_bound = False
+                self.sock.bind(('0.0.0.0', port)); self.is_bound = True; self.current_port = port
+            except: self.is_bound = False
 
         try:
             while True:
-                data, _ = self.sock.recvfrom(4096)
-                decoded = data.decode()
-                
+                data, _ = self.sock.recvfrom(4096); decoded = data.decode()
                 now = time.time()
                 mt4_dashboard["latency"] = (now - mt4_dashboard.get("last_pkt_time", now)) * 1000.0 
-                mt4_dashboard["last_pkt_time"] = now
-                mt4_dashboard["status"] = "Connected"
+                mt4_dashboard["last_pkt_time"] = now; mt4_dashboard["status"] = "Connected"
                 
                 if decoded != self.last_data:
                     self.outputs["JSON Out"] = decoded; self.last_data = decoded
@@ -482,19 +427,16 @@ class UDPReceiverNode(BaseNode):
 
         try:
             fb = {
-                "x": -mt4_current_pos['y'] / 1000.0,
-                "y": (mt4_current_pos['z'] - MT4_Z_OFFSET) / 1000.0,
-                "z": mt4_current_pos['x'] / 1000.0,
-                "roll": mt4_current_pos['roll'],
-                "gripper": mt4_current_pos['gripper'],
-                "status": "Running"
+                "x": -mt4_current_pos['y'] / 1000.0, "y": (mt4_current_pos['z'] - MT4_Z_OFFSET) / 1000.0,
+                "z": mt4_current_pos['x'] / 1000.0, "roll": mt4_current_pos['roll'],
+                "gripper": mt4_current_pos['gripper'], "status": "Running"
             }
             sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock_send.sendto(json.dumps(fb).encode("utf-8"), (MT4_UNITY_IP, MT4_FEEDBACK_PORT))
             sock_send.close()
-        except:
-            pass
+        except: pass
 
+        self.outputs["Flow Out"] = True
         return "Flow Out"
     
 # ==========================================
