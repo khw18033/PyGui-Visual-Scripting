@@ -4,6 +4,7 @@ import json
 import serial
 import os
 import csv
+import socket
 from collections import deque
 from nodes.base import BaseNode
 
@@ -369,5 +370,69 @@ class MT4KeyboardNode(BaseNode):
         self.outputs["Target Z"] = mt4_target_goal['z']
         self.outputs["Target Roll"] = mt4_target_goal['roll']
         self.outputs["Target Grip"] = mt4_target_goal['gripper']
+        
+        return "Flow Out"
+    
+class MT4CommandActionNode(BaseNode):
+    def __init__(self, node_id: str): super().__init__(node_id, "MT4 Action", "MT4_ACTION")
+    def get_ui_schema(self): return [
+        ("IN_FLOW", "Flow In", None),
+        ("IN_DATA", "X / Grip", 0.0), ("IN_DATA", "Y", 0.0), ("IN_DATA", "Z", 0.0),
+        ("OUT_FLOW", "Flow Out", None)
+    ]
+    def get_settings_schema(self): return [("mode", 1.0)] 
+    
+    def execute(self):
+        global mt4_target_goal
+        mode = int(self.settings.get("mode", 1.0))
+        v1 = float(self.inputs.get("X / Grip", 0.0))
+        v2 = float(self.inputs.get("Y", 0.0))
+        v3 = float(self.inputs.get("Z", 0.0))
+
+        if mode == 1: # Move Relative
+            mt4_target_goal['x'] += v1; mt4_target_goal['y'] += v2; mt4_target_goal['z'] += v3
+        elif mode == 2: # Move Absolute
+            mt4_target_goal['x'] = v1; mt4_target_goal['y'] = v2; mt4_target_goal['z'] = v3
+        elif mode == 3: # Set Grip
+            mt4_target_goal['gripper'] = v1
+        
+        return "Flow Out"
+
+class UDPReceiverNode(BaseNode):
+    def __init__(self, node_id: str): 
+        super().__init__(node_id, "UDP Receiver (MT4)", "UDP_RECV")
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setblocking(False)
+        self.is_bound = False
+        self.current_port = 0
+        self.last_data = ""
+
+    def get_ui_schema(self): return [
+        ("IN_FLOW", "Flow In", None),
+        ("OUT_DATA", "JSON Out", None), ("OUT_FLOW", "Flow Out", None)
+    ]
+    def get_settings_schema(self): return [("port", 6000.0), ("ip", "192.168.50.63")]
+    
+    def execute(self):
+        port = int(self.settings.get("port", 6000.0))
+        if not self.is_bound or self.current_port != port:
+            try:
+                self.sock.close()
+                self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.sock.setblocking(False)
+                self.sock.bind(('0.0.0.0', port))
+                self.is_bound = True
+                self.current_port = port
+            except:
+                self.is_bound = True
+
+        try:
+            while True:
+                data, _ = self.sock.recvfrom(4096)
+                decoded = data.decode()
+                if decoded != self.last_data:
+                    self.outputs["JSON Out"] = decoded
+                    self.last_data = decoded
+        except: pass
         
         return "Flow Out"
