@@ -11,6 +11,7 @@ class UIManager:
         self.window_tag = "PrimaryWindow"
         self.editor_tag = "node_editor"
         self.pin_label_map = {}  # UI 핀 ID와 노드 핀 이름 매핑
+        self.is_bulk_loading = False
 
     def initialize(self):
         dpg.create_context()
@@ -69,10 +70,10 @@ class UIManager:
                             dpg.add_text("File Manager", color=(0,255,255))
                             with dpg.group(horizontal=True):
                                 dpg.add_text("Save:"); dpg.add_input_text(tag="file_name_input", default_value="my_graph", width=120)
-                                dpg.add_button(label="SAVE", callback=lambda: GraphSerializer.save_graph(dpg.get_value("file_name_input"), self.engine), width=60)
+                                dpg.add_button(label="SAVE", callback=self.handle_save_graph, width=60)
                                 dpg.add_spacer(width=20)
                                 dpg.add_text("Load:"); dpg.add_combo(items=GraphSerializer.get_save_files(), tag="file_list_combo", width=120)
-                                dpg.add_button(label="LOAD", callback=lambda: GraphSerializer.load_graph(dpg.get_value("file_list_combo"), self.engine, self), width=60)
+                                dpg.add_button(label="LOAD", callback=self.handle_load_graph, width=60)
                                 dpg.add_button(label="Refresh", callback=lambda: dpg.configure_item("file_list_combo", items=GraphSerializer.get_save_files()), width=60)
                         with dpg.child_window(width=400, height=130, border=True):
                             dpg.add_text("Network Info", color=(100,200,255))
@@ -158,6 +159,8 @@ class UIManager:
         self.engine.add_link(lid, src_node, src_label, dst_node, dst_label)
 
     def delink_callback(self, sender, app_data):
+        if self.is_bulk_loading:
+            return
         lid = app_data
         if dpg.does_item_exist(lid):
             dpg.delete_item(lid)
@@ -196,6 +199,24 @@ class UIManager:
         else:
             self.engine.stop()
             dpg.set_item_label(sender, "RUN SCRIPT")
+
+    def handle_save_graph(self, sender=None, app_data=None):
+        filename = dpg.get_value("file_name_input") if dpg.does_item_exist("file_name_input") else "my_graph"
+        GraphSerializer.save_graph(filename, self.engine)
+        if dpg.does_item_exist("file_list_combo"):
+            dpg.configure_item("file_list_combo", items=GraphSerializer.get_save_files())
+
+    def handle_load_graph(self, sender=None, app_data=None):
+        filename = dpg.get_value("file_list_combo") if dpg.does_item_exist("file_list_combo") else ""
+        if not filename:
+            return
+
+        # Answer_code와 동일하게 로드 전 실행 상태를 멈추고 진행합니다.
+        self.engine.stop()
+        if dpg.does_item_exist("btn_run"):
+            dpg.set_item_label("btn_run", "RUN SCRIPT")
+
+        GraphSerializer.load_graph(filename, self.engine, self)
 
     def sync_ui_to_nodes(self):
         # 노드 UI 위젯 값을 매 프레임 노드 런타임 상태로 동기화합니다.

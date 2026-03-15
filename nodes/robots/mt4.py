@@ -46,6 +46,57 @@ def send_unity_ui(msg_type, extra_data):
         pass
 
 
+def parse_unity_packet(raw_data: str):
+    if not raw_data:
+        return None
+
+    text = str(raw_data).strip()
+    if not text:
+        return None
+
+    # 1) 기본 JSON 포맷 우선 처리
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    # 2) 레거시 키-값 문자열 포맷(type:MOVE,extra:... / x:...,y:...)
+    parsed = {}
+    for part in text.split(','):
+        if ':' not in part:
+            continue
+        key, value = part.split(':', 1)
+        parsed[key.strip().lower()] = value.strip()
+
+    if not parsed:
+        return None
+
+    result = {"type": parsed.get("type", "MOVE")}
+
+    for axis in ("x", "y", "z", "roll", "gripper"):
+        if axis in parsed:
+            try:
+                result[axis] = float(parsed[axis])
+            except Exception:
+                pass
+
+    extra = parsed.get("extra")
+    if extra is not None:
+        extra_text = extra.strip()
+        try:
+            extra_obj = json.loads(extra_text)
+            if isinstance(extra_obj, dict):
+                result.update(extra_obj)
+            else:
+                result["val"] = str(extra_obj)
+        except Exception:
+            result["val"] = extra_text
+
+    return result
+
+
 # ==========================================
 # 🤖 1. MT4 메인 드라이버 노드 (하드웨어 통신 전담)
 # ==========================================
@@ -296,8 +347,11 @@ class MT4UnityNode(BaseNode):
         else:
             if is_new_msg:
                 try:
-                    parsed = json.loads(raw_json)
-                    msg_type = parsed.get("type", "MOVE")
+                    parsed = parse_unity_packet(raw_json)
+                    if not isinstance(parsed, dict):
+                        return "Flow Out"
+
+                    msg_type = str(parsed.get("type", "MOVE")).upper()
                     if msg_type == "CMD":
                         val = parsed.get("val", "")
                         if val == "COLLISION":
@@ -330,6 +384,27 @@ class MT4UnityNode(BaseNode):
                         if 'y' in parsed: self.outputs["Target Z"] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
                         if 'roll' in parsed: self.outputs["Target Roll"] = float(parsed['roll'])
                         if 'gripper' in parsed: self.outputs["Target Grip"] = float(parsed['gripper']) 
+                    elif msg_type in ("KEY", "DIRECTION") and time.time() > mt4_collision_lock_until:
+                        # Unity 키 이벤트 포맷에 대한 호환 처리
+                        key = str(parsed.get("val", "")).upper()
+                        step = 10.0
+                        r_step = 5.0
+                        if key in ("UP", "W"):
+                            self.outputs["Target X"] = mt4_target_goal['x'] + step
+                        elif key in ("DOWN", "S"):
+                            self.outputs["Target X"] = mt4_target_goal['x'] - step
+                        elif key in ("LEFT", "A"):
+                            self.outputs["Target Y"] = mt4_target_goal['y'] + step
+                        elif key in ("RIGHT", "D"):
+                            self.outputs["Target Y"] = mt4_target_goal['y'] - step
+                        elif key == "Q":
+                            self.outputs["Target Z"] = mt4_target_goal['z'] + step
+                        elif key == "E":
+                            self.outputs["Target Z"] = mt4_target_goal['z'] - step
+                        elif key in ("Z", "ROLL+"):
+                            self.outputs["Target Roll"] = mt4_target_goal['roll'] + r_step
+                        elif key in ("X", "ROLL-"):
+                            self.outputs["Target Roll"] = mt4_target_goal['roll'] - r_step
                 except: pass 
         return "Flow Out"
     
@@ -480,6 +555,7 @@ class UDPReceiverNode(BaseNode):
                 "x": -mt4_current_pos['y'] / 1000.0,
                 "y": (mt4_current_pos['z'] - MT4_Z_OFFSET) / 1000.0,
                 "z": mt4_current_pos['x'] / 1000.0,
+                "roll": mt4_current_pos['roll'],
                 "gripper": mt4_current_pos['gripper'],
                 "status": "Running"
             }

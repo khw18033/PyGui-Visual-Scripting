@@ -61,18 +61,23 @@ class GraphSerializer:
         if not filename.endswith(".json"): filename += ".json"
         filepath = os.path.join(cls.SAVE_DIR, filename)
         if not os.path.exists(filepath): return
-        
-        # 기존 화면과 엔진 데이터 초기화
-        for link in list(engine.links):
-            if dpg.does_item_exist(link['id']):
-                dpg.delete_item(link['id'])
-        for nid in list(engine.nodes.keys()):
-            if dpg.does_item_exist(nid):
-                dpg.delete_item(nid)
-        engine.nodes.clear(); engine.links.clear()
-        ui_manager.pin_label_map.clear()
-        
+
         try:
+            ui_manager.is_bulk_loading = True
+
+            # Answer_code 방식과 유사하게 링크/노드를 순차 삭제합니다.
+            for link in list(engine.links):
+                lid = link.get('id')
+                if lid is not None and dpg.does_item_exist(lid):
+                    dpg.delete_item(lid)
+
+            for nid in list(engine.nodes.keys()):
+                if dpg.does_item_exist(nid):
+                    dpg.delete_item(nid)
+
+            engine.nodes.clear(); engine.links.clear()
+            ui_manager.pin_label_map.clear()
+
             with open(filepath, 'r') as f: data = json.load(f)
             
             id_map = {}
@@ -88,6 +93,9 @@ class GraphSerializer:
                         dpg.set_item_pos(node.node_id, n_data.get("pos", [0, 0]))
                     engine.add_node(node)
                     
+            restored_links = 0
+            skipped_links = 0
+
             for l_data in data.get("links", []):
                 saved_src_node = str(l_data.get("src_node", ""))
                 saved_dst_node = str(l_data.get("dst_node", ""))
@@ -124,8 +132,15 @@ class GraphSerializer:
                     if dpg.does_item_exist(src_tag) and dpg.does_item_exist(dst_tag):
                         lid = dpg.add_node_link(src_tag, dst_tag, parent=ui_manager.editor_tag)
                         engine.add_link(lid, src_node_id, src_pin, dst_node_id, dst_pin)
-            print(f"[Serializer] Loaded: {filename}")
+                        restored_links += 1
+                    else:
+                        skipped_links += 1
+                else:
+                    skipped_links += 1
+            print(f"[Serializer] Loaded: {filename} (links: restored={restored_links}, skipped={skipped_links})")
         except Exception as e: print(f"[Serializer] Load Error: {e}")
+        finally:
+            ui_manager.is_bulk_loading = False
 
     @classmethod
     def get_save_files(cls):
