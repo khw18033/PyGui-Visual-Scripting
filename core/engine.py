@@ -16,28 +16,33 @@ class ExecutionEngine:
         print("[Engine] Data-Driven Execution Engine Initialized.")
 
     def add_node(self, node: Any):
+        # 🚨 DPG ID 불일치 방지: 노드 등록 시 무조건 문자열로 통일
+        node.node_id = str(node.node_id)
         self.nodes[node.node_id] = node
 
-    def remove_node(self, node_id: str):
+    def remove_node(self, node_id: Any):
         """엔진에서 노드와 관련된 모든 연결 데이터를 삭제합니다."""
-        if node_id in self.nodes:
-            del self.nodes[node_id]
-            # 해당 노드에 연결되어 있던 모든 선(Link) 정보도 청소
-            self.links = [link for link in self.links if link["src_id"] != node_id and link["dst_id"] != node_id]
+        str_nid = str(node_id)
+        keys_to_delete = [k for k in self.nodes.keys() if str(k) == str_nid]
+        for k in keys_to_delete: 
+            del self.nodes[k]
+            
+        # 해당 노드에 연결되어 있던 모든 선(Link) 정보도 안전하게 청소
+        self.links = [link for link in self.links if str(link["src_id"]) != str_nid and str(link["dst_id"]) != str_nid]
 
-    def add_link(self, link_id: str, src_id: str, src_pin: str, dst_id: str, dst_pin: str):
+    def add_link(self, link_id: Any, src_id: Any, src_pin: Any, dst_id: Any, dst_pin: Any):
         """UI에서 넘어온 링크 ID를 포함하여 연결 데이터를 등록합니다."""
         self.links.append({
-            "id": link_id,
-            "src_id": src_id,
-            "src_pin": src_pin,
-            "dst_id": dst_id,
-            "dst_pin": dst_pin
+            "id": str(link_id),
+            "src_id": str(src_id),
+            "src_pin": str(src_pin),
+            "dst_id": str(dst_id),
+            "dst_pin": str(dst_pin)
         })
 
-    def remove_link(self, link_id: str):
+    def remove_link(self, link_id: Any):
         """지정된 ID의 연결선 데이터를 파이프라인에서 삭제합니다."""
-        self.links = [link for link in self.links if link.get("id") != link_id]
+        self.links = [link for link in self.links if str(link.get("id")) != str(link_id)]
 
     def tick(self):
         if self.state != EngineState.RUNNING:
@@ -81,8 +86,9 @@ class ExecutionEngine:
             next_node = None
             if next_pin:
                 for link in self.links:
-                    if link['src_id'] == current_node.node_id and link['src_pin'] == next_pin:
-                        next_node = self.nodes.get(link['dst_id'])
+                    # 🚨 어떤 타입이 들어와도 완벽하게 노드를 찾아냅니다.
+                    if str(link['src_id']) == str(current_node.node_id) and link['src_pin'] == next_pin:
+                        next_node = self.nodes.get(link['dst_id']) or self.nodes.get(str(link['dst_id']))
                         break
             
             current_node = next_node
@@ -90,8 +96,9 @@ class ExecutionEngine:
                 
     def _transfer_data(self):
         for link in list(self.links):
-            src_node = self.nodes.get(link["src_id"])
-            dst_node = self.nodes.get(link["dst_id"])
+            # 🚨 어떤 타입이 들어와도 완벽하게 노드를 찾아냅니다.
+            src_node = self.nodes.get(link["src_id"]) or self.nodes.get(str(link["src_id"]))
+            dst_node = self.nodes.get(link["dst_id"]) or self.nodes.get(str(link["dst_id"]))
 
             if src_node and dst_node:
                 if link["src_pin"] in src_node.outputs:

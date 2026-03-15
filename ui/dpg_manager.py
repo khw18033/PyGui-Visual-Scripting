@@ -167,20 +167,19 @@ class UIManager:
         self.engine.remove_link(lid)
 
     def delete_selection(self, sender, app_data):
-        selected_links = list(dpg.get_selected_links(self.editor_tag) or [])
-        selected_nodes = list(dpg.get_selected_nodes(self.editor_tag) or [])
+        selected_links = list(dpg.get_selected_links(self.editor_tag))
+        selected_nodes = list(dpg.get_selected_nodes(self.editor_tag))
 
         for lid in selected_links:
-            if dpg.does_item_exist(lid):
-                dpg.delete_item(lid)
+            if dpg.does_item_exist(lid): dpg.delete_item(lid)
             self.engine.remove_link(lid)
 
-        # 🚨 핵심 수정: DPG의 int ID를 str로 명시적 변환하여 엔진 데이터와 완벽 매칭
+        # 🚨 핵심: DPG의 정수 ID를 무조건 문자열로 취급하여 안전하게 비교
         for nid in selected_nodes:
             str_nid = str(nid)
             connected = [
                 link for link in list(self.engine.links)
-                if link["src_id"] == str_nid or link["dst_id"] == str_nid
+                if str(link["src_id"]) == str_nid or str(link["dst_id"]) == str_nid
             ]
             for link in connected:
                 lid = link.get("id")
@@ -188,8 +187,7 @@ class UIManager:
                     dpg.delete_item(lid)
                 self.engine.remove_link(lid)
 
-            if dpg.does_item_exist(nid):
-                dpg.delete_item(nid)
+            if dpg.does_item_exist(nid): dpg.delete_item(nid)
             self.engine.remove_node(str_nid)
 
     def toggle_run(self, sender, app_data):

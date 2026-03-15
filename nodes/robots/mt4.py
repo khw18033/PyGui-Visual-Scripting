@@ -237,9 +237,17 @@ class MT4BacklashNode(BaseNode):
         self.outputs["Z Out"] = self.internal_pos[2]
         return None
 
-# ==========================================
-# [수정 2] MT4 유니티 노드
-# ==========================================
+# 🚨 레거시 키/값 문자열 파서 추가
+def parse_unity_packet(raw_data):
+    try: return json.loads(raw_data)
+    except: pass
+    parsed = {}
+    for part in raw_data.split(','):
+        if ':' in part:
+            k, v = part.split(':', 1)
+            parsed[k.strip()] = v.strip()
+    return parsed
+
 class MT4UnityNode(BaseNode):
     def __init__(self, node_id: str):
         super().__init__(node_id, "Unity Logic (MT4)", "MT4_UNITY")
@@ -261,49 +269,59 @@ class MT4UnityNode(BaseNode):
     def execute(self):
         global mt4_collision_lock_until, mt4_target_goal, mt4_mode
         raw_json = self.inputs.get("JSON", "")
-        
         is_new_msg = (raw_json and raw_json != self.last_processed_json)
-        if is_new_msg: self.last_processed_json = raw_json
-
-        if (time.time() < mt4_manual_override_until) or mt4_mode.get("playing", False):
-            self.outputs["Target X"] = mt4_target_goal['x']; self.outputs["Target Y"] = mt4_target_goal['y']
-            self.outputs["Target Z"] = mt4_target_goal['z']; self.outputs["Target Roll"] = mt4_target_goal['roll']
-            self.outputs["Target Grip"] = mt4_target_goal['gripper']
-        else:
-            if is_new_msg:
-                try:
-                    parsed = json.loads(raw_json)
-                    msg_type = parsed.get("type", "MOVE")
-                    if msg_type == "CMD":
-                        val = parsed.get("val", "")
-                        if val == "COLLISION":
-                            mt4_collision_lock_until = time.time() + 2.0 
-                            if ser and ser.is_open: ser.write(b"!")
-                            send_unity_ui("STATUS", "충돌 감지! 로봇 긴급 정지")
-                        elif val == "START_REC":
-                            if not mt4_mode["recording"]: toggle_mt4_record()
-                        elif val.startswith("STOP_REC:"):
-                            fname = val.split(":")[1]
-                            if mt4_mode["recording"]: toggle_mt4_record(custom_name=fname)
-                        elif val == "REQ_FILES": send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
-                        elif val.startswith("PLAY:"):
-                            fname = val.split(":")[1]; play_mt4_path(filename=fname)
-                        elif val == "LOG_SUCCESS":
-                            mt4_log_event_queue.append("SUCCESS"); send_unity_ui("LOG", "<color=green>SUCCESS 기록 완료</color>")
-                        elif val == "LOG_FAIL":
-                            mt4_log_event_queue.append("FAIL"); send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
-                    elif msg_type == "MOVE" and time.time() > mt4_collision_lock_until:
-                        if 'z' in parsed: self.outputs["Target X"] = float(parsed['z']) * 1000.0
-                        if 'x' in parsed: self.outputs["Target Y"] = -float(parsed['x']) * 1000.0
-                        if 'y' in parsed: self.outputs["Target Z"] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
-                        if 'roll' in parsed: self.outputs["Target Roll"] = float(parsed['roll'])
-                        if 'gripper' in parsed: self.outputs["Target Grip"] = float(parsed['gripper']) 
-                except: pass 
+        
+        if is_new_msg:
+            self.last_processed_json = raw_json
+            parsed = parse_unity_packet(raw_json)
+            msg_type = parsed.get("type", "MOVE")
+            
+            if msg_type == "CMD":
+                val = parsed.get("val", "")
+                if val == "COLLISION":
+                    mt4_collision_lock_until = time.time() + 2.0 
+                    if ser and ser.is_open: ser.write(b"!")
+                    send_unity_ui("STATUS", "충돌 감지! 로봇 긴급 정지")
+                elif val == "START_REC":
+                    if not mt4_mode["recording"]: toggle_mt4_record()
+                elif val.startswith("STOP_REC:"):
+                    if mt4_mode["recording"]: toggle_mt4_record(custom_name=val.split(":")[1])
+                elif val == "REQ_FILES": send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
+                elif val.startswith("PLAY:"): play_mt4_path(filename=val.split(":")[1])
+                
+            elif msg_type == "MOVE" and time.time() > mt4_collision_lock_until:
+                if 'z' in parsed: self.outputs["Target X"] = float(parsed['z']) * 1000.0
+                if 'x' in parsed: self.outputs["Target Y"] = -float(parsed['x']) * 1000.0
+                if 'y' in parsed: self.outputs["Target Z"] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
+                if 'roll' in parsed: self.outputs["Target Roll"] = float(parsed['roll'])
+                if 'gripper' in parsed: self.outputs["Target Grip"] = float(parsed['gripper']) 
+                
+            # 🚨 유니티 방향키(KEY/DIRECTION) 입력 완벽 지원
+            elif msg_type in ["KEY", "DIRECTION"] and time.time() > mt4_collision_lock_until:
+                val = parsed.get("val", "").upper()
+                step = 10.0; r_step = 5.0
+                nx = self.outputs.get("Target X", mt4_current_pos['x'])
+                ny = self.outputs.get("Target Y", mt4_current_pos['y'])
+                nz = self.outputs.get("Target Z", mt4_current_pos['z'])
+                nr = self.outputs.get("Target Roll", mt4_current_pos['roll'])
+                
+                if val in ["UP", "W"]: nx += step
+                elif val in ["DOWN", "S"]: nx -= step
+                elif val in ["LEFT", "A"]: ny += step
+                elif val in ["RIGHT", "D"]: ny -= step
+                elif val in ["Q"]: nz += step
+                elif val in ["E"]: nz -= step
+                elif val in ["ROLL_UP", "Z"]: nr += r_step
+                elif val in ["ROLL_DOWN", "X"]: nr -= r_step
+                
+                self.outputs["Target X"] = nx; self.outputs["Target Y"] = ny
+                self.outputs["Target Z"] = nz; self.outputs["Target Roll"] = nr
 
         self.outputs["Flow Out"] = True
         return "Flow Out"
-    
-from core.input_manager import global_input_manager  # InputManager 수입
+        
+
+from core.input_manager import global_input_manager
 
 # ==========================================
 # [수정 3] 키보드 제어 노드
@@ -329,8 +347,6 @@ class MT4KeyboardNode(BaseNode):
     def get_settings_schema(self): return [("step_size", 10.0), ("grip_step", 5.0), ("roll_step", 5.0)]
 
     def execute(self):
-        global mt4_target_goal, mt4_manual_override_until
-        
         if time.time() - self.last_input_time > self.cooldown:
             dx = dy = dz = dg = dr = 0
             if global_input_manager.get_key('W'): dx = 1
@@ -345,18 +361,16 @@ class MT4KeyboardNode(BaseNode):
             if global_input_manager.get_key('X'): dr = -1
 
             if any([dx, dy, dz, dg, dr]):
-                mt4_manual_override_until = time.time() + 0.5
                 self.last_input_time = time.time()
-                
                 step = float(self.settings.get("step_size", 10.0))
                 g_step = float(self.settings.get("grip_step", 5.0)); r_step = float(self.settings.get("roll_step", 5.0))
 
-                mt4_target_goal['x'] += dx * step; mt4_target_goal['y'] += dy * step; mt4_target_goal['z'] += dz * step
-                mt4_target_goal['gripper'] += dg * g_step; mt4_target_goal['roll'] += dr * r_step
-
-        self.outputs["Target X"] = mt4_target_goal['x']; self.outputs["Target Y"] = mt4_target_goal['y']
-        self.outputs["Target Z"] = mt4_target_goal['z']; self.outputs["Target Grip"] = mt4_target_goal['gripper']
-        self.outputs["Target Roll"] = mt4_target_goal['roll']
+                # 🚨 글로벌 변수 조작 금지! 순수하게 자신의 출력 포트 데이터만 누적하여 파이프라인으로 넘깁니다.
+                self.outputs["Target X"] = self.outputs.get("Target X", mt4_current_pos['x']) + (dx * step)
+                self.outputs["Target Y"] = self.outputs.get("Target Y", mt4_current_pos['y']) + (dy * step)
+                self.outputs["Target Z"] = self.outputs.get("Target Z", mt4_current_pos['z']) + (dz * step)
+                self.outputs["Target Grip"] = self.outputs.get("Target Grip", mt4_current_pos['gripper']) + (dg * g_step)
+                self.outputs["Target Roll"] = self.outputs.get("Target Roll", mt4_current_pos['roll']) + (dr * r_step)
 
         self.outputs["Flow Out"] = True
         return "Flow Out"
