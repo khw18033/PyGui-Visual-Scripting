@@ -1,70 +1,82 @@
 import time
+import threading
+import subprocess
 import dearpygui.dearpygui as dpg
 
 from ui.dpg_manager import UIManager
 from core.engine import ExecutionEngine
-from core.factory import NodeFactory
-
-# 👇 1. 새롭게 만든 전역(Global) 통역사를 불러옵니다.
 from core.input_manager import global_input_manager 
+
+# --- 배경 스레드에 필요한 기존 변수들 Import ---
+from nodes.robots.mt4 import mt4_dashboard, mt4_current_pos, init_mt4_serial, mt4_background_logger_thread
+
+sys_net_str = "Loading Network..."
+
+def network_monitor_thread():
+    global sys_net_str
+    while True:
+        try:
+            out = subprocess.check_output("ip -o -4 addr show", shell=True).decode('utf-8')
+            info = [f"[{p.split()[1]}] {p.split()[3].split('/')[0]}" for p in out.strip().split('\n') if ' lo ' not in p and len(p.split()) >= 4]
+            sys_net_str = "\n".join(info) if info else "Offline"
+        except: pass
+        time.sleep(2)
+
+def auto_reconnect_mt4_thread():
+    import os
+    while True:
+        if mt4_dashboard["hw_link"] != "Online" and os.path.exists('/dev/ttyUSB0'):
+            try: init_mt4_serial() 
+            except: pass
+        time.sleep(3)
 
 def main():
     print("[System] Visual Scripting Framework Booting...")
 
-    # 모듈 초기화
-    ui_manager = UIManager()
+    # 모듈 초기화 (엔진을 UI에 주입)
     engine = ExecutionEngine()
-
-    # UI 화면 띄우기
+    ui_manager = UIManager(engine)
     ui_manager.initialize()
 
-    # --- [테스트용 기본 노드 세팅] ---
-    print("[System] Setting up Default Nodes...")
-    
-    driver_node = NodeFactory.create_node("MT4_DRIVER")
-    sag_node = NodeFactory.create_node("MT4_SAG")
-    keyboard_node = NodeFactory.create_node("MT4_KEYBOARD") # 방금 만든 키보드 노드 띄우기
-    
-    if driver_node:
-        ui_manager.draw_node(driver_node)
-        engine.add_node(driver_node)
-        
-    if sag_node:
-        ui_manager.draw_node(sag_node)
-        engine.add_node(sag_node)
+    # 백그라운드 스레드 가동 (Answer_code.py와 100% 동일)
+    init_mt4_serial()
+    threading.Thread(target=auto_reconnect_mt4_thread, daemon=True).start()
+    threading.Thread(target=network_monitor_thread, daemon=True).start()
+    threading.Thread(target=mt4_background_logger_thread, daemon=True).start()
 
-    if keyboard_node:
-        ui_manager.draw_node(keyboard_node)
-        engine.add_node(keyboard_node)
-    # --------------------------------
-
-    # 메인 파이프라인 루프 준비
     last_logic_time = time.time()
-    LOGIC_RATE = 0.02  # 50Hz 엔진 업데이트 주기
+    LOGIC_RATE = 0.02  
 
     print("[System] Boot Complete. Entering Main Loop.")
-    
-    # 엔진 강제 시작 (테스트용)
     engine.start()
 
-    # GUI 창이 켜져 있는 동안 무한 반복
     while ui_manager.is_running():
         current_time = time.time()
         
+        # 1. MT4 Dashboard UI 실시간 갱신
+        if mt4_dashboard["last_pkt_time"] > 0: dpg.set_value("mt4_dash_status", f"Status: {mt4_dashboard['status']}")
+        if dpg.does_item_exist("mt4_dash_latency"): dpg.set_value("mt4_dash_latency", f"Latency: {mt4_dashboard.get('latency', 0.0):.1f} ms")
+        
+        dpg.set_value("mt4_x", f"X: {mt4_current_pos['x']:.1f}"); dpg.set_value("mt4_y", f"Y: {mt4_current_pos['y']:.1f}")
+        dpg.set_value("mt4_z", f"Z: {mt4_current_pos['z']:.1f}"); dpg.set_value("mt4_g", f"G: {mt4_current_pos['gripper']:.1f}")
+        if dpg.does_item_exist("mt4_r"): dpg.set_value("mt4_r", f"R: {mt4_current_pos['roll']:.1f}°")
+        
+        hw_status = mt4_dashboard.get('hw_link', "Offline")
+        dpg.set_value("mt4_dash_link", f"HW: {hw_status}")
+        if hw_status == "Online": dpg.configure_item("mt4_dash_link", color=(0,255,0))
+        elif hw_status == "Simulation": dpg.configure_item("mt4_dash_link", color=(255,200,0))
+        else: dpg.configure_item("mt4_dash_link", color=(255,0,0))
+        
+        if dpg.does_item_exist("sys_tab_net"): dpg.set_value("sys_tab_net", sys_net_str)
+
+        # 2. 메인 파이프라인 연산
         if current_time - last_logic_time > LOGIC_RATE:
-            
-            # 👇 2. 여기가 핵심입니다! 매 틱(0.02초)마다 키보드 상태를 읽어와 장부를 갱신합니다.
             global_input_manager.poll_inputs()
-            
-            # 준비된 노드들 연산(execute) 실행
             engine.tick()
-            
             last_logic_time = current_time
         
-        # UI 렌더링
         ui_manager.render_frame()
 
-    # 시스템 안전 종료
     engine.shutdown()
     ui_manager.cleanup()
     print("[System] Shutdown complete.")

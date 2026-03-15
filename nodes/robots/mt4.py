@@ -436,3 +436,111 @@ class UDPReceiverNode(BaseNode):
         except: pass
         
         return "Flow Out"
+    
+# ==========================================
+# 📊 MT4 Dashboard Callbacks & Threads (Answer_code.py 100% 이식)
+# ==========================================
+import dearpygui.dearpygui as dpg
+
+def mt4_manual_control_callback(sender, app_data, user_data):
+    global mt4_manual_override_until, mt4_target_goal, mt4_current_pos
+    mt4_manual_override_until = time.time() + 1.5
+    axis, step = user_data
+    mt4_target_goal[axis] = mt4_current_pos[axis] + step
+
+def mt4_move_to_coord_callback(sender, app_data, user_data):
+    global mt4_manual_override_until, mt4_target_goal
+    mt4_manual_override_until = time.time() + 2.0
+    mt4_target_goal['x'] = float(dpg.get_value("input_x"))
+    mt4_target_goal['y'] = float(dpg.get_value("input_y"))
+    mt4_target_goal['z'] = float(dpg.get_value("input_z"))
+    mt4_target_goal['gripper'] = float(dpg.get_value("input_g"))
+    if dpg.does_item_exist("input_r"): mt4_target_goal['roll'] = float(dpg.get_value("input_r"))
+
+def toggle_mt4_record(custom_name=None):
+    global mt4_record_f, mt4_record_writer, mt4_record_temp_name
+    
+    def get_mt4_paths():
+        if not os.path.exists("path_record"): return []
+        return [f for f in os.listdir("path_record") if f.endswith(".csv")]
+
+    if mt4_mode["recording"]:
+        mt4_mode["recording"] = False
+        if mt4_record_f: mt4_record_f.close()
+        if not custom_name and dpg.does_item_exist("path_name_input"): custom_name = dpg.get_value("path_name_input")
+        if custom_name and mt4_record_temp_name:
+            if not custom_name.endswith(".csv"): custom_name += ".csv"
+            final_path = os.path.join("path_record", custom_name)
+            try: os.rename(mt4_record_temp_name, final_path)
+            except: pass
+        dpg.set_item_label("btn_mt4_record", "Start Recording")
+        if dpg.does_item_exist("combo_mt4_path"): dpg.configure_item("combo_mt4_path", items=get_mt4_paths())
+    else:
+        mt4_mode["recording"] = True
+        os.makedirs("path_record", exist_ok=True)
+        fname = os.path.join("path_record", f"path_{time.strftime('%Y%m%d_%H%M%S')}.csv")
+        mt4_record_temp_name = fname
+        mt4_record_f = open(fname, 'w', newline='')
+        mt4_record_writer = csv.writer(mt4_record_f)
+        mt4_record_writer.writerow(['x', 'y', 'z', 'roll','gripper'])
+        dpg.set_item_label("btn_mt4_record", "Stop Recording")
+
+def play_mt4_path(sender=None, app_data=None, user_data=None, filename=None):
+    if not filename: filename = dpg.get_value("combo_mt4_path")
+    if not filename or mt4_mode["playing"] or time.time() < mt4_collision_lock_until: return
+    filepath = os.path.join("path_record", filename)
+    if os.path.exists(filepath): 
+        import threading
+        threading.Thread(target=play_mt4_path_thread, args=(filepath,), daemon=True).start()
+
+def play_mt4_path_thread(filepath):
+    global mt4_mode, mt4_target_goal, mt4_manual_override_until
+    mt4_mode["playing"] = True
+    mt4_manual_override_until = time.time() + 86400 
+    try:
+        with open(filepath, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if time.time() < mt4_collision_lock_until or not mt4_mode["playing"]: break
+                mt4_target_goal['x'] = float(row['x']); mt4_target_goal['y'] = float(row['y'])
+                mt4_target_goal['z'] = float(row['z']); mt4_target_goal['gripper'] = float(row['gripper'])
+                mt4_target_goal['roll'] = float(row.get('roll', 0.0))
+                time.sleep(0.05)
+    except Exception: pass
+    mt4_mode["playing"] = False
+    mt4_manual_override_until = time.time()
+
+def mt4_background_logger_thread():
+    global mt4_record_writer
+    os.makedirs("result_log", exist_ok=True)
+    log_filename = os.path.join("result_log", f"mt4_log_{time.strftime('%Y%m%d_%H%M%S')}.csv")
+    with open(log_filename, 'w', newline='') as mt4_log_f:
+        mt4_log_writer = csv.writer(mt4_log_f)
+        mt4_log_writer.writerow(['timestamp', 'event', 'target_x', 'target_y', 'target_z', 'target_r', 'target_g', 'current_x', 'current_y', 'current_z', 'current_r', 'current_g'])
+        while True:
+            time.sleep(0.05)
+            event_str = "TICK"
+            if mt4_log_event_queue: event_str = mt4_log_event_queue.popleft()
+            
+            mt4_log_writer.writerow([
+                time.time(), event_str, 
+                mt4_target_goal['x'], mt4_target_goal['y'], mt4_target_goal['z'], mt4_target_goal['roll'], mt4_target_goal['gripper'], 
+                mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['roll'], mt4_current_pos['gripper']
+            ])
+            mt4_log_f.flush()
+            
+            if mt4_mode["recording"] and mt4_record_writer:
+                mt4_record_writer.writerow((mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['roll'], mt4_current_pos['gripper']))
+                mt4_record_f.flush()
+
+def init_mt4_serial():
+    global ser
+    try:
+        import serial
+        ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=0.05)
+        mt4_dashboard["hw_link"] = "Online"
+        time.sleep(2); ser.write(b"$H\r\n"); time.sleep(15); ser.write(b"M20\r\n"); ser.write(b"G90\r\n"); ser.write(b"G1 F2000\r\n"); time.sleep(1)
+        ser.write(b"G0 X200 Y0 Z120 F2000\r\n"); ser.write(b"M3 S40\r\n") 
+    except Exception: 
+        mt4_dashboard["hw_link"] = "Simulation"
+        ser = None
