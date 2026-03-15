@@ -17,7 +17,7 @@ class GraphSerializer:
             pos = dpg.get_item_pos(nid) or [0,0]
             data["nodes"].append({
                 "type": node.type_str, "id": nid, "pos": pos, 
-                "settings": getattr(node, 'state', {})
+                "settings": getattr(node, 'settings', {})
             })
         
         for link in engine.links:
@@ -38,9 +38,14 @@ class GraphSerializer:
         if not os.path.exists(filepath): return
         
         # 기존 화면과 엔진 데이터 초기화
-        for link in engine.links: dpg.delete_item(link['id'])
-        for nid in engine.nodes: dpg.delete_item(nid)
+        for link in list(engine.links):
+            if dpg.does_item_exist(link['id']):
+                dpg.delete_item(link['id'])
+        for nid in list(engine.nodes.keys()):
+            if dpg.does_item_exist(nid):
+                dpg.delete_item(nid)
         engine.nodes.clear(); engine.links.clear()
+        ui_manager.pin_label_map.clear()
         
         try:
             with open(filepath, 'r') as f: data = json.load(f)
@@ -50,17 +55,24 @@ class GraphSerializer:
                 node = NodeFactory.create_node(n_data["type"], n_data["id"])
                 if node:
                     id_map[n_data["id"]] = node.node_id
-                    if hasattr(node, 'state'): node.state.update(n_data.get("settings", {}))
+                    if hasattr(node, 'settings'):
+                        node.settings.update(n_data.get("settings", {}))
                     ui_manager.draw_node(node)
                     dpg.set_item_pos(node.node_id, n_data["pos"])
                     engine.add_node(node)
                     
             for l_data in data.get("links", []):
                 if l_data["src_node"] in id_map and l_data["dst_node"] in id_map:
-                    # 저장된 순정 라벨(Target X 등)을 DPG 태그명으로 복원하여 선을 그립니다.
-                    src_tag = f"{id_map[l_data['src_node']]}_{l_data['src_pin']}"
-                    dst_tag = f"{id_map[l_data['dst_node']]}_{l_data['dst_pin']}"
-                    ui_manager.link_callback(ui_manager.editor_tag, [src_tag, dst_tag])
+                    src_node_id = id_map[l_data['src_node']]
+                    dst_node_id = id_map[l_data['dst_node']]
+                    src_pin = l_data['src_pin']
+                    dst_pin = l_data['dst_pin']
+                    src_tag = f"{src_node_id}_{src_pin}"
+                    dst_tag = f"{dst_node_id}_{dst_pin}"
+
+                    if dpg.does_item_exist(src_tag) and dpg.does_item_exist(dst_tag):
+                        lid = dpg.add_node_link(src_tag, dst_tag, parent=ui_manager.editor_tag)
+                        engine.add_link(lid, src_node_id, src_pin, dst_node_id, dst_pin)
             print(f"[Serializer] Loaded: {filename}")
         except Exception as e: print(f"[Serializer] Load Error: {e}")
 

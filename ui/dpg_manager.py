@@ -159,15 +159,33 @@ class UIManager:
 
     def delink_callback(self, sender, app_data):
         lid = app_data
-        dpg.delete_item(lid)
+        if dpg.does_item_exist(lid):
+            dpg.delete_item(lid)
         self.engine.remove_link(lid)
 
     def delete_selection(self, sender, app_data):
-        for lid in dpg.get_selected_links(self.editor_tag):
-            dpg.delete_item(lid)
+        selected_links = list(dpg.get_selected_links(self.editor_tag))
+        selected_nodes = list(dpg.get_selected_nodes(self.editor_tag))
+
+        for lid in selected_links:
+            if dpg.does_item_exist(lid):
+                dpg.delete_item(lid)
             self.engine.remove_link(lid)
-        for nid in dpg.get_selected_nodes(self.editor_tag):
-            dpg.delete_item(nid)
+
+        # DPG 내부 상태 안정성을 위해 노드 삭제 전에 연결선을 명시적으로 정리합니다.
+        for nid in selected_nodes:
+            connected = [
+                link for link in list(self.engine.links)
+                if link["src_id"] == nid or link["dst_id"] == nid
+            ]
+            for link in connected:
+                lid = link.get("id")
+                if lid is not None and dpg.does_item_exist(lid):
+                    dpg.delete_item(lid)
+                self.engine.remove_link(lid)
+
+            if dpg.does_item_exist(nid):
+                dpg.delete_item(nid)
             self.engine.remove_node(nid)
 
     def toggle_run(self, sender, app_data):

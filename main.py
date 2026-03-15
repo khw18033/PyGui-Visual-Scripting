@@ -70,7 +70,14 @@ def main():
 
         # 2. 메인 파이프라인 연산
         if current_time - last_logic_time > LOGIC_RATE:
-            global_input_manager.poll_inputs()
+            has_keyboard_consumers = any(
+                node.type_str in ("MT4_KEYBOARD", "COND_KEY")
+                for node in engine.nodes.values()
+            )
+            if has_keyboard_consumers:
+                global_input_manager.poll_inputs()
+            else:
+                global_input_manager.clear_keys()
             engine.tick()
             last_logic_time = current_time
         

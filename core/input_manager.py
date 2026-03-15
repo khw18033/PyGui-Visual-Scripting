@@ -15,13 +15,17 @@ class InputManager:
         if not dpg.is_dearpygui_running():
             return
 
+        # 텍스트/숫자 입력 등 UI 편집 중에는 모든 제어 키를 무효화합니다.
+        if hasattr(dpg, "is_any_item_active") and dpg.is_any_item_active():
+            self.clear_keys()
+            return
+
         # ★ 타이핑 방지 로직: 텍스트나 숫자 입력창에 커서가 있으면 모든 키보드 입력을 무시합니다.
         focused_item = dpg.get_focused_item()
         if focused_item:
-            item_type = dpg.get_item_info(focused_item).get('type', '')
-            if "InputText" in item_type or "InputInt" in item_type or "InputFloat" in item_type:
-                for k in self.key_state.keys():
-                    self.key_state[k] = False
+            item_type = str(dpg.get_item_info(focused_item).get('type', ''))
+            if "Input" in item_type:
+                self.clear_keys()
                 return
 
         self.key_state['W'] = dpg.is_key_down(dpg.mvKey_W)
@@ -45,6 +49,10 @@ class InputManager:
         
         self.key_state['SPACE'] = dpg.is_key_down(dpg.mvKey_Spacebar)
         self.key_state['R'] = dpg.is_key_down(dpg.mvKey_R)
+
+    def clear_keys(self):
+        for key in self.key_state.keys():
+            self.key_state[key] = False
 
     def get_key(self, key_name: str) -> bool:
         return self.key_state.get(key_name.upper(), False)

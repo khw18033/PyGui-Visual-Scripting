@@ -253,7 +253,7 @@ class MT4UnityNode(BaseNode):
     def get_ui_schema(self): 
         # ★ 해결: 누락되었던 OUT_DATA (Target X~Grip) 핀들을 100% 복구했습니다.
         return [
-            ("IN_FLOW", "Flow In", None), ("IN_DATA", "JSON", ""),
+            ("IN_FLOW", "Flow In", None), ("IN_DATA", "JSON", None),
             ("OUT_DATA", "Target X", None), ("OUT_DATA", "Target Y", None), ("OUT_DATA", "Target Z", None),
             ("OUT_DATA", "Target Roll", None), ("OUT_DATA", "Target Grip", None), 
             ("OUT_FLOW", "Flow Out", None)
@@ -429,7 +429,8 @@ class UDPReceiverNode(BaseNode):
                 self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.sock.setblocking(False)
                 self.sock.bind(('0.0.0.0', port))
                 self.is_bound = True; self.current_port = port
-            except: self.is_bound = True
+            except:
+                self.is_bound = False
 
         try:
             while True:

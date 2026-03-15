@@ -47,12 +47,14 @@ class ExecutionEngine:
         self._transfer_data()
 
         # 2. 노드 실행 조건 평가 및 실행
-        for node_id, node in self.nodes.items():
+        for node_id, node in list(self.nodes.items()):
+            if node_id not in self.nodes:
+                continue
             if node.is_ready():
                 node.execute()
                 
     def _transfer_data(self):
-        for link in self.links:
+        for link in list(self.links):
             src_node = self.nodes.get(link["src_id"])
             dst_node = self.nodes.get(link["dst_id"])
 
