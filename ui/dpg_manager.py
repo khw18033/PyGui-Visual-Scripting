@@ -2,7 +2,8 @@ import dearpygui.dearpygui as dpg
 from typing import Any
 from core.factory import NodeFactory
 from core.serializer import GraphSerializer
-from nodes.robots.mt4 import mt4_manual_control_callback, mt4_move_to_coord_callback, toggle_mt4_record, play_mt4_path
+# 기존 맨 윗줄 import에 mt4_homing_callback을 껴 넣어주세요.
+from nodes.robots.mt4 import mt4_manual_control_callback, mt4_move_to_coord_callback, toggle_mt4_record, play_mt4_path, mt4_homing_callback
 
 class UIManager:
     def __init__(self, engine):
@@ -48,6 +49,7 @@ class UIManager:
                                 dpg.add_text("R"); dpg.add_input_int(tag="input_r", width=50, default_value=0, step=0)
                             with dpg.group(horizontal=True):
                                 dpg.add_button(label="Move", width=100, callback=mt4_move_to_coord_callback)
+                                dpg.add_button(label="Homing", width=100, callback=mt4_homing_callback)
                         with dpg.child_window(width=150, height=130, border=True):
                             dpg.add_text("Coords", color=(0,255,255))
                             dpg.add_text("X: 0", tag="mt4_x"); dpg.add_text("Y: 0", tag="mt4_y")
@@ -87,6 +89,8 @@ class UIManager:
                     dpg.add_text("Adv. Tools:", color=(255,200,0))
                     for n in ["MT4_KEYBOARD", "MT4_UNITY", "UDP_RECV", "MT4_SAG", "MT4_CALIB", "MT4_TOOLTIP", "MT4_BACKLASH"]:
                         dpg.add_button(label=n.replace("MT4_", ""), callback=lambda s,a,u: self.create_and_draw(u), user_data=n)
+                    dpg.add_spacer(width=30)
+                    dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=self.toggle_run, width=150)
                 
             # 3. 메인 노드 에디터
             with dpg.node_editor(tag=self.editor_tag, callback=self.link_callback, delink_callback=self.delink_callback): pass 
@@ -147,6 +151,17 @@ class UIManager:
             dpg.delete_item(nid)
             self.engine.remove_node(nid)
 
+    def toggle_run(self, sender, app_data):
+        """엔진의 실행/정지 상태를 토글하는 콜백"""
+        if dpg.get_item_label(sender) == "RUN SCRIPT":
+            self.engine.start()
+            dpg.set_item_label(sender, "STOP SCRIPT")
+        else:
+            self.engine.stop()
+            dpg.set_item_label(sender, "RUN SCRIPT")
+
     def render_frame(self): dpg.render_dearpygui_frame()
     def is_running(self): return dpg.is_dearpygui_running()
     def cleanup(self): dpg.destroy_context()
+
+    

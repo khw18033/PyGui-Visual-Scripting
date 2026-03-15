@@ -2,20 +2,27 @@ import dearpygui.dearpygui as dpg
 
 class InputManager:
     def __init__(self):
-        # Roll(회전) 조작용 Z, X 키 추가!
         self.key_state = {
             'W': False, 'A': False, 'S': False, 'D': False,
             'UP': False, 'DOWN': False, 'LEFT': False, 'RIGHT': False,
             'Q': False, 'E': False, 
             'U': False, 'J': False,  
-            'Z': False, 'X': False,  # <- 추가된 부분
+            'Z': False, 'X': False,  
             'SPACE': False, 'R': False
         }
-        print("[InputManager] Initialized.")
 
     def poll_inputs(self):
         if not dpg.is_dearpygui_running():
             return
+
+        # ★ 타이핑 방지 로직: 텍스트나 숫자 입력창에 커서가 있으면 모든 키보드 입력을 무시합니다.
+        focused_item = dpg.get_focused_item()
+        if focused_item:
+            item_type = dpg.get_item_info(focused_item).get('type', '')
+            if "InputText" in item_type or "InputInt" in item_type or "InputFloat" in item_type:
+                for k in self.key_state.keys():
+                    self.key_state[k] = False
+                return
 
         self.key_state['W'] = dpg.is_key_down(dpg.mvKey_W)
         self.key_state['A'] = dpg.is_key_down(dpg.mvKey_A)
@@ -33,7 +40,6 @@ class InputManager:
         self.key_state['U'] = dpg.is_key_down(dpg.mvKey_U)
         self.key_state['J'] = dpg.is_key_down(dpg.mvKey_J)
         
-        # Roll(회전) 제어용 Z, X 상태 스캔
         self.key_state['Z'] = dpg.is_key_down(dpg.mvKey_Z)
         self.key_state['X'] = dpg.is_key_down(dpg.mvKey_X)
         
@@ -43,4 +49,5 @@ class InputManager:
     def get_key(self, key_name: str) -> bool:
         return self.key_state.get(key_name.upper(), False)
 
+# 전역 인스턴스
 global_input_manager = InputManager()

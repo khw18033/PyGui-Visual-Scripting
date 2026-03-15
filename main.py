@@ -48,7 +48,6 @@ def main():
     LOGIC_RATE = 0.02  
 
     print("[System] Boot Complete. Entering Main Loop.")
-    engine.start()
 
     while ui_manager.is_running():
         current_time = time.time()
