@@ -249,18 +249,18 @@ class MT4UnityNode(BaseNode):
     def __init__(self, node_id: str):
         super().__init__(node_id, "Unity Logic (MT4)", "MT4_UNITY")
         self.last_processed_json = ""
-
-    def get_ui_schema(self):
+        
+    def get_ui_schema(self): 
+        # ★ 해결: 누락되었던 OUT_DATA (Target X~Grip) 핀들을 100% 복구했습니다.
         return [
-            ("IN_FLOW", "Flow In", None),
-            ("IN_DATA", "JSON", ""),
+            ("IN_FLOW", "Flow In", None), ("IN_DATA", "JSON", ""),
             ("OUT_DATA", "Target X", None), ("OUT_DATA", "Target Y", None), ("OUT_DATA", "Target Z", None),
-            ("OUT_DATA", "Target Roll", None), ("OUT_DATA", "Target Grip", None),
+            ("OUT_DATA", "Target Roll", None), ("OUT_DATA", "Target Grip", None), 
             ("OUT_FLOW", "Flow Out", None)
         ]
-
+        
     def get_settings_schema(self): return []
-
+    
     def execute(self):
         global mt4_collision_lock_until, mt4_target_goal, mt4_mode
         raw_json = self.inputs.get("JSON", "")
@@ -286,14 +286,24 @@ class MT4UnityNode(BaseNode):
                         if val == "COLLISION":
                             mt4_collision_lock_until = time.time() + 2.0 
                             if ser and ser.is_open: ser.write(b"!") 
+                        elif val == "START_REC":
+                            if not mt4_mode["recording"]: toggle_mt4_record()
+                        elif val.startswith("STOP_REC:"):
+                            fname = val.split(":")[1]
+                            if mt4_mode["recording"]: toggle_mt4_record(custom_name=fname)
+                        elif val.startswith("PLAY:"):
+                            fname = val.split(":")[1]
+                            play_mt4_path(filename=fname)
+                        elif val == "LOG_SUCCESS": mt4_log_event_queue.append("SUCCESS")
+                        elif val == "LOG_FAIL": mt4_log_event_queue.append("FAIL")
                     elif msg_type == "MOVE" and time.time() > mt4_collision_lock_until:
+                        # 파이프라인으로 안전하게 다음 노드로 타겟값 넘기기
                         if 'z' in parsed: self.outputs["Target X"] = float(parsed['z']) * 1000.0
                         if 'x' in parsed: self.outputs["Target Y"] = -float(parsed['x']) * 1000.0
                         if 'y' in parsed: self.outputs["Target Z"] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
                         if 'roll' in parsed: self.outputs["Target Roll"] = float(parsed['roll'])
                         if 'gripper' in parsed: self.outputs["Target Grip"] = float(parsed['gripper']) 
                 except: pass 
-                
         return "Flow Out"
     
 from core.input_manager import global_input_manager  # InputManager 수입
@@ -402,41 +412,38 @@ class MT4CommandActionNode(BaseNode):
 
 class UDPReceiverNode(BaseNode):
     def __init__(self, node_id: str): 
-        super().__init__(node_id, "UDP Receiver (MT4)", "UDP_RECV")
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setblocking(False)
-        self.is_bound = False
-        self.current_port = 0
-        self.last_data = ""
+        super().__init__(node_id, "UDP Receiver", "UDP_RECV")
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.sock.setblocking(False)
+        self.is_bound = False; self.current_port = 0; self.last_data = ""
 
-    def get_ui_schema(self): return [
-        ("IN_FLOW", "Flow In", None),
-        ("OUT_DATA", "JSON Out", None), ("OUT_FLOW", "Flow Out", None)
-    ]
-    def get_settings_schema(self): return [("port", 6000.0), ("ip", "192.168.50.63")]
+    def get_ui_schema(self): return [("IN_FLOW", "Flow In", None), ("OUT_DATA", "JSON Out", None), ("OUT_FLOW", "Flow Out", None)]
+    
+    # ★ 해결: 6000.0(float)이 아니라 6000(int)으로 기본값을 주어 소수점을 없앱니다!
+    def get_settings_schema(self): return [("port", 6000), ("ip", "192.168.50.63")]
     
     def execute(self):
-        port = int(self.settings.get("port", 6000.0))
+        port = int(self.settings.get("port", 6000))
         if not self.is_bound or self.current_port != port:
             try:
                 self.sock.close()
-                self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                self.sock.setblocking(False)
+                self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.sock.setblocking(False)
                 self.sock.bind(('0.0.0.0', port))
-                self.is_bound = True
-                self.current_port = port
-            except:
-                self.is_bound = True
+                self.is_bound = True; self.current_port = port
+            except: self.is_bound = True
 
         try:
             while True:
                 data, _ = self.sock.recvfrom(4096)
                 decoded = data.decode()
+                
+                now = time.time()
+                mt4_dashboard["latency"] = (now - mt4_dashboard.get("last_pkt_time", now)) * 1000.0 
+                mt4_dashboard["last_pkt_time"] = now
+                mt4_dashboard["status"] = "Connected"
+                
                 if decoded != self.last_data:
-                    self.outputs["JSON Out"] = decoded
-                    self.last_data = decoded
+                    self.outputs["JSON Out"] = decoded; self.last_data = decoded
         except: pass
-        
         return "Flow Out"
     
 # ==========================================

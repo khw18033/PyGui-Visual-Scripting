@@ -57,8 +57,10 @@ class GraphSerializer:
                     
             for l_data in data.get("links", []):
                 if l_data["src_node"] in id_map and l_data["dst_node"] in id_map:
-                    # UI에 선을 다시 그리고 엔진에 연결 정보 등록
-                    ui_manager.link_callback(ui_manager.editor_tag, [l_data["src_pin"], l_data["dst_pin"]])
+                    # 저장된 순정 라벨(Target X 등)을 DPG 태그명으로 복원하여 선을 그립니다.
+                    src_tag = f"{id_map[l_data['src_node']]}_{l_data['src_pin']}"
+                    dst_tag = f"{id_map[l_data['dst_node']]}_{l_data['dst_pin']}"
+                    ui_manager.link_callback(ui_manager.editor_tag, [src_tag, dst_tag])
             print(f"[Serializer] Loaded: {filename}")
         except Exception as e: print(f"[Serializer] Load Error: {e}")
 

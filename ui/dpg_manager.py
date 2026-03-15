@@ -10,6 +10,7 @@ class UIManager:
         self.engine = engine  # 링크 처리를 위해 엔진과 직접 연결
         self.window_tag = "PrimaryWindow"
         self.editor_tag = "node_editor"
+        self.pin_label_map = {}  # UI 핀 ID와 노드 핀 이름 매핑
 
     def initialize(self):
         dpg.create_context()
@@ -109,17 +110,28 @@ class UIManager:
     def draw_node(self, node: Any):
         with dpg.node(tag=node.node_id, parent=self.editor_tag, label=node.label):
             for pin_type, label, default_val in node.get_ui_schema():
+                # ★ DPG가 멋대로 번호를 붙이지 못하도록, 불러올 때 매칭할 수 있는 고정 태그 생성!
+                pin_tag = f"{node.node_id}_{label}"
+                self.pin_label_map[pin_tag] = label 
+                
                 if pin_type == "IN_FLOW":
-                    with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input): dpg.add_text(label)
+                    with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input, tag=pin_tag): dpg.add_text(label)
                 elif pin_type == "OUT_FLOW":
-                    with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output): dpg.add_text(label)
+                    with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output, tag=pin_tag): dpg.add_text(label)
                 elif pin_type == "IN_DATA":
-                    with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input, tag=f"{node.node_id}_{label}"):
+                    with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input, tag=pin_tag):
                         with dpg.group(horizontal=True):
                             dpg.add_text(label, color=(255, 255, 0))
-                            if default_val is not None: dpg.add_input_float(width=80, default_value=default_val, step=0, tag=f"val_{node.node_id}_{label}")
+                            if default_val is not None: 
+                                # ★ 해결: 문자열(IP)은 길게(120), 정수형(Port)은 소수점 없이(int) 그림
+                                if isinstance(default_val, str):
+                                    dpg.add_input_text(width=120, default_value=default_val, tag=f"val_{node.node_id}_{label}")
+                                elif isinstance(default_val, int):
+                                    dpg.add_input_int(width=70, default_value=default_val, step=0, tag=f"val_{node.node_id}_{label}")
+                                else:
+                                    dpg.add_input_float(width=70, default_value=default_val, step=0, tag=f"val_{node.node_id}_{label}")
                 elif pin_type == "OUT_DATA":
-                    with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output, tag=f"{node.node_id}_{label}"): dpg.add_text(label)
+                    with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output, tag=pin_tag): dpg.add_text(label)
 
             if node.get_settings_schema():
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
@@ -127,8 +139,11 @@ class UIManager:
                     for param_name, default_val in node.get_settings_schema():
                         with dpg.group(horizontal=True):
                             dpg.add_text(param_name)
+                            # ★ 해결: 여기도 마찬가지로 정수/문자열/실수 크기 분리
                             if isinstance(default_val, str):
-                                dpg.add_input_text(width=80, default_value=default_val, tag=f"{node.node_id}_set_{param_name}")
+                                dpg.add_input_text(width=120, default_value=default_val, tag=f"{node.node_id}_set_{param_name}")
+                            elif isinstance(default_val, int):
+                                dpg.add_input_int(width=60, default_value=default_val, step=0, tag=f"{node.node_id}_set_{param_name}")
                             else:
                                 dpg.add_input_float(width=60, default_value=default_val, step=0, tag=f"{node.node_id}_set_{param_name}")
 
@@ -136,7 +151,11 @@ class UIManager:
         src, dst = app_data[0], app_data[1]
         src_node = dpg.get_item_parent(src); dst_node = dpg.get_item_parent(dst)
         lid = dpg.add_node_link(src, dst, parent=sender)
-        self.engine.add_link(lid, src_node, src, dst_node, dst)
+        
+        # ★ 추가: 엔진에는 복잡한 DPG 태그가 아닌 'Target X' 같은 순정 라벨을 넘겨줍니다.
+        src_label = self.pin_label_map.get(src, src)
+        dst_label = self.pin_label_map.get(dst, dst)
+        self.engine.add_link(lid, src_node, src_label, dst_node, dst_label)
 
     def delink_callback(self, sender, app_data):
         lid = app_data
