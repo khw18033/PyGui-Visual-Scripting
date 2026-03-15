@@ -240,23 +240,25 @@ class UIManager:
                 )
                 value_tag = f"val_{node.node_id}_{label}"
 
-                if has_incoming_link:
-                    continue
-
                 # MT4 드라이버는 링크 입력이 없을 때 고정 기본값으로 덮어쓰지 않고,
-                # 현재 타겟 상태를 UI에 반영하면서 실행 입력은 None으로 유지합니다.
+                # 현재 타겟 상태를 UI에 반영합니다. (Answer_code.py의 UniversalRobotNode.execute 동기화 로직과 동일)
                 if node.type_str == "MT4_DRIVER" and label in driver_label_to_key:
-                    if default_val is not None and dpg.does_item_exist(value_tag):
-                        if focused_item == value_tag:
+                    if dpg.does_item_exist(value_tag):
+                        if focused_item == value_tag: # 유저가 직접 입력 중
                             node.inputs[label] = dpg.get_value(value_tag)
                         else:
                             from nodes.robots.mt4 import mt4_target_goal
-                            dpg.set_value(value_tag, float(mt4_target_goal[driver_label_to_key[label]]))
-                            node.inputs[label] = None
+                            curr_val = float(mt4_target_goal[driver_label_to_key[label]])
+                            dpg.set_value(value_tag, curr_val)
+                            
+                            # 만약 링크가 연결되어 있지 않은 상태라면, UI의 값(=방금 동기화한 현재 타겟) 혹은 None을 주입
+                            if not has_incoming_link:
+                                node.inputs[label] = curr_val
                     continue
 
-                if default_val is not None and dpg.does_item_exist(value_tag):
-                    node.inputs[label] = dpg.get_value(value_tag)
+                if not has_incoming_link:
+                    if default_val is not None and dpg.does_item_exist(value_tag):
+                        node.inputs[label] = dpg.get_value(value_tag)
 
             for param_name, _ in node.get_settings_schema():
                 setting_tag = f"{node.node_id}_set_{param_name}"

@@ -46,12 +46,47 @@ class ExecutionEngine:
         # 1. 데이터 전달 (Data Pipeline)
         self._transfer_data()
 
-        # 2. 노드 실행 조건 평가 및 실행
-        for node_id, node in list(self.nodes.items()):
-            if node_id not in self.nodes:
-                continue
-            if node.is_ready():
-                node.execute()
+        # 2. 독립 실행 노드들 우선 실행 (Answer_code.py 하이브리드 엔진 완벽 동일화)
+        auto_tick_types = {
+            "COND_KEY", "MT4_DRIVER", "MT4_UNITY", "UDP_RECV", "LOGGER", "CONSTANT",
+            "MT4_SAG", "MT4_CALIB", "MT4_TOOLTIP", "MT4_BACKLASH", "MT4_KEYBOARD"
+        }
+        
+        start_node = None
+        for node in list(self.nodes.values()):
+            if node.type_str == "START":
+                start_node = node
+                
+            if node.type_str in auto_tick_types:
+                try: 
+                    node.execute()
+                except Exception as e: 
+                    print(f"[{node.label}] Error: {e}")
+
+        # 3. Flow 기반 실행 (StartNode 부터 최대 100 step)
+        if not start_node: 
+            return
+
+        current_node = start_node
+        steps = 0
+        MAX_STEPS = 100 
+        
+        while current_node and steps < MAX_STEPS:
+            result = current_node.execute()
+            next_pin = None
+            
+            if result is not None and isinstance(result, str):
+                next_pin = result
+                
+            next_node = None
+            if next_pin:
+                for link in self.links:
+                    if link['src_id'] == current_node.node_id and link['src_pin'] == next_pin:
+                        next_node = self.nodes.get(link['dst_id'])
+                        break
+            
+            current_node = next_node
+            steps += 1
                 
     def _transfer_data(self):
         for link in list(self.links):
