@@ -444,20 +444,65 @@ class UDPReceiverNode(BaseNode):
 # ==========================================
 import dearpygui.dearpygui as dpg
 
+def mt4_apply_limits():
+    global mt4_target_goal, mt4_current_pos, ser, mt4_collision_lock_until
+    if time.time() < mt4_collision_lock_until: return
+    
+    mt4_target_goal['x'] = max(MT4_LIMITS['min_x'], min(mt4_target_goal['x'], MT4_LIMITS['max_x']))
+    mt4_target_goal['y'] = max(MT4_LIMITS['min_y'], min(mt4_target_goal['y'], MT4_LIMITS['max_y']))
+    mt4_target_goal['z'] = max(MT4_LIMITS['min_z'], min(mt4_target_goal['z'], MT4_LIMITS['max_z']))
+    mt4_target_goal['gripper'] = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
+    mt4_target_goal['roll'] = max(MT4_LIMITS['min_r'], min(mt4_target_goal['roll'], MT4_LIMITS['max_r']))
+
+    # 노드 엔진(DriverNode)이 멈춰있어도 즉각 시리얼 전송!
+    if ser and ser.is_open:
+        cmd = f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f} A{mt4_target_goal['roll']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n"
+        try:
+            ser.write(cmd.encode())
+        except Exception:
+            pass
+        mt4_current_pos.update(mt4_target_goal)
+
 def mt4_manual_control_callback(sender, app_data, user_data):
     global mt4_manual_override_until, mt4_target_goal, mt4_current_pos
     mt4_manual_override_until = time.time() + 1.5
     axis, step = user_data
     mt4_target_goal[axis] = mt4_current_pos[axis] + step
+    mt4_apply_limits()
 
 def mt4_move_to_coord_callback(sender, app_data, user_data):
     global mt4_manual_override_until, mt4_target_goal
+    import dearpygui.dearpygui as dpg
     mt4_manual_override_until = time.time() + 2.0
     mt4_target_goal['x'] = float(dpg.get_value("input_x"))
     mt4_target_goal['y'] = float(dpg.get_value("input_y"))
     mt4_target_goal['z'] = float(dpg.get_value("input_z"))
     mt4_target_goal['gripper'] = float(dpg.get_value("input_g"))
-    if dpg.does_item_exist("input_r"): mt4_target_goal['roll'] = float(dpg.get_value("input_r"))
+    if dpg.does_item_exist("input_r"): 
+        mt4_target_goal['roll'] = float(dpg.get_value("input_r"))
+    mt4_apply_limits()
+
+def play_mt4_path_thread(filepath):
+    global mt4_mode, mt4_target_goal, mt4_manual_override_until, mt4_collision_lock_until
+    import csv
+    mt4_mode["playing"] = True
+    mt4_manual_override_until = time.time() + 86400 
+    try:
+        with open(filepath, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if time.time() < mt4_collision_lock_until or not mt4_mode["playing"]: break
+                mt4_target_goal['x'] = float(row['x'])
+                mt4_target_goal['y'] = float(row['y'])
+                mt4_target_goal['z'] = float(row['z'])
+                mt4_target_goal['gripper'] = float(row['gripper'])
+                mt4_target_goal['roll'] = float(row.get('roll', 0.0))
+                
+                mt4_apply_limits()  # 재생 중에도 틱마다 다이렉트 전송!
+                time.sleep(0.05)
+    except Exception: pass
+    mt4_mode["playing"] = False
+    mt4_manual_override_until = time.time()
 
 def toggle_mt4_record(custom_name=None):
     global mt4_record_f, mt4_record_writer, mt4_record_temp_name
@@ -494,23 +539,6 @@ def play_mt4_path(sender=None, app_data=None, user_data=None, filename=None):
     if os.path.exists(filepath): 
         import threading
         threading.Thread(target=play_mt4_path_thread, args=(filepath,), daemon=True).start()
-
-def play_mt4_path_thread(filepath):
-    global mt4_mode, mt4_target_goal, mt4_manual_override_until
-    mt4_mode["playing"] = True
-    mt4_manual_override_until = time.time() + 86400 
-    try:
-        with open(filepath, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if time.time() < mt4_collision_lock_until or not mt4_mode["playing"]: break
-                mt4_target_goal['x'] = float(row['x']); mt4_target_goal['y'] = float(row['y'])
-                mt4_target_goal['z'] = float(row['z']); mt4_target_goal['gripper'] = float(row['gripper'])
-                mt4_target_goal['roll'] = float(row.get('roll', 0.0))
-                time.sleep(0.05)
-    except Exception: pass
-    mt4_mode["playing"] = False
-    mt4_manual_override_until = time.time()
 
 def mt4_background_logger_thread():
     global mt4_record_writer
