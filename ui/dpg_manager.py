@@ -1,295 +1,626 @@
 import dearpygui.dearpygui as dpg
-from typing import Any
+import sys
+import os
+import time
+import socket
+import json
+import threading
+import subprocess
+
+from core.engine import node_registry, link_registry, system_log_buffer, generate_uuid, PortType, HwStatus
+from core.input_manager import input_manager
 from core.factory import NodeFactory
-from core.serializer import GraphSerializer
-# 기존 맨 윗줄 import에 mt4_homing_callback을 껴 넣어주세요.
-from nodes.robots.mt4 import mt4_manual_control, mt4_move_to_coord, toggle_mt4_record, play_mt4_path, mt4_homing_logic, get_mt4_paths
+from core.serializer import save_graph, load_graph, get_save_files
+from nodes.robots.mt4 import (
+    mt4_current_pos, mt4_dashboard, mt4_target_goal, mt4_apply_limits,
+    toggle_mt4_record, get_mt4_paths, play_mt4_path, mt4_manual_override_until,
+    MT4_Z_OFFSET, MT4_UNITY_IP, MT4_FEEDBACK_PORT, mt4_homing_callback
+)
+import core.engine as engine_module
+import nodes.robots.mt4 as mt4_module
 
-def _ui_mt4_manual_control_callback(sender, app_data, user_data):
+sys_net_str = "Loading Network..."
+def network_monitor_thread():
+    global sys_net_str
+    while True:
+        try:
+            out = subprocess.check_output("ip -o -4 addr show", shell=True).decode('utf-8')
+            info = [f"[{p.split()[1]}] {p.split()[3].split('/')[0]}" for p in out.strip().split('\n') if ' lo ' not in p and len(p.split()) >= 4]
+            sys_net_str = "\n".join(info) if info else "Offline"
+        except: pass
+        time.sleep(2)
+
+def mt4_manual_control_callback(sender, app_data, user_data):
+    mt4_module.mt4_manual_override_until = time.time() + 1.5
     axis, step = user_data
-    mt4_manual_control(axis, step)
+    mt4_module.mt4_target_goal[axis] = mt4_module.mt4_current_pos[axis] + step
+    mt4_apply_limits()
 
-def _ui_mt4_move_to_coord_callback(sender, app_data, user_data):
-    x = dpg.get_value("input_x") if dpg.does_item_exist("input_x") else 200.0
-    y = dpg.get_value("input_y") if dpg.does_item_exist("input_y") else 0.0
-    z = dpg.get_value("input_z") if dpg.does_item_exist("input_z") else 120.0
-    g = dpg.get_value("input_g") if dpg.does_item_exist("input_g") else 40.0
-    r = dpg.get_value("input_r") if dpg.does_item_exist("input_r") else 0.0
-    mt4_move_to_coord(x, y, z, r, g)
+def mt4_move_to_coord_callback(sender, app_data, user_data):
+    mt4_module.mt4_manual_override_until = time.time() + 2.0
+    mt4_module.mt4_target_goal['x'] = float(dpg.get_value("input_x"))
+    mt4_module.mt4_target_goal['y'] = float(dpg.get_value("input_y"))
+    mt4_module.mt4_target_goal['z'] = float(dpg.get_value("input_z"))
+    mt4_module.mt4_target_goal['gripper'] = float(dpg.get_value("input_g"))
+    if dpg.does_item_exist("input_r"): 
+        mt4_module.mt4_target_goal['roll'] = float(dpg.get_value("input_r"))
+    mt4_apply_limits()
 
-def _ui_toggle_mt4_record(sender, app_data, user_data):
-    custom_name = dpg.get_value("path_name_input") if dpg.does_item_exist("path_name_input") else None
-    toggle_mt4_record(custom_name)
+class NodeUIRenderer:
+    key_map = {"A": 65, "B": 66, "C": 67, "S": 83, "W": 87, "SPACE": 32}
 
-def _ui_play_mt4_path(sender, app_data, user_data):
-    filename = dpg.get_value("combo_mt4_path") if dpg.does_item_exist("combo_mt4_path") else None
-    if filename:
-        play_mt4_path(filename)
+    @staticmethod
+    def sync_ui_to_state():
+        is_focused = dpg.is_item_focused("file_name_input") or (dpg.does_item_exist("path_name_input") and dpg.is_item_focused("path_name_input"))
+        input_manager.set_focused(is_focused)
 
-def _ui_mt4_homing_callback(sender, app_data, user_data):
-    mt4_homing_logic()
+        for nid, node in node_registry.items():
+            t = node.type_str
+            if t == "COND_KEY" and hasattr(node, 'field_key'):
+                k = dpg.get_value(node.field_key).upper()
+                node.state['key'] = k
+                node.state['is_down'] = dpg.is_key_down(NodeUIRenderer.key_map.get(k, 0))
+            elif t == "LOGIC_LOOP" and hasattr(node, 'field_count'):
+                node.state['count'] = dpg.get_value(node.field_count)
+            elif t == "MT4_ACTION" and hasattr(node, 'combo_id'):
+                node.state['mode'] = dpg.get_value(node.combo_id)
+                node.state['v1'] = dpg.get_value(node.field_v1)
+                node.state['v2'] = dpg.get_value(node.field_v2)
+                node.state['v3'] = dpg.get_value(node.field_v3)
+            elif t == "CONSTANT" and hasattr(node, 'field_val'):
+                node.state['val'] = dpg.get_value(node.field_val)
+            elif t == "LOGGER" and hasattr(node, 'txt'):
+                if len(system_log_buffer) != node.llen:
+                    dpg.set_value(node.txt, "\n".join(list(system_log_buffer)[-8:]))
+                    node.llen = len(system_log_buffer)
+            elif t == "UDP_RECV" and hasattr(node, 'port'):
+                node.state['port'] = dpg.get_value(node.port)
+                node.state['ip'] = dpg.get_value(node.ip)
+            elif t == "MT4_KEYBOARD" and hasattr(node, 'combo_keys'):
+                node.state['is_focused'] = is_focused
+                node.state['keys'] = dpg.get_value(node.combo_keys)
+                node.state['W'] = dpg.is_key_down(dpg.mvKey_W); node.state['S'] = dpg.is_key_down(dpg.mvKey_S)
+                node.state['A'] = dpg.is_key_down(dpg.mvKey_A); node.state['D'] = dpg.is_key_down(dpg.mvKey_D)
+                node.state['UP'] = dpg.is_key_down(dpg.mvKey_Up); node.state['DOWN'] = dpg.is_key_down(dpg.mvKey_Down)
+                node.state['LEFT'] = dpg.is_key_down(dpg.mvKey_Left); node.state['RIGHT'] = dpg.is_key_down(dpg.mvKey_Right)
+                node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)
+                node.state['J'] = dpg.is_key_down(dpg.mvKey_J); node.state['U'] = dpg.is_key_down(dpg.mvKey_U)
+                node.state['Z'] = dpg.is_key_down(dpg.mvKey_Z); node.state['X'] = dpg.is_key_down(dpg.mvKey_X)
+            elif t == "MT4_DRIVER":
+                for k, fid in getattr(node, 'ui_fields', {}).items():
+                    pin_id = node.in_pins[k]
+                    is_connected = any(l['target'] == pin_id for l in link_registry.values())
+                    if not is_connected: node.state[k] = dpg.get_value(fid)
+                for k, fid in getattr(node, 'setting_fields', {}).items():
+                    pin_id = node.setting_pins[k]
+                    is_connected = any(l['target'] == pin_id for l in link_registry.values())
+                    if not is_connected: node.state[k] = dpg.get_value(fid)
+            elif t == "MT4_SAG" and hasattr(node, 'ui_sag'):
+                node.state['sag_factor'] = dpg.get_value(node.ui_sag)
+            elif t == "MT4_CALIB" and hasattr(node, 'ui_x'):
+                node.state['x_offset'] = dpg.get_value(node.ui_x); node.state['y_offset'] = dpg.get_value(node.ui_y)
+                node.state['z_offset'] = dpg.get_value(node.ui_z); node.state['scale'] = dpg.get_value(node.ui_s)
+            elif t == "MT4_TOOLTIP" and hasattr(node, 'ui_len'):
+                node.state['tool_length'] = dpg.get_value(node.ui_len)
+                node.state['tool_angle'] = dpg.get_value(node.ui_ang)
+            elif t == "MT4_BACKLASH" and hasattr(node, 'ui_dist'):
+                node.state['decel_dist'] = dpg.get_value(node.ui_dist)
+                node.state['stop_delay'] = dpg.get_value(node.ui_dly)
 
-class UIManager:
-    def __init__(self, engine):
-        self.engine = engine  # 링크 처리를 위해 엔진과 직접 연결
-        self.window_tag = "PrimaryWindow"
-        self.editor_tag = "node_editor"
-        self.pin_label_map = {}  # UI 핀 ID와 노드 핀 이름 매핑
-        self.is_bulk_loading = False
+    @staticmethod
+    def sync_state_to_ui(node):
+        t = node.type_str
+        if t == "COND_KEY" and hasattr(node, 'field_key'): dpg.set_value(node.field_key, node.state.get('key', 'SPACE'))
+        elif t == "LOGIC_LOOP" and hasattr(node, 'field_count'): dpg.set_value(node.field_count, node.state.get('count', 3))
+        elif t == "MT4_ACTION" and hasattr(node, 'combo_id'):
+            dpg.set_value(node.combo_id, node.state.get('mode', 'Move Relative (XYZ)'))
+            dpg.set_value(node.field_v1, node.state.get('v1', 0))
+            dpg.set_value(node.field_v2, node.state.get('v2', 0))
+            dpg.set_value(node.field_v3, node.state.get('v3', 0))
+        elif t == "CONSTANT" and hasattr(node, 'field_val'): dpg.set_value(node.field_val, node.state.get('val', 1.0))
+        elif t == "UDP_RECV" and hasattr(node, 'port'):
+            dpg.set_value(node.port, node.state.get('port', 6000))
+            dpg.set_value(node.ip, node.state.get('ip', '192.168.50.63'))
+        elif t == "MT4_KEYBOARD" and hasattr(node, 'combo_keys'): dpg.set_value(node.combo_keys, node.state.get('keys', 'WASD'))
+        elif t == "MT4_DRIVER":
+            for k, fid in getattr(node, 'ui_fields', {}).items(): dpg.set_value(fid, node.state.get(k, 0.0))
+            for k, fid in getattr(node, 'setting_fields', {}).items(): dpg.set_value(fid, node.state.get(k, 1.0))
 
-    def initialize(self):
-        dpg.create_context()
-        
-        # Delete 키 삭제 콜백 등록
-        with dpg.handler_registry(): 
-            dpg.add_key_press_handler(dpg.mvKey_Delete, callback=self.delete_selection)
+    @staticmethod
+    def render(node):
+        t = node.type_str
+        if t == "START": NodeUIRenderer._render_start(node)
+        elif t == "COND_KEY": NodeUIRenderer._render_cond_key(node)
+        elif t == "LOGIC_IF": NodeUIRenderer._render_logic_if(node)
+        elif t == "LOGIC_LOOP": NodeUIRenderer._render_logic_loop(node)
+        elif t == "MT4_ACTION": NodeUIRenderer._render_mt4_action(node)
+        elif t == "CONSTANT": NodeUIRenderer._render_constant(node)
+        elif t == "PRINT": NodeUIRenderer._render_print(node)
+        elif t == "LOGGER": NodeUIRenderer._render_logger(node)
+        elif t == "MT4_DRIVER": NodeUIRenderer._render_universal(node)
+        elif t == "MT4_KEYBOARD": NodeUIRenderer._render_mt4_keyboard(node)
+        elif t == "MT4_UNITY": NodeUIRenderer._render_mt4_unity(node)
+        elif t == "UDP_RECV": NodeUIRenderer._render_udp(node)
+        elif t == "MT4_SAG": NodeUIRenderer._render_sag(node)
+        elif t == "MT4_CALIB": NodeUIRenderer._render_calib(node)
+        elif t == "MT4_TOOLTIP": NodeUIRenderer._render_tooltip(node)
+        elif t == "MT4_BACKLASH": NodeUIRenderer._render_backlash(node)
 
-        with dpg.window(tag=self.window_tag):
-            # 1. 상단 대시보드 탭 (기존과 동일한 레이아웃)
-            with dpg.tab_bar():
-                with dpg.tab(label="MT4 Dashboard"):
-                    with dpg.group(horizontal=True):
-                        with dpg.child_window(width=250, height=130, border=True):
-                            dpg.add_text("MT4 Status", color=(150,150,150)); 
-                            dpg.add_text("Status: Idle", tag="mt4_dash_status", color=(0,255,0))
-                            dpg.add_text(f"HW: Offline", tag="mt4_dash_link", color=(255,0,0))
-                            dpg.add_text("Latency: 0.0 ms", tag="mt4_dash_latency", color=(255,255,0))
-                        with dpg.child_window(width=350, height=130, border=True):
-                            dpg.add_text("Manual Control", color=(255,200,0))
-                            with dpg.group(horizontal=True):
-                                dpg.add_button(label="X+", width=60, callback=_ui_mt4_manual_control_callback, user_data=('x', 10)); dpg.add_button(label="X-", width=60, callback=_ui_mt4_manual_control_callback, user_data=('x', -10))
-                                dpg.add_text("|"); dpg.add_button(label="Y+", width=60, callback=_ui_mt4_manual_control_callback, user_data=('y', 10)); dpg.add_button(label="Y-", width=60, callback=_ui_mt4_manual_control_callback, user_data=('y', -10))
-                            with dpg.group(horizontal=True):
-                                dpg.add_button(label="Z+", width=60, callback=_ui_mt4_manual_control_callback, user_data=('z', 10)); dpg.add_button(label="Z-", width=60, callback=_ui_mt4_manual_control_callback, user_data=('z', -10))
-                                dpg.add_text("|"); dpg.add_button(label="G+", width=60, callback=_ui_mt4_manual_control_callback, user_data=('gripper', 5)); dpg.add_button(label="G-", width=60, callback=_ui_mt4_manual_control_callback, user_data=('gripper', -5))
-                            with dpg.group(horizontal=True):
-                                dpg.add_button(label="R+", width=60, callback=_ui_mt4_manual_control_callback, user_data=('roll', 5)); dpg.add_button(label="R-", width=60, callback=_ui_mt4_manual_control_callback, user_data=('roll', -5))
-                        with dpg.child_window(width=300, height=130, border=True):
-                            dpg.add_text("Direct Coord", color=(0,255,255))
-                            with dpg.group(horizontal=True):
-                                dpg.add_text("X"); dpg.add_input_int(tag="input_x", width=50, default_value=200, step=0)
-                                dpg.add_text("Y"); dpg.add_input_int(tag="input_y", width=50, default_value=0, step=0)
-                            with dpg.group(horizontal=True):
-                                dpg.add_text("Z"); dpg.add_input_int(tag="input_z", width=50, default_value=120, step=0)
-                                dpg.add_text("G"); dpg.add_input_int(tag="input_g", width=50, default_value=40, step=0)
-                                dpg.add_text("R"); dpg.add_input_int(tag="input_r", width=50, default_value=0, step=0)
-                            with dpg.group(horizontal=True):
-                                dpg.add_button(label="Move", width=100, callback=_ui_mt4_move_to_coord_callback)
-                                dpg.add_button(label="Homing", width=100, callback=_ui_mt4_homing_callback)
-                        with dpg.child_window(width=150, height=130, border=True):
-                            dpg.add_text("Coords", color=(0,255,255))
-                            dpg.add_text("X: 0", tag="mt4_x"); dpg.add_text("Y: 0", tag="mt4_y")
-                            dpg.add_text("Z: 0", tag="mt4_z"); dpg.add_text("G: 0", tag="mt4_g")
-                            dpg.add_text("R: 0.0", tag="mt4_r")
-                        with dpg.child_window(width=200, height=130, border=True):
-                            dpg.add_text("Record & Play", color=(255,100,200))
-                            dpg.add_input_text(tag="path_name_input", default_value="my_path", width=130)
-                            dpg.add_button(label="Start Recording", tag="btn_mt4_record", width=130, callback=_ui_toggle_mt4_record)
-                            dpg.add_combo(items=[], tag="combo_mt4_path", width=130)
-                            dpg.add_button(label="Play Selected", width=130, callback=_ui_play_mt4_path)
-
-                with dpg.tab(label="Files & System"):
-                    with dpg.group(horizontal=True):
-                        with dpg.child_window(width=650, height=130, border=True):
-                            dpg.add_text("File Manager", color=(0,255,255))
-                            with dpg.group(horizontal=True):
-                                dpg.add_text("Save:"); dpg.add_input_text(tag="file_name_input", default_value="my_graph", width=120)
-                                dpg.add_button(label="SAVE", callback=self.handle_save_graph, width=60)
-                                dpg.add_spacer(width=20)
-                                dpg.add_text("Load:"); dpg.add_combo(items=GraphSerializer.get_save_files(), tag="file_list_combo", width=120)
-                                dpg.add_button(label="LOAD", callback=self.handle_load_graph, width=60)
-                                dpg.add_button(label="Refresh", callback=lambda: dpg.configure_item("file_list_combo", items=GraphSerializer.get_save_files()), width=60)
-                        with dpg.child_window(width=400, height=130, border=True):
-                            dpg.add_text("Network Info", color=(100,200,255))
-                            dpg.add_text("Loading...", tag="sys_tab_net", color=(180,180,180))
-
-            dpg.add_separator()
-            
-            # 2. 노드 생성 메뉴바
-            with dpg.group():
-                with dpg.group(horizontal=True):
-                    dpg.add_text("Nodes:", color=(200,200,200))
-                    for n in ["START", "COND_KEY", "LOGIC_IF", "LOGIC_LOOP", "MT4_ACTION", "CONSTANT", "PRINT", "MT4_DRIVER"]:
-                        dpg.add_button(label=n.replace("MT4_", ""), callback=lambda s,a,u: self.create_and_draw(u), user_data=n)
-                    dpg.add_spacer(width=30)
-                    dpg.add_text("Adv. Tools:", color=(255,200,0))
-                    for n in ["MT4_KEYBOARD", "MT4_UNITY", "UDP_RECV", "MT4_SAG", "MT4_CALIB", "MT4_TOOLTIP", "MT4_BACKLASH"]:
-                        dpg.add_button(label=n.replace("MT4_", ""), callback=lambda s,a,u: self.create_and_draw(u), user_data=n)
-                dpg.add_spacer(width=30)
-                dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=self.toggle_run, width=150)
-                
-            # 3. 메인 노드 에디터
-            with dpg.node_editor(tag=self.editor_tag, callback=self.link_callback, delink_callback=self.delink_callback): pass 
-
-        dpg.create_viewport(title='PyGui Visual Scripting (Refactored Complete)', width=1280, height=800, vsync=True)
-        dpg.setup_dearpygui()
-        dpg.set_primary_window(self.window_tag, True)
-        dpg.show_viewport()
-
-    def create_and_draw(self, node_type):
-        node = NodeFactory.create_node(node_type)
-        if node:
-            self.draw_node(node)
-            self.engine.add_node(node)
-
-    def draw_node(self, node: Any):
-        with dpg.node(tag=node.node_id, parent=self.editor_tag, label=node.label):
-            for pin_type, label, default_val in node.get_ui_schema():
-                # ★ DPG가 멋대로 번호를 붙이지 못하도록, 불러올 때 매칭할 수 있는 고정 태그 생성!
-                pin_tag = f"{node.node_id}_{label}"
-                self.pin_label_map[pin_tag] = label 
-                
-                if pin_type == "IN_FLOW":
-                    with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input, tag=pin_tag): dpg.add_text(label)
-                elif pin_type == "OUT_FLOW":
-                    with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output, tag=pin_tag): dpg.add_text(label)
-                elif pin_type == "IN_DATA":
-                    with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input, tag=pin_tag):
-                        with dpg.group(horizontal=True):
-                            dpg.add_text(label, color=(255, 255, 0))
-                            if default_val is not None: 
-                                # ★ 해결: 문자열(IP)은 길게(120), 정수형(Port)은 소수점 없이(int) 그림
-                                if isinstance(default_val, str):
-                                    dpg.add_input_text(width=120, default_value=default_val, tag=f"val_{node.node_id}_{label}")
-                                elif isinstance(default_val, int):
-                                    dpg.add_input_int(width=70, default_value=default_val, step=0, tag=f"val_{node.node_id}_{label}")
-                                else:
-                                    dpg.add_input_float(width=70, default_value=default_val, step=0, tag=f"val_{node.node_id}_{label}")
-                elif pin_type == "OUT_DATA":
-                    with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output, tag=pin_tag): dpg.add_text(label)
-
-            if node.get_settings_schema():
-                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                    dpg.add_spacer(height=5); dpg.add_separator()
-                    for param_name, default_val in node.get_settings_schema():
-                        with dpg.group(horizontal=True):
-                            dpg.add_text(param_name)
-                            # ★ 해결: 여기도 마찬가지로 정수/문자열/실수 크기 분리
-                            if isinstance(default_val, str):
-                                dpg.add_input_text(width=120, default_value=default_val, tag=f"{node.node_id}_set_{param_name}")
-                            elif isinstance(default_val, int):
-                                dpg.add_input_int(width=60, default_value=default_val, step=0, tag=f"{node.node_id}_set_{param_name}")
-                            else:
-                                dpg.add_input_float(width=60, default_value=default_val, step=0, tag=f"{node.node_id}_set_{param_name}")
-
-    def link_callback(self, sender, app_data):
-        src, dst = app_data[0], app_data[1]
-        src_node = dpg.get_item_parent(src); dst_node = dpg.get_item_parent(dst)
-        lid = dpg.add_node_link(src, dst, parent=sender)
-        
-        # ★ 추가: 엔진에는 복잡한 DPG 태그가 아닌 'Target X' 같은 순정 라벨을 넘겨줍니다.
-        src_label = self.pin_label_map.get(src, src)
-        dst_label = self.pin_label_map.get(dst, dst)
-        self.engine.add_link(lid, src_node, src_label, dst_node, dst_label)
-
-    def delink_callback(self, sender, app_data):
-        if self.is_bulk_loading:
-            return
-        lid = app_data
-        if dpg.does_item_exist(lid):
-            dpg.delete_item(lid)
-        self.engine.remove_link(lid)
-
-    def delete_selection(self, sender, app_data):
-        selected_links = list(dpg.get_selected_links(self.editor_tag))
-        selected_nodes = list(dpg.get_selected_nodes(self.editor_tag))
-
-        for lid in selected_links:
-            if dpg.does_item_exist(lid): dpg.delete_item(lid)
-            self.engine.remove_link(lid)
-
-        # 🚨 핵심: DPG의 정수 ID를 무조건 문자열로 취급하여 안전하게 비교
-        for nid in selected_nodes:
-            str_nid = str(nid)
-            connected = [
-                link for link in list(self.engine.links)
-                if str(link["src_id"]) == str_nid or str(link["dst_id"]) == str_nid
-            ]
-            for link in connected:
-                lid = link.get("id")
-                if lid is not None and dpg.does_item_exist(lid):
-                    dpg.delete_item(lid)
-                self.engine.remove_link(lid)
-
-            if dpg.does_item_exist(nid): dpg.delete_item(nid)
-            self.engine.remove_node(str_nid)
-
-    def toggle_run(self, sender, app_data):
-        """엔진의 실행/정지 상태를 토글하는 콜백"""
-        if dpg.get_item_label(sender) == "RUN SCRIPT":
-            self.engine.start()
-            dpg.set_item_label(sender, "STOP SCRIPT")
-        else:
-            self.engine.stop()
-            dpg.set_item_label(sender, "RUN SCRIPT")
-
-    def handle_save_graph(self, sender=None, app_data=None):
-        filename = dpg.get_value("file_name_input") if dpg.does_item_exist("file_name_input") else "my_graph"
-        GraphSerializer.save_graph(filename, self.engine)
-        if dpg.does_item_exist("file_list_combo"):
-            dpg.configure_item("file_list_combo", items=GraphSerializer.get_save_files())
-
-    def handle_load_graph(self, sender=None, app_data=None):
-        filename = dpg.get_value("file_list_combo") if dpg.does_item_exist("file_list_combo") else ""
-        if not filename:
-            return
-
-        # Answer_code와 동일하게 로드 전 실행 상태를 멈추고 진행합니다.
-        self.engine.stop()
-        if dpg.does_item_exist("btn_run"):
-            dpg.set_item_label("btn_run", "RUN SCRIPT")
-
-        GraphSerializer.load_graph(filename, self.engine, self)
-
-    def sync_ui_to_nodes(self):
-        # 노드 UI 위젯 값을 매 프레임 노드 런타임 상태로 동기화합니다.
-        focused_item = dpg.get_focused_item()
-        driver_label_to_key = {
-            "X": "x",
-            "Y": "y",
-            "Z": "z",
-            "Roll": "roll",
-            "Gripper": "gripper",
-        }
-
-        for node in self.engine.nodes.values():
-            for pin_type, label, default_val in node.get_ui_schema():
-                if pin_type != "IN_DATA":
-                    continue
-
-                has_incoming_link = any(
-                    link.get("dst_id") == node.node_id and link.get("dst_pin") == label
-                    for link in self.engine.links
-                )
-                value_tag = f"val_{node.node_id}_{label}"
-
-                # MT4 드라이버는 링크 입력이 없을 때 고정 기본값으로 덮어쓰지 않고,
-                # 현재 타겟 상태를 UI에 반영합니다. (Answer_code.py의 UniversalRobotNode.execute 동기화 로직과 동일)
-                if node.type_str == "MT4_DRIVER" and label in driver_label_to_key:
-                    if dpg.does_item_exist(value_tag):
-                        if focused_item == value_tag: # 유저가 직접 입력 중
-                            node.inputs[label] = dpg.get_value(value_tag)
-                        else:
-                            from nodes.robots.mt4 import mt4_target_goal
-                            curr_val = float(mt4_target_goal[driver_label_to_key[label]])
-                            dpg.set_value(value_tag, curr_val)
-                            
-                            # 만약 링크가 연결되어 있지 않은 상태라면, UI의 값(=방금 동기화한 현재 타겟) 혹은 None을 주입
-                            if not has_incoming_link:
-                                node.inputs[label] = curr_val
-                    continue
-
-                if not has_incoming_link:
-                    if default_val is not None and dpg.does_item_exist(value_tag):
-                        node.inputs[label] = dpg.get_value(value_tag)
-
-            for param_name, _ in node.get_settings_schema():
-                setting_tag = f"{node.node_id}_set_{param_name}"
-                if dpg.does_item_exist(setting_tag):
-                    node.settings[param_name] = dpg.get_value(setting_tag)
-
-    def render_frame(self): dpg.render_dearpygui_frame()
-    def is_running(self): return dpg.is_dearpygui_running()
-    def cleanup(self): dpg.destroy_context()
-
+    @staticmethod
+    def _render_start(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label="START"):
+            with dpg.node_attribute(tag=str(node.out), attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Flow Out")
     
+    @staticmethod
+    def _render_cond_key(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label="Check Key (One-Shot)"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
+                dpg.add_text("Key (A-Z, SPACE):")
+                node.field_key = dpg.add_input_text(width=60, default_value="SPACE")
+            with dpg.node_attribute(tag=str(node.out_res), attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Is Pressed?")
+                
+    @staticmethod
+    def _render_logic_if(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label="IF Condition"):
+            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
+            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=str(node.in_cond), attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Condition", color=(255,100,100))
+            with dpg.node_attribute(tag=str(node.out_true), attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("True", color=(100,255,100))
+            with dpg.node_attribute(tag=str(node.out_false), attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("False", color=(255,100,100))
+
+    @staticmethod
+    def _render_logic_loop(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label="For Loop"):
+            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
+            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            
+            _f_in2 = generate_uuid(); node.inputs[_f_in2] = PortType.FLOW
+            with dpg.node_attribute(tag=str(_f_in2), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Loop Back", color=(255,200,100))
+            
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
+                dpg.add_text("Count:")
+                node.field_count = dpg.add_input_int(width=80, default_value=3, min_value=1)
+            with dpg.node_attribute(tag=str(node.out_loop), attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Loop Body", color=(100,200,255))
+            with dpg.node_attribute(tag=str(node.out_finish), attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Finished", color=(200,200,200))
+            
+    @staticmethod
+    def _render_mt4_action(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label="MT4 Action"):
+            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
+            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_id = dpg.add_combo(["Move Relative (XYZ)", "Move Absolute (XYZ)", "Set Gripper (Abs)", "Grip Relative (Add)", "Homing"], default_value="Move Relative (XYZ)", width=150)
+            with dpg.node_attribute(tag=str(node.in_val1), attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("X / Grip")
+                node.field_v1 = dpg.add_input_float(width=60, default_value=0)
+            with dpg.node_attribute(tag=str(node.in_val2), attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Y")
+                node.field_v2 = dpg.add_input_float(width=60, default_value=0)
+            with dpg.node_attribute(tag=str(node.in_val3), attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Z")
+                node.field_v3 = dpg.add_input_float(width=60, default_value=0)
+            with dpg.node_attribute(tag=str(node.out_flow), attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Flow Out")
+            
+    @staticmethod
+    def _render_constant(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label="Constant"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
+                node.field_val = dpg.add_input_float(width=80, default_value=1.0)
+            with dpg.node_attribute(tag=str(node.out_val), attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Data")
+            
+    @staticmethod
+    def _render_print(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label="Print Log"):
+            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
+            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=str(node.inp_data), attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Data")
+            with dpg.node_attribute(tag=str(node.out_flow), attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Flow Out")
+            
+    @staticmethod
+    def _render_logger(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label="System Log (Flowless)"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                with dpg.child_window(width=200, height=100): 
+                    node.txt=dpg.add_text("", wrap=190)
+
+    @staticmethod
+    def _render_universal(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label="MT4 Core Driver"):
+            with dpg.node_attribute(tag=str(node.out_flow), attribute_type=dpg.mvNode_Attr_Output): 
+                dpg.add_text("Flow Out")
+                
+            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
+            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): 
+                dpg.add_text("Flow In")
+                
+            node.ui_fields = {}
+            node.setting_fields = {}
+            for key, label, default_val in node.driver.get_ui_schema():
+                aid = node.in_pins[key]
+                with dpg.node_attribute(tag=str(aid), attribute_type=dpg.mvNode_Attr_Input):
+                    with dpg.group(horizontal=True): 
+                        dpg.add_text(label, color=(255,255,0))
+                        node.ui_fields[key] = dpg.add_input_float(width=80, default_value=default_val, step=0)
+                        
+            dpg.add_node_attribute(attribute_type=dpg.mvNode_Attr_Static)
+            for key, label, default_val in node.driver.get_settings_schema():
+                aid = node.setting_pins[key]
+                with dpg.node_attribute(tag=str(aid), attribute_type=dpg.mvNode_Attr_Input):
+                    with dpg.group(horizontal=True): 
+                        dpg.add_text(label)
+                        node.setting_fields[key] = dpg.add_input_float(width=60, default_value=default_val, step=0)
+
+    @staticmethod
+    def _render_mt4_keyboard(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label="MT4 Keyboard"):
+            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
+            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
+                dpg.add_text("XY Move / QE: Z / UJ: Grip", color=(255,150,150))
+                dpg.add_text("ZX: Roll", color=(150,255,150))
+            with dpg.node_attribute(tag=str(node.out_x), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target X")
+            with dpg.node_attribute(tag=str(node.out_y), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Y")
+            with dpg.node_attribute(tag=str(node.out_z), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Z")
+            with dpg.node_attribute(tag=str(node.out_r), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Roll")
+            with dpg.node_attribute(tag=str(node.out_g), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Grip")
+            with dpg.node_attribute(tag=str(node.out_flow), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+            
+    @staticmethod
+    def _render_mt4_unity(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label="Unity Logic (MT4)"):
+            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
+            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=str(node.data_in_id), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("JSON")
+            with dpg.node_attribute(tag=str(node.out_x), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target X")
+            with dpg.node_attribute(tag=str(node.out_y), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Y")
+            with dpg.node_attribute(tag=str(node.out_z), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Z")
+            with dpg.node_attribute(tag=str(node.out_r), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Roll")
+            with dpg.node_attribute(tag=str(node.out_g), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Grip")
+            with dpg.node_attribute(tag=str(node.out_flow), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_udp(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label="UDP Receiver (MT4 JSON)"):
+            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
+            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_input_int(label="Port", width=80, default_value=6000, tag=f"p_{node.node_id}")
+                node.port = f"p_{node.node_id}"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_input_text(label="IP", width=100, default_value="192.168.50.63", tag=f"i_{node.node_id}")
+                node.ip = f"i_{node.node_id}"
+            with dpg.node_attribute(tag=str(node.out_json), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("JSON Out")
+            with dpg.node_attribute(tag=str(node.out_flow), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_sag(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=str(node.in_x), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("X In")
+            with dpg.node_attribute(tag=str(node.in_z), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Z In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
+                node.ui_sag = dpg.add_input_float(label="Sag Factor", width=80, default_value=0.05, step=0.01)
+            with dpg.node_attribute(tag=str(node.out_z), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Z Out (Comp)", color=(100,255,100))
+
+    @staticmethod
+    def _render_calib(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=str(node.in_x), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("X In")
+            with dpg.node_attribute(tag=str(node.in_y), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Y In")
+            with dpg.node_attribute(tag=str(node.in_z), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Z In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.ui_x = dpg.add_input_float(label="X Offset", width=70, default_value=0.0)
+                node.ui_y = dpg.add_input_float(label="Y Offset", width=70, default_value=0.0)
+                node.ui_z = dpg.add_input_float(label="Z Offset", width=70, default_value=0.0)
+                node.ui_s = dpg.add_input_float(label="Scale", width=70, default_value=1.0)
+            with dpg.node_attribute(tag=str(node.out_x), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("X Out", color=(100,255,100))
+            with dpg.node_attribute(tag=str(node.out_y), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Y Out", color=(100,255,100))
+            with dpg.node_attribute(tag=str(node.out_z), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Z Out", color=(100,255,100))
+
+    @staticmethod
+    def _render_tooltip(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=str(node.in_x), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("X In")
+            with dpg.node_attribute(tag=str(node.in_z), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Z In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.ui_len = dpg.add_input_float(label="Tool Len(mm)", width=70, default_value=0.0)
+                node.ui_ang = dpg.add_input_float(label="Angle(deg)", width=70, default_value=0.0)
+            with dpg.node_attribute(tag=str(node.out_x), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("X Out (Comp)", color=(100,255,100))
+            with dpg.node_attribute(tag=str(node.out_z), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Z Out (Comp)", color=(100,255,100))
+
+    @staticmethod
+    def _render_backlash(node):
+        with dpg.node(tag=str(node.node_id), parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=str(node.in_x), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("X In")
+            with dpg.node_attribute(tag=str(node.in_y), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Y In")
+            with dpg.node_attribute(tag=str(node.in_z), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Z In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.ui_dist = dpg.add_input_float(label="Decel Dist", width=70, default_value=15.0)
+                node.ui_dly = dpg.add_input_float(label="Stop Delay", width=70, default_value=100.0)
+            with dpg.node_attribute(tag=str(node.out_x), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("X Out", color=(100,255,100))
+            with dpg.node_attribute(tag=str(node.out_y), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Y Out", color=(100,255,100))
+            with dpg.node_attribute(tag=str(node.out_z), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Z Out", color=(100,255,100))
+
+# Callback functions
+def toggle_exec(s, a): 
+    engine_module.is_running = not engine_module.is_running
+    dpg.set_item_label("btn_run", "STOP" if engine_module.is_running else "RUN SCRIPT")
+
+def link_cb(s, a): 
+    p1, p2 = a[0], a[1]
+    
+    p1_is_out = False
+    for node in node_registry.values():
+        if p1 in [str(k) for k in node.outputs.keys()]: 
+            p1_is_out = True; break
+            
+    src, dst = (p1, p2) if p1_is_out else (p2, p1)
+    lid = dpg.add_node_link(str(src), str(dst), parent=s)
+    
+    src_node_id = dpg.get_item_parent(str(src))
+    dst_node_id = dpg.get_item_parent(str(dst))
+    try: src_node_id = int(src_node_id)
+    except: pass
+    try: dst_node_id = int(dst_node_id)
+    except: pass
+    try: src = int(src)
+    except: pass
+    try: dst = int(dst)
+    except: pass
+    
+    link_registry[lid] = {'source': src, 'target': dst, 'src_node_id': src_node_id, 'dst_node_id': dst_node_id}
+
+def del_link_cb(s, a): 
+    dpg.delete_item(a)
+    link_registry.pop(a, None)
+    link_registry.pop(int(a) if str(a).isdigit() else str(a), None)
+
+def add_node_cb(s, a, u): 
+    node = NodeFactory.create_node(u)
+    if node: NodeUIRenderer.render(node)
+
+def save_cb(s, a): save_graph(dpg.get_value("file_name_input"))
+def load_cb(s, a): load_graph(dpg.get_value("file_list_combo"))
+def update_file_list_ui(): update_ui_file_list()
+
+def update_ui_file_list(): 
+    if dpg.does_item_exist("file_list_combo"):
+        dpg.configure_item("file_list_combo", items=get_save_files())
+        
+def update_mt4_path_combo(items):
+    if dpg.does_item_exist("combo_mt4_path"):
+        dpg.configure_item("combo_mt4_path", items=items)
+
+def get_ui_value(tag): 
+    return dpg.get_value(tag) if dpg.does_item_exist(tag) else None
+    
+def set_ui_value(tag, val): 
+    if dpg.does_item_exist(tag):
+        if tag == "btn_mt4_record_label": dpg.set_item_label("btn_mt4_record", val)
+        else: dpg.set_value(tag, val)
+
+def get_item_pos_safe(attr):
+    return dpg.get_item_pos(str(attr)) if dpg.does_item_exist(str(attr)) else [0,0]
+
+def set_item_pos_safe(attr, pos):
+    if dpg.does_item_exist(str(attr)):
+        dpg.set_item_pos(str(attr), pos)
+
+def clear_editor():
+    for lid in list(link_registry.keys()): 
+        if dpg.does_item_exist(str(lid)): 
+            dpg.delete_item(str(lid))
+    for nid in list(node_registry.keys()): 
+        if dpg.does_item_exist(str(nid)): 
+            dpg.delete_item(str(nid))
+    link_registry.clear()
+    node_registry.clear()
+
+def add_dpg_link(src, dst, src_node, dst_node):
+    if not dpg.does_item_exist(str(src)) or not dpg.does_item_exist(str(dst)):
+        return
+    lid = dpg.add_node_link(str(src), str(dst), parent="node_editor")
+    link_registry[lid] = {'source': src, 'target': dst, 'src_node_id': src_node, 'dst_node_id': dst_node}
+
+def delete_selection(sender, app_data):
+    selected_links = dpg.get_selected_links("node_editor")
+    selected_nodes = dpg.get_selected_nodes("node_editor")
+    for lid in selected_links:
+        if lid in link_registry: del link_registry[lid]
+        if dpg.does_item_exist(lid): dpg.delete_item(lid)
+    for nid in selected_nodes:
+        try: nid_int = int(nid)
+        except: nid_int = nid
+        
+        if nid_int not in node_registry: continue
+        node = node_registry[nid_int]
+        my_ports = set(node.inputs.keys()) | set(node.outputs.keys())
+        links_to_remove = []
+        for lid, ldata in link_registry.items():
+            if ldata['source'] in my_ports or ldata['target'] in my_ports: 
+                links_to_remove.append(lid)
+        for lid in links_to_remove:
+            if lid in link_registry: del link_registry[lid]
+            if dpg.does_item_exist(lid): dpg.delete_item(lid)
+        del node_registry[nid_int]
+        if dpg.does_item_exist(nid): dpg.delete_item(nid)
+
+def __init_ui__():
+    threading.Thread(target=network_monitor_thread, daemon=True).start()
+    
+    dpg.create_context()
+    with dpg.handler_registry(): 
+        dpg.add_key_press_handler(dpg.mvKey_Delete, callback=delete_selection)
+
+    with dpg.window(tag="PrimaryWindow"):
+        with dpg.tab_bar():
+            with dpg.tab(label="MT4 Dashboard"):
+                with dpg.group(horizontal=True):
+                    with dpg.child_window(width=250, height=130, border=True):
+                        dpg.add_text("MT4 Status", color=(150,150,150)); 
+                        dpg.add_text("Status: Idle", tag="mt4_dash_status", color=(0,255,0))
+                        dpg.add_text("HW: Offline", tag="mt4_dash_link", color=(255,0,0))
+                        dpg.add_text("Latency: 0.0 ms", tag="mt4_dash_latency", color=(255,255,0))
+                    with dpg.child_window(width=350, height=130, border=True):
+                        dpg.add_text("Manual Control", color=(255,200,0))
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="X+", width=60, callback=mt4_manual_control_callback, user_data=('x', 10))
+                            dpg.add_button(label="X-", width=60, callback=mt4_manual_control_callback, user_data=('x', -10))
+                            dpg.add_text("|")
+                            dpg.add_button(label="Y+", width=60, callback=mt4_manual_control_callback, user_data=('y', 10))
+                            dpg.add_button(label="Y-", width=60, callback=mt4_manual_control_callback, user_data=('y', -10))
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="Z+", width=60, callback=mt4_manual_control_callback, user_data=('z', 10))
+                            dpg.add_button(label="Z-", width=60, callback=mt4_manual_control_callback, user_data=('z', -10))
+                            dpg.add_text("|")
+                            dpg.add_button(label="G+", width=60, callback=mt4_manual_control_callback, user_data=('gripper', 5))
+                            dpg.add_button(label="G-", width=60, callback=mt4_manual_control_callback, user_data=('gripper', -5))
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="R+", width=60, callback=mt4_manual_control_callback, user_data=('roll', 5))
+                            dpg.add_button(label="R-", width=60, callback=mt4_manual_control_callback, user_data=('roll', -5))
+                    with dpg.child_window(width=300, height=130, border=True):
+                        dpg.add_text("Direct Coord", color=(0,255,255))
+                        with dpg.group(horizontal=True):
+                            dpg.add_text("X"); dpg.add_input_int(tag="input_x", width=50, default_value=200, step=0)
+                            dpg.add_text("Y"); dpg.add_input_int(tag="input_y", width=50, default_value=0, step=0)
+                        with dpg.group(horizontal=True):
+                            dpg.add_text("Z"); dpg.add_input_int(tag="input_z", width=50, default_value=120, step=0)
+                            dpg.add_text("G"); dpg.add_input_int(tag="input_g", width=50, default_value=40, step=0)
+                            dpg.add_text("R"); dpg.add_input_int(tag="input_r", width=50, default_value=0, step=0)
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="Move", width=100, callback=mt4_move_to_coord_callback)
+                            dpg.add_button(label="Homing", width=100, callback=mt4_homing_callback)
+                    with dpg.child_window(width=150, height=130, border=True):
+                        dpg.add_text("Coords", color=(0,255,255))
+                        dpg.add_text("X: 0", tag="mt4_x")
+                        dpg.add_text("Y: 0", tag="mt4_y")
+                        dpg.add_text("Z: 0", tag="mt4_z")
+                        dpg.add_text("G: 0", tag="mt4_g")
+                        dpg.add_text("R: 0.0", tag="mt4_r")
+                    with dpg.child_window(width=200, height=130, border=True):
+                        dpg.add_text("Record & Play", color=(255,100,200))
+                        dpg.add_input_text(tag="path_name_input", default_value="my_path", width=130)
+                        dpg.add_button(label="Start Recording", tag="btn_mt4_record", width=130, callback=lambda s,a,u: toggle_mt4_record())
+                        dpg.add_combo(items=get_mt4_paths(), tag="combo_mt4_path", width=130)
+                        dpg.add_button(label="Play Selected", width=130, callback=play_mt4_path)
+
+            with dpg.tab(label="Files & System"):
+                with dpg.group(horizontal=True):
+                    with dpg.child_window(width=650, height=130, border=True):
+                        dpg.add_text("File Manager", color=(0,255,255))
+                        with dpg.group(horizontal=True):
+                            dpg.add_text("Save:")
+                            dpg.add_input_text(tag="file_name_input", default_value="my_graph", width=120)
+                            dpg.add_button(label="SAVE", callback=save_cb, width=60)
+                            dpg.add_spacer(width=20)
+                            dpg.add_text("Load:")
+                            dpg.add_combo(items=get_save_files(), tag="file_list_combo", width=120)
+                            dpg.add_button(label="LOAD", callback=load_cb, width=60)
+                            dpg.add_button(label="Refresh", callback=update_file_list_ui, width=60)
+                    with dpg.child_window(width=400, height=130, border=True):
+                        dpg.add_text("Network Info", color=(100,200,255))
+                        dpg.add_text("Loading...", tag="sys_tab_net", color=(180,180,180))
+
+        dpg.add_separator()
+        with dpg.group():
+            with dpg.group(horizontal=True):
+                dpg.add_text("Nodes:", color=(200,200,200))
+                dpg.add_button(label="START", callback=add_node_cb, user_data="START")
+                dpg.add_button(label="CHK KEY", callback=add_node_cb, user_data="COND_KEY")
+                dpg.add_button(label="IF", callback=add_node_cb, user_data="LOGIC_IF")
+                dpg.add_button(label="LOOP", callback=add_node_cb, user_data="LOGIC_LOOP")
+                dpg.add_button(label="MT4 ACTION", callback=add_node_cb, user_data="MT4_ACTION")
+                dpg.add_button(label="CONST", callback=add_node_cb, user_data="CONSTANT")
+                dpg.add_button(label="PRINT", callback=add_node_cb, user_data="PRINT")
+                dpg.add_button(label="DRIVER", callback=add_node_cb, user_data="MT4_DRIVER")
+                dpg.add_spacer(width=30)
+                dpg.add_text("Adv. Tools:", color=(255,200,0))
+                dpg.add_button(label="KEY", callback=add_node_cb, user_data="MT4_KEYBOARD")
+                dpg.add_button(label="UNITY", callback=add_node_cb, user_data="MT4_UNITY")
+                dpg.add_button(label="UDP", callback=add_node_cb, user_data="UDP_RECV")
+                dpg.add_button(label="GRAV SAG", callback=add_node_cb, user_data="MT4_SAG")
+                dpg.add_button(label="CALIBRATION", callback=add_node_cb, user_data="MT4_CALIB")
+                dpg.add_button(label="TOOL-TIP", callback=add_node_cb, user_data="MT4_TOOLTIP")
+                dpg.add_button(label="BACKLASH", callback=add_node_cb, user_data="MT4_BACKLASH")
+                dpg.add_spacer(width=50)
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
+
+        with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
+
+def start_gui():
+    __init_ui__()
+    dpg.create_viewport(title='PyGui MT4 Educational Build (Refactored)', width=1280, height=800)
+    dpg.setup_dearpygui()
+    dpg.set_primary_window("PrimaryWindow", True)
+    dpg.show_viewport()
+
+    last_logic_time = 0
+    LOGIC_RATE = 0.02
+    last_fb_time = 0
+
+    while dpg.is_dearpygui_running():
+        if mt4_dashboard["last_pkt_time"] > 0: 
+            dpg.set_value("mt4_dash_status", f"Status: {mt4_dashboard['status']}")
+        
+        if dpg.does_item_exist("mt4_dash_latency"): 
+            dpg.set_value("mt4_dash_latency", f"Latency: {mt4_dashboard.get('latency', 0.0):.1f} ms")
+
+        dpg.set_value("mt4_x", f"X: {mt4_current_pos['x']:.1f}")
+        dpg.set_value("mt4_y", f"Y: {mt4_current_pos['y']:.1f}")
+        dpg.set_value("mt4_z", f"Z: {mt4_current_pos['z']:.1f}")
+        dpg.set_value("mt4_g", f"G: {mt4_current_pos['gripper']:.1f}")
+        
+        if dpg.does_item_exist("mt4_r"): 
+            dpg.set_value("mt4_r", f"R: {mt4_current_pos['roll']:.1f}°")
+        
+        hw_status = mt4_dashboard.get('hw_link', HwStatus.OFFLINE)
+        if hw_status == HwStatus.ONLINE: 
+            dpg.set_value("mt4_dash_link", "HW: Online")
+            dpg.configure_item("mt4_dash_link", color=(0,255,0))
+        elif hw_status == HwStatus.SIMULATION: 
+            dpg.set_value("mt4_dash_link", "HW: Simulation")
+            dpg.configure_item("mt4_dash_link", color=(255,200,0))
+        else: 
+            dpg.set_value("mt4_dash_link", "HW: Offline")
+            dpg.configure_item("mt4_dash_link", color=(255,0,0))
+        
+        if dpg.does_item_exist("sys_tab_net"): 
+            dpg.set_value("sys_tab_net", sys_net_str)
+
+        if time.time() - last_fb_time > 0.05:
+            try:
+                fb = {
+                    "x": -mt4_current_pos['y']/1000.0, 
+                    "y": (mt4_current_pos['z'] - MT4_Z_OFFSET) / 1000.0, 
+                    "z": mt4_current_pos['x']/1000.0, 
+                    "roll": mt4_current_pos['roll'],
+                    "gripper": mt4_current_pos['gripper'], 
+                    "status": "Running"
+                }
+                sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock_send.sendto(json.dumps(fb).encode(), (MT4_UNITY_IP, MT4_FEEDBACK_PORT))
+            except: pass
+            last_fb_time = time.time()
+
+        if engine_module.is_running and (time.time() - last_logic_time > LOGIC_RATE):
+            NodeUIRenderer.sync_ui_to_state()
+            engine_module.execute_graph_once()           
+            last_logic_time = time.time()
+            
+        dpg.render_dearpygui_frame()
+
+    dpg.destroy_context()
