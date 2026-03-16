@@ -3,7 +3,31 @@ from typing import Any
 from core.factory import NodeFactory
 from core.serializer import GraphSerializer
 # 기존 맨 윗줄 import에 mt4_homing_callback을 껴 넣어주세요.
-from nodes.robots.mt4 import mt4_manual_control_callback, mt4_move_to_coord_callback, toggle_mt4_record, play_mt4_path, mt4_homing_callback
+from nodes.robots.mt4 import mt4_manual_control, mt4_move_to_coord, toggle_mt4_record, play_mt4_path, mt4_homing_logic, get_mt4_paths
+
+def _ui_mt4_manual_control_callback(sender, app_data, user_data):
+    axis, step = user_data
+    mt4_manual_control(axis, step)
+
+def _ui_mt4_move_to_coord_callback(sender, app_data, user_data):
+    x = dpg.get_value("input_x") if dpg.does_item_exist("input_x") else 200.0
+    y = dpg.get_value("input_y") if dpg.does_item_exist("input_y") else 0.0
+    z = dpg.get_value("input_z") if dpg.does_item_exist("input_z") else 120.0
+    g = dpg.get_value("input_g") if dpg.does_item_exist("input_g") else 40.0
+    r = dpg.get_value("input_r") if dpg.does_item_exist("input_r") else 0.0
+    mt4_move_to_coord(x, y, z, r, g)
+
+def _ui_toggle_mt4_record(sender, app_data, user_data):
+    custom_name = dpg.get_value("path_name_input") if dpg.does_item_exist("path_name_input") else None
+    toggle_mt4_record(custom_name)
+
+def _ui_play_mt4_path(sender, app_data, user_data):
+    filename = dpg.get_value("combo_mt4_path") if dpg.does_item_exist("combo_mt4_path") else None
+    if filename:
+        play_mt4_path(filename)
+
+def _ui_mt4_homing_callback(sender, app_data, user_data):
+    mt4_homing_logic()
 
 class UIManager:
     def __init__(self, engine):
@@ -33,13 +57,13 @@ class UIManager:
                         with dpg.child_window(width=350, height=130, border=True):
                             dpg.add_text("Manual Control", color=(255,200,0))
                             with dpg.group(horizontal=True):
-                                dpg.add_button(label="X+", width=60, callback=mt4_manual_control_callback, user_data=('x', 10)); dpg.add_button(label="X-", width=60, callback=mt4_manual_control_callback, user_data=('x', -10))
-                                dpg.add_text("|"); dpg.add_button(label="Y+", width=60, callback=mt4_manual_control_callback, user_data=('y', 10)); dpg.add_button(label="Y-", width=60, callback=mt4_manual_control_callback, user_data=('y', -10))
+                                dpg.add_button(label="X+", width=60, callback=_ui_mt4_manual_control_callback, user_data=('x', 10)); dpg.add_button(label="X-", width=60, callback=_ui_mt4_manual_control_callback, user_data=('x', -10))
+                                dpg.add_text("|"); dpg.add_button(label="Y+", width=60, callback=_ui_mt4_manual_control_callback, user_data=('y', 10)); dpg.add_button(label="Y-", width=60, callback=_ui_mt4_manual_control_callback, user_data=('y', -10))
                             with dpg.group(horizontal=True):
-                                dpg.add_button(label="Z+", width=60, callback=mt4_manual_control_callback, user_data=('z', 10)); dpg.add_button(label="Z-", width=60, callback=mt4_manual_control_callback, user_data=('z', -10))
-                                dpg.add_text("|"); dpg.add_button(label="G+", width=60, callback=mt4_manual_control_callback, user_data=('gripper', 5)); dpg.add_button(label="G-", width=60, callback=mt4_manual_control_callback, user_data=('gripper', -5))
+                                dpg.add_button(label="Z+", width=60, callback=_ui_mt4_manual_control_callback, user_data=('z', 10)); dpg.add_button(label="Z-", width=60, callback=_ui_mt4_manual_control_callback, user_data=('z', -10))
+                                dpg.add_text("|"); dpg.add_button(label="G+", width=60, callback=_ui_mt4_manual_control_callback, user_data=('gripper', 5)); dpg.add_button(label="G-", width=60, callback=_ui_mt4_manual_control_callback, user_data=('gripper', -5))
                             with dpg.group(horizontal=True):
-                                dpg.add_button(label="R+", width=60, callback=mt4_manual_control_callback, user_data=('roll', 5)); dpg.add_button(label="R-", width=60, callback=mt4_manual_control_callback, user_data=('roll', -5))
+                                dpg.add_button(label="R+", width=60, callback=_ui_mt4_manual_control_callback, user_data=('roll', 5)); dpg.add_button(label="R-", width=60, callback=_ui_mt4_manual_control_callback, user_data=('roll', -5))
                         with dpg.child_window(width=300, height=130, border=True):
                             dpg.add_text("Direct Coord", color=(0,255,255))
                             with dpg.group(horizontal=True):
@@ -50,8 +74,8 @@ class UIManager:
                                 dpg.add_text("G"); dpg.add_input_int(tag="input_g", width=50, default_value=40, step=0)
                                 dpg.add_text("R"); dpg.add_input_int(tag="input_r", width=50, default_value=0, step=0)
                             with dpg.group(horizontal=True):
-                                dpg.add_button(label="Move", width=100, callback=mt4_move_to_coord_callback)
-                                dpg.add_button(label="Homing", width=100, callback=mt4_homing_callback)
+                                dpg.add_button(label="Move", width=100, callback=_ui_mt4_move_to_coord_callback)
+                                dpg.add_button(label="Homing", width=100, callback=_ui_mt4_homing_callback)
                         with dpg.child_window(width=150, height=130, border=True):
                             dpg.add_text("Coords", color=(0,255,255))
                             dpg.add_text("X: 0", tag="mt4_x"); dpg.add_text("Y: 0", tag="mt4_y")
@@ -60,9 +84,9 @@ class UIManager:
                         with dpg.child_window(width=200, height=130, border=True):
                             dpg.add_text("Record & Play", color=(255,100,200))
                             dpg.add_input_text(tag="path_name_input", default_value="my_path", width=130)
-                            dpg.add_button(label="Start Recording", tag="btn_mt4_record", width=130, callback=lambda s,a,u: toggle_mt4_record())
+                            dpg.add_button(label="Start Recording", tag="btn_mt4_record", width=130, callback=_ui_toggle_mt4_record)
                             dpg.add_combo(items=[], tag="combo_mt4_path", width=130)
-                            dpg.add_button(label="Play Selected", width=130, callback=play_mt4_path)
+                            dpg.add_button(label="Play Selected", width=130, callback=_ui_play_mt4_path)
 
                 with dpg.tab(label="Files & System"):
                     with dpg.group(horizontal=True):

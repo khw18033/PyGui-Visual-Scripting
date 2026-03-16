@@ -110,9 +110,13 @@ class MT4DriverNode(BaseNode):
             cmd = f"G0 X{nx:.1f} Y{ny:.1f} Z{nz:.1f} A{nr:.1f}\nM3 S{int(ng)}\n"
             if cmd != self.last_cmd:
                 if ser and ser.is_open:
-                    try: ser.write(cmd.encode()); self.last_write_time = time.time()
+                    try: 
+                        ser.write(cmd.encode())
+                        self.last_write_time = time.time()
+                        self.last_cmd = cmd
                     except: pass
-                self.last_cmd = cmd
+                else:
+                    self.last_cmd = cmd
 
         self.outputs["Flow Out"] = True # 파이프라인 개통
         return "Flow Out"
@@ -279,11 +283,11 @@ class MT4UnityNode(BaseNode):
         is_overridden = (time.time() < mt4_manual_override_until) or mt4_mode.get("playing", False)
 
         if is_overridden:
-            self.output_data[self.out_x] = mt4_target_goal['x']
-            self.output_data[self.out_y] = mt4_target_goal['y']
-            self.output_data[self.out_z] = mt4_target_goal['z']
-            self.output_data[self.out_g] = mt4_target_goal['gripper']
-            self.output_data[self.out_r] = mt4_target_goal['roll']
+            self.outputs["Target X"] = mt4_target_goal['x']
+            self.outputs["Target Y"] = mt4_target_goal['y']
+            self.outputs["Target Z"] = mt4_target_goal['z']
+            self.outputs["Target Grip"] = mt4_target_goal['gripper']
+            self.outputs["Target Roll"] = mt4_target_goal['roll']
         else:
 
             if is_new_msg:
@@ -315,14 +319,15 @@ class MT4UnityNode(BaseNode):
                             send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
                     elif msg_type == "MOVE":
                         if time.time() > mt4_collision_lock_until:
-                            if 'z' in parsed: self.output_data[self.out_x] = float(parsed['z']) * 1000.0
-                            if 'x' in parsed: self.output_data[self.out_y] = -float(parsed['x']) * 1000.0
-                            if 'y' in parsed: self.output_data[self.out_z] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
-                            if 'gripper' in parsed: self.output_data[self.out_g] = float(parsed['gripper']) 
-                            if 'roll' in parsed: self.output_data[self.out_r] = float(parsed['roll'])
+                            if 'z' in parsed: self.outputs["Target X"] = float(parsed['z']) * 1000.0
+                            if 'x' in parsed: self.outputs["Target Y"] = -float(parsed['x']) * 1000.0
+                            if 'y' in parsed: self.outputs["Target Z"] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
+                            if 'gripper' in parsed: self.outputs["Target Grip"] = float(parsed['gripper']) 
+                            if 'roll' in parsed: self.outputs["Target Roll"] = float(parsed['roll'])
                 except: pass 
                 
-        return self.outputs
+        self.outputs["Flow Out"] = True
+        return "Flow Out"
         
 
 from core.input_manager import global_input_manager
@@ -460,7 +465,6 @@ class UDPReceiverNode(BaseNode):
 # ==========================================
 # 📊 MT4 Dashboard Callbacks & Threads (Answer_code.py 100% 이식)
 # ==========================================
-import dearpygui.dearpygui as dpg
 
 def mt4_apply_limits():
     global mt4_target_goal, mt4_current_pos, ser, mt4_collision_lock_until
@@ -481,24 +485,22 @@ def mt4_apply_limits():
             pass
         mt4_current_pos.update(mt4_target_goal)
 
-def mt4_manual_control_callback(sender, app_data, user_data):
+def mt4_manual_control(axis, step):
     global mt4_manual_override_until, mt4_target_goal, mt4_current_pos
     mt4_manual_override_until = time.time() + 1.5
-    axis, step = user_data
     mt4_target_goal[axis] = mt4_current_pos[axis] + step
     mt4_apply_limits()
 
-def mt4_move_to_coord_callback(sender, app_data, user_data):
+def mt4_move_to_coord(x, y, z, roll, gripper):
     global mt4_manual_override_until, mt4_target_goal
-    import dearpygui.dearpygui as dpg
     mt4_manual_override_until = time.time() + 2.0
-    mt4_target_goal['x'] = float(dpg.get_value("input_x"))
-    mt4_target_goal['y'] = float(dpg.get_value("input_y"))
-    mt4_target_goal['z'] = float(dpg.get_value("input_z"))
-    mt4_target_goal['gripper'] = float(dpg.get_value("input_g"))
-    if dpg.does_item_exist("input_r"): 
-        mt4_target_goal['roll'] = float(dpg.get_value("input_r"))
-    mt4_apply_limits()
+    mt4_target_goal['x'] = float(x)
+    mt4_target_goal['y'] = float(y)
+    mt4_target_goal['z'] = float(z)
+    mt4_target_goal['gripper'] = float(gripper)
+    if roll is not None:
+        mt4_target_goal['roll'] = float(roll)
+
 
 def play_mt4_path_thread(filepath):
     global mt4_mode, mt4_target_goal, mt4_manual_override_until, mt4_collision_lock_until
@@ -524,34 +526,26 @@ def play_mt4_path_thread(filepath):
 
 def toggle_mt4_record(custom_name=None):
     global mt4_record_f, mt4_record_writer, mt4_record_temp_name
-    
-    def get_mt4_paths():
-        if not os.path.exists("path_record"): return []
-        return [f for f in os.listdir("path_record") if f.endswith(".csv")]
 
     if mt4_mode["recording"]:
         mt4_mode["recording"] = False
         if mt4_record_f: mt4_record_f.close()
-        if not custom_name and dpg.does_item_exist("path_name_input"): custom_name = dpg.get_value("path_name_input")
         if custom_name and mt4_record_temp_name:
             if not custom_name.endswith(".csv"): custom_name += ".csv"
             final_path = os.path.join("path_record", custom_name)
             try: os.rename(mt4_record_temp_name, final_path)
             except: pass
-        dpg.set_item_label("btn_mt4_record", "Start Recording")
-        if dpg.does_item_exist("combo_mt4_path"): dpg.configure_item("combo_mt4_path", items=get_mt4_paths())
     else:
         mt4_mode["recording"] = True
         os.makedirs("path_record", exist_ok=True)
         fname = os.path.join("path_record", f"path_{time.strftime('%Y%m%d_%H%M%S')}.csv")
         mt4_record_temp_name = fname
         mt4_record_f = open(fname, 'w', newline='')
+        import csv
         mt4_record_writer = csv.writer(mt4_record_f)
         mt4_record_writer.writerow(['x', 'y', 'z', 'roll','gripper'])
-        dpg.set_item_label("btn_mt4_record", "Stop Recording")
 
-def play_mt4_path(sender=None, app_data=None, user_data=None, filename=None):
-    if not filename: filename = dpg.get_value("combo_mt4_path")
+def play_mt4_path(filename=None):
     if not filename or mt4_mode["playing"] or time.time() < mt4_collision_lock_until: return
     filepath = os.path.join("path_record", filename)
     if os.path.exists(filepath): 
@@ -587,14 +581,13 @@ def init_mt4_serial():
         import serial
         ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=0.05)
         mt4_dashboard["hw_link"] = "Online"
-        time.sleep(2); ser.write(b"$H\r\n"); time.sleep(15); ser.write(b"M20\r\n"); ser.write(b"G90\r\n"); ser.write(b"G1 F2000\r\n"); time.sleep(1)
-        ser.write(b"G0 X200 Y0 Z120 F2000\r\n"); ser.write(b"M3 S40\r\n") 
-    except Exception: 
-        mt4_dashboard["hw_link"] = "Simulation"
+        time.sleep(2); ser.write(b"\r\n"); time.sleep(15); ser.write(b"M20\r\n"); ser.write(b"G90\r\n"); ser.write(b"G1 F2000\r\n"); time.sleep(1)
+        ser.write(b"G0 X200 Y0 Z120 F2000\r\n"); ser.write(b"M3 S40\r\n")
+    except Exception:
         ser = None
-
-# 👇 파일 맨 끝에 붙여넣기 (호밍 기능)
-def mt4_homing_callback(sender, app_data, user_data): 
+        mt4_dashboard["hw_link"] = "Offline"
+        
+def mt4_homing_logic(): 
     import threading
     threading.Thread(target=mt4_homing_thread_func, daemon=True).start()
 
@@ -603,7 +596,7 @@ def mt4_homing_thread_func():
     if ser:
         mt4_manual_override_until = time.time() + 20.0
         mt4_dashboard["status"] = "HOMING..."
-        ser.write(b"$H\r\n"); time.sleep(15); ser.write(b"M20\r\n"); ser.write(b"G90\r\n"); ser.write(b"G1 F2000\r\n")
+        ser.write(b"\r\n"); time.sleep(15); ser.write(b"M20\r\n"); ser.write(b"G90\r\n"); ser.write(b"G1 F2000\r\n")
         mt4_target_goal.update({'x':200.0, 'y':0.0, 'z':120.0, 'roll':0.0, 'gripper':40.0})
         mt4_current_pos.update(mt4_target_goal)
         ser.write(b"G0 X200 Y0 Z120 A0 F2000\r\n"); ser.write(b"M3 S40\r\n")

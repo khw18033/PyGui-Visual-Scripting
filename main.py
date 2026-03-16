@@ -24,12 +24,18 @@ def network_monitor_thread():
 
 def auto_reconnect_mt4_thread():
     import os
+    import serial.tools.list_ports
     while True:
-        if mt4_dashboard["hw_link"] != "Online" and os.path.exists('/dev/ttyUSB0'):
-            try: init_mt4_serial() 
-            except: pass
-        time.sleep(3)
-
+        if mt4_dashboard["hw_link"] != "Online":
+            port_exists = False
+            if os.name == 'nt':
+                if serial.tools.list_ports.comports(): port_exists = True
+            else:
+                if os.path.exists('/dev/ttyUSB0'): port_exists = True
+                
+            if port_exists:
+                try: init_mt4_serial()
+                except: pass
 def main():
     print("[System] Visual Scripting Framework Booting...")
 
@@ -67,6 +73,14 @@ def main():
         else: dpg.configure_item("mt4_dash_link", color=(255,0,0))
         
         if dpg.does_item_exist("sys_tab_net"): dpg.set_value("sys_tab_net", sys_net_str)
+
+        from nodes.robots.mt4 import mt4_mode, get_mt4_paths
+        if dpg.does_item_exist("btn_mt4_record"):
+            current_label = "Stop Recording" if mt4_mode["recording"] else "Start Recording"
+            if dpg.get_item_label("btn_mt4_record") != current_label:
+                dpg.set_item_label("btn_mt4_record", current_label)
+                if not mt4_mode["recording"] and dpg.does_item_exist("combo_mt4_path"):
+                    dpg.configure_item("combo_mt4_path", items=get_mt4_paths())
 
         # 2. 메인 파이프라인 연산
         if current_time - last_logic_time > LOGIC_RATE:

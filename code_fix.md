@@ -243,3 +243,29 @@
 - 수정 내용:
   - `parse_unity_packet` 헬퍼 함수를 추가하여 JSON 규격과 쉼표 기반 레거시 문자열 포맷을 모두 파싱할 수 있도록 하위 호환성을 확보함. 유니티의 방향키 이벤트(`KEY`/`DIRECTION`)를 좌표 증분 로직에 매핑.
   - `MT4KeyboardNode`가 더 이상 전역 변수를 직접 훼손하지 않고, 순수하게 자신의 연산 결과를 출력 핀(`Target X` 등)으로만 내보내도록 데이터 흐름의 단방향 원칙을 엄격하게 복구함.
+---
+
+## [2026-03-16 17:00:00 (KST 기준 현재 시간 반영)] mt4.py - MT4UnityNode 로봇 미작동 버그 수정
+- **수정 사유:** Unity에서 수신된 데이터를 바탕으로 로봇 위치값을 갱신할 때 MT4UnityNode의 execute() 메서드가 잘못된 변수(self.output_data, self.out_x 등)를 참조하여 예외(AttributeError)를 발생시키고 있었음. 또한 예외가 	ry-except: pass로 무시되어 디버깅을 어렵게 했음. 추가적으로 엔진 파이프라인의 다음 노드를 실행시키기 위한 Flow Out 반환값이 문자열이 아닌 딕셔너리로 설정되어 파이프라인 흐름이 끊기는 문제가 있었음.
+- **수정 사항:**
+  1. self.output_data[self.out_x] 등의 잘못된 프로퍼티 참조를 프레임워크 규격에 맞게 self.outputs["Target X"] 형식의 딕셔너리 키-값 할당으로 변경함.
+  2. Override 모드와 일반 MOVE 수신 모드 모두 동일하게 self.outputs를 갱신하도록 수정함.
+  3. 메서드 마지막의 
+eturn self.outputs 구문을 다음 노드 흐름을 실행하기 위해 
+eturn "Flow Out"으로 수정하고, self.outputs["Flow Out"] = True로 파이프라인 개통 상태를 유지하도록 변경함.
+
+---
+
+## [2026-03-16 17:15:00 (KST 기준 현재 시간 반영)] mt4.py - 로봇 미작동 및 시리얼 연결 버그 수정
+- **수정 사유:** MT4UnityNode 데이터 수신부가 수정되었음에도 불구하고, 로봇 하드웨어에 G-Code 명령이 실질적으로 전달되지 않는 명령어 캐싱 로직 오류 (사일런트 통신 단절)가 발견됨. mt4.py의 MT4DriverNode에서 로봇으로 명령을 보낼 때, 실제 시리얼 포트에 데이터를 보내지도 못했으면서 self.last_cmd = cmd를 맵핑해버리는 위치 오류가 존재함. 이로 인해 최초 통신 지연이나 일시적 포트 단절 후 복구되어도 새로운 명령을 받아들이지 못함.
+- **수정 사항:** MT4DriverNode.execute() 내의 시리얼 송신부에서 self.last_cmd = cmd 할당 라인을 실제 시리얼 송신(ser.write())이 성공하는 	ry 블록 내부로 이동시켜, 통신이 정상일 때만 이전 명령어 상태를 갱신하도록 바로잡음.
+
+---
+
+## [2026-03-16 17:30:00 (KST 기준 현재 시간 반영)] mt4.py - DearPyGui UI 종속성 완벽 제거 (의존성 분리)
+- **수정 사유:** 비즈니스/하드웨어 제어 로직을 담당하는 핵심 파일인 mt4.py 내부에 UI 라이브러리(dearpygui) 객체와 메서드(# dpg.get_value 등)가 강하게 결합되어 있어, 추후 프로젝트가 백엔드/프론트엔드 분리 혹은 다른 GUI 프레임워크로 넘어갈 시 치명적인 의존성(Dependency) 문제가 발생할 위험성이 높았음.
+- **수정 사항:**
+  1. mt4.py 내부에서 UI를 조작하거나 값을 가져오는 모든 콜백 함수(mt4_manual_control_callback, mt4_move_to_coord_callback, 	oggle_mt4_record, play_mt4_path 등)를 파라미터를 명시적으로 받는 순수 논리 함수로 리팩토링함.
+  2. mt4.py 상단의 import dearpygui.dearpygui as dpg 구문 및 관련 코드를 일괄 제거하여 완전한 UI 독립성(Agnostic)을 확보함.
+  3. ui/dpg_manager.py에 UI의 상태값을 읽고 해당 순수 논리 함수들에 값을 넘겨주는 "UI 전용 중간 콜백 래퍼(_ui_...)" 함수들을 작성하여, UI 조작은 오직 UI 레이어 안에서만 수행되도록 책임을 분리함.
+  4. 상태 변화(예: 녹화 시작/정지 버튼 텍스트 변경)에 따른 UI 동기화는 렌더링 측루프 코드인 main.py의 UI 틱 부분에서 모델 상태(mt4_mode)를 폴링(Polling)하여 UI를 안전하게 변경하도록 개선함.
