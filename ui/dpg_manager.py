@@ -148,109 +148,109 @@ class NodeUIRenderer:
 
     @staticmethod
     def _render_start(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label="START"):
-            with dpg.node_attribute(tag=str(node.out), attribute_type=dpg.mvNode_Attr_Output): 
+        with dpg.node(tag=node.node_id, parent="node_editor", label="START"):
+            with dpg.node_attribute(tag=node.out, attribute_type=dpg.mvNode_Attr_Output): 
                 dpg.add_text("Flow Out")
     
     @staticmethod
     def _render_cond_key(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label="Check Key (One-Shot)"):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Check Key (One-Shot)"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
                 dpg.add_text("Key (A-Z, SPACE):")
                 node.field_key = dpg.add_input_text(width=60, default_value="SPACE")
-            with dpg.node_attribute(tag=str(node.out_res), attribute_type=dpg.mvNode_Attr_Output): 
+            with dpg.node_attribute(tag=node.out_res, attribute_type=dpg.mvNode_Attr_Output): 
                 dpg.add_text("Is Pressed?")
                 
     @staticmethod
     def _render_logic_if(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label="IF Condition"):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="IF Condition"):
             _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
-            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): 
+            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): 
                 dpg.add_text("Flow In")
-            with dpg.node_attribute(tag=str(node.in_cond), attribute_type=dpg.mvNode_Attr_Input): 
+            with dpg.node_attribute(tag=node.in_cond, attribute_type=dpg.mvNode_Attr_Input): 
                 dpg.add_text("Condition", color=(255,100,100))
-            with dpg.node_attribute(tag=str(node.out_true), attribute_type=dpg.mvNode_Attr_Output): 
+            with dpg.node_attribute(tag=node.out_true, attribute_type=dpg.mvNode_Attr_Output): 
                 dpg.add_text("True", color=(100,255,100))
-            with dpg.node_attribute(tag=str(node.out_false), attribute_type=dpg.mvNode_Attr_Output): 
+            with dpg.node_attribute(tag=node.out_false, attribute_type=dpg.mvNode_Attr_Output): 
                 dpg.add_text("False", color=(255,100,100))
 
     @staticmethod
     def _render_logic_loop(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label="For Loop"):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="For Loop"):
             _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
-            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             
             _f_in2 = generate_uuid(); node.inputs[_f_in2] = PortType.FLOW
-            with dpg.node_attribute(tag=str(_f_in2), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Loop Back", color=(255,200,100))
+            with dpg.node_attribute(tag=_f_in2, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Loop Back", color=(255,200,100))
             
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
                 dpg.add_text("Count:")
                 node.field_count = dpg.add_input_int(width=80, default_value=3, min_value=1)
-            with dpg.node_attribute(tag=str(node.out_loop), attribute_type=dpg.mvNode_Attr_Output): 
+            with dpg.node_attribute(tag=node.out_loop, attribute_type=dpg.mvNode_Attr_Output): 
                 dpg.add_text("Loop Body", color=(100,200,255))
-            with dpg.node_attribute(tag=str(node.out_finish), attribute_type=dpg.mvNode_Attr_Output): 
+            with dpg.node_attribute(tag=node.out_finish, attribute_type=dpg.mvNode_Attr_Output): 
                 dpg.add_text("Finished", color=(200,200,200))
             
     @staticmethod
     def _render_mt4_action(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label="MT4 Action"):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="MT4 Action"):
             _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
-            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.combo_id = dpg.add_combo(["Move Relative (XYZ)", "Move Absolute (XYZ)", "Set Gripper (Abs)", "Grip Relative (Add)", "Homing"], default_value="Move Relative (XYZ)", width=150)
-            with dpg.node_attribute(tag=str(node.in_val1), attribute_type=dpg.mvNode_Attr_Input): 
+            with dpg.node_attribute(tag=node.in_val1, attribute_type=dpg.mvNode_Attr_Input): 
                 dpg.add_text("X / Grip")
                 node.field_v1 = dpg.add_input_float(width=60, default_value=0)
-            with dpg.node_attribute(tag=str(node.in_val2), attribute_type=dpg.mvNode_Attr_Input): 
+            with dpg.node_attribute(tag=node.in_val2, attribute_type=dpg.mvNode_Attr_Input): 
                 dpg.add_text("Y")
                 node.field_v2 = dpg.add_input_float(width=60, default_value=0)
-            with dpg.node_attribute(tag=str(node.in_val3), attribute_type=dpg.mvNode_Attr_Input): 
+            with dpg.node_attribute(tag=node.in_val3, attribute_type=dpg.mvNode_Attr_Input): 
                 dpg.add_text("Z")
                 node.field_v3 = dpg.add_input_float(width=60, default_value=0)
-            with dpg.node_attribute(tag=str(node.out_flow), attribute_type=dpg.mvNode_Attr_Output): 
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): 
                 dpg.add_text("Flow Out")
             
     @staticmethod
     def _render_constant(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label="Constant"):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Constant"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
                 node.field_val = dpg.add_input_float(width=80, default_value=1.0)
-            with dpg.node_attribute(tag=str(node.out_val), attribute_type=dpg.mvNode_Attr_Output): 
+            with dpg.node_attribute(tag=node.out_val, attribute_type=dpg.mvNode_Attr_Output): 
                 dpg.add_text("Data")
             
     @staticmethod
     def _render_print(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label="Print Log"):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Print Log"):
             _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
-            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): 
+            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): 
                 dpg.add_text("Flow In")
-            with dpg.node_attribute(tag=str(node.inp_data), attribute_type=dpg.mvNode_Attr_Input): 
+            with dpg.node_attribute(tag=node.inp_data, attribute_type=dpg.mvNode_Attr_Input): 
                 dpg.add_text("Data")
-            with dpg.node_attribute(tag=str(node.out_flow), attribute_type=dpg.mvNode_Attr_Output): 
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): 
                 dpg.add_text("Flow Out")
             
     @staticmethod
     def _render_logger(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label="System Log (Flowless)"):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="System Log (Flowless)"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 with dpg.child_window(width=200, height=100): 
                     node.txt=dpg.add_text("", wrap=190)
 
     @staticmethod
     def _render_universal(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label="MT4 Core Driver"):
-            with dpg.node_attribute(tag=str(node.out_flow), attribute_type=dpg.mvNode_Attr_Output): 
+        with dpg.node(tag=node.node_id, parent="node_editor", label="MT4 Core Driver"):
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): 
                 dpg.add_text("Flow Out")
                 
             _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
-            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): 
+            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): 
                 dpg.add_text("Flow In")
                 
             node.ui_fields = {}
             node.setting_fields = {}
             for key, label, default_val in node.driver.get_ui_schema():
                 aid = node.in_pins[key]
-                with dpg.node_attribute(tag=str(aid), attribute_type=dpg.mvNode_Attr_Input):
+                with dpg.node_attribute(tag=aid, attribute_type=dpg.mvNode_Attr_Input):
                     with dpg.group(horizontal=True): 
                         dpg.add_text(label, color=(255,255,0))
                         node.ui_fields[key] = dpg.add_input_float(width=80, default_value=default_val, step=0)
@@ -258,101 +258,101 @@ class NodeUIRenderer:
             dpg.add_node_attribute(attribute_type=dpg.mvNode_Attr_Static)
             for key, label, default_val in node.driver.get_settings_schema():
                 aid = node.setting_pins[key]
-                with dpg.node_attribute(tag=str(aid), attribute_type=dpg.mvNode_Attr_Input):
+                with dpg.node_attribute(tag=aid, attribute_type=dpg.mvNode_Attr_Input):
                     with dpg.group(horizontal=True): 
                         dpg.add_text(label)
                         node.setting_fields[key] = dpg.add_input_float(width=60, default_value=default_val, step=0)
 
     @staticmethod
     def _render_mt4_keyboard(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label="MT4 Keyboard"):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="MT4 Keyboard"):
             _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
-            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
                 dpg.add_text("XY Move / QE: Z / UJ: Grip", color=(255,150,150))
                 dpg.add_text("ZX: Roll", color=(150,255,150))
-            with dpg.node_attribute(tag=str(node.out_x), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target X")
-            with dpg.node_attribute(tag=str(node.out_y), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Y")
-            with dpg.node_attribute(tag=str(node.out_z), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Z")
-            with dpg.node_attribute(tag=str(node.out_r), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Roll")
-            with dpg.node_attribute(tag=str(node.out_g), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Grip")
-            with dpg.node_attribute(tag=str(node.out_flow), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+            with dpg.node_attribute(tag=node.out_x, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target X")
+            with dpg.node_attribute(tag=node.out_y, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Y")
+            with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Z")
+            with dpg.node_attribute(tag=node.out_r, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Roll")
+            with dpg.node_attribute(tag=node.out_g, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Grip")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
             
     @staticmethod
     def _render_mt4_unity(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label="Unity Logic (MT4)"):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Unity Logic (MT4)"):
             _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
-            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
-            with dpg.node_attribute(tag=str(node.data_in_id), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("JSON")
-            with dpg.node_attribute(tag=str(node.out_x), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target X")
-            with dpg.node_attribute(tag=str(node.out_y), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Y")
-            with dpg.node_attribute(tag=str(node.out_z), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Z")
-            with dpg.node_attribute(tag=str(node.out_r), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Roll")
-            with dpg.node_attribute(tag=str(node.out_g), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Grip")
-            with dpg.node_attribute(tag=str(node.out_flow), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.data_in_id, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("JSON")
+            with dpg.node_attribute(tag=node.out_x, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target X")
+            with dpg.node_attribute(tag=node.out_y, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Y")
+            with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Z")
+            with dpg.node_attribute(tag=node.out_r, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Roll")
+            with dpg.node_attribute(tag=node.out_g, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Grip")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
     def _render_udp(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label="UDP Receiver (MT4 JSON)"):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="UDP Receiver (MT4 JSON)"):
             _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
-            with dpg.node_attribute(tag=str(_f_in), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_input_int(label="Port", width=80, default_value=6000, tag=f"p_{node.node_id}")
                 node.port = f"p_{node.node_id}"
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_input_text(label="IP", width=100, default_value="192.168.50.63", tag=f"i_{node.node_id}")
                 node.ip = f"i_{node.node_id}"
-            with dpg.node_attribute(tag=str(node.out_json), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("JSON Out")
-            with dpg.node_attribute(tag=str(node.out_flow), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+            with dpg.node_attribute(tag=node.out_json, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("JSON Out")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
     def _render_sag(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label=node.label):
-            with dpg.node_attribute(tag=str(node.in_x), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("X In")
-            with dpg.node_attribute(tag=str(node.in_z), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Z In")
+        with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=node.in_x, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("X In")
+            with dpg.node_attribute(tag=node.in_z, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Z In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
                 node.ui_sag = dpg.add_input_float(label="Sag Factor", width=80, default_value=0.05, step=0.01)
-            with dpg.node_attribute(tag=str(node.out_z), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Z Out (Comp)", color=(100,255,100))
+            with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Z Out (Comp)", color=(100,255,100))
 
     @staticmethod
     def _render_calib(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label=node.label):
-            with dpg.node_attribute(tag=str(node.in_x), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("X In")
-            with dpg.node_attribute(tag=str(node.in_y), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Y In")
-            with dpg.node_attribute(tag=str(node.in_z), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Z In")
+        with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=node.in_x, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("X In")
+            with dpg.node_attribute(tag=node.in_y, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Y In")
+            with dpg.node_attribute(tag=node.in_z, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Z In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.ui_x = dpg.add_input_float(label="X Offset", width=70, default_value=0.0)
                 node.ui_y = dpg.add_input_float(label="Y Offset", width=70, default_value=0.0)
                 node.ui_z = dpg.add_input_float(label="Z Offset", width=70, default_value=0.0)
                 node.ui_s = dpg.add_input_float(label="Scale", width=70, default_value=1.0)
-            with dpg.node_attribute(tag=str(node.out_x), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("X Out", color=(100,255,100))
-            with dpg.node_attribute(tag=str(node.out_y), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Y Out", color=(100,255,100))
-            with dpg.node_attribute(tag=str(node.out_z), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Z Out", color=(100,255,100))
+            with dpg.node_attribute(tag=node.out_x, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("X Out", color=(100,255,100))
+            with dpg.node_attribute(tag=node.out_y, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Y Out", color=(100,255,100))
+            with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Z Out", color=(100,255,100))
 
     @staticmethod
     def _render_tooltip(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label=node.label):
-            with dpg.node_attribute(tag=str(node.in_x), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("X In")
-            with dpg.node_attribute(tag=str(node.in_z), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Z In")
+        with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=node.in_x, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("X In")
+            with dpg.node_attribute(tag=node.in_z, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Z In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.ui_len = dpg.add_input_float(label="Tool Len(mm)", width=70, default_value=0.0)
                 node.ui_ang = dpg.add_input_float(label="Angle(deg)", width=70, default_value=0.0)
-            with dpg.node_attribute(tag=str(node.out_x), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("X Out (Comp)", color=(100,255,100))
-            with dpg.node_attribute(tag=str(node.out_z), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Z Out (Comp)", color=(100,255,100))
+            with dpg.node_attribute(tag=node.out_x, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("X Out (Comp)", color=(100,255,100))
+            with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Z Out (Comp)", color=(100,255,100))
 
     @staticmethod
     def _render_backlash(node):
-        with dpg.node(tag=str(node.node_id), parent="node_editor", label=node.label):
-            with dpg.node_attribute(tag=str(node.in_x), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("X In")
-            with dpg.node_attribute(tag=str(node.in_y), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Y In")
-            with dpg.node_attribute(tag=str(node.in_z), attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Z In")
+        with dpg.node(tag=node.node_id, parent="node_editor", label=node.label):
+            with dpg.node_attribute(tag=node.in_x, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("X In")
+            with dpg.node_attribute(tag=node.in_y, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Y In")
+            with dpg.node_attribute(tag=node.in_z, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Z In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.ui_dist = dpg.add_input_float(label="Decel Dist", width=70, default_value=15.0)
                 node.ui_dly = dpg.add_input_float(label="Stop Delay", width=70, default_value=100.0)
-            with dpg.node_attribute(tag=str(node.out_x), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("X Out", color=(100,255,100))
-            with dpg.node_attribute(tag=str(node.out_y), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Y Out", color=(100,255,100))
-            with dpg.node_attribute(tag=str(node.out_z), attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Z Out", color=(100,255,100))
+            with dpg.node_attribute(tag=node.out_x, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("X Out", color=(100,255,100))
+            with dpg.node_attribute(tag=node.out_y, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Y Out", color=(100,255,100))
+            with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Z Out", color=(100,255,100))
 
 # Callback functions
 def toggle_exec(s, a): 
@@ -364,29 +364,20 @@ def link_cb(s, a):
     
     p1_is_out = False
     for node in node_registry.values():
-        if p1 in [str(k) for k in node.outputs.keys()]: 
+        if p1 in node.outputs.keys(): 
             p1_is_out = True; break
             
     src, dst = (p1, p2) if p1_is_out else (p2, p1)
-    lid = dpg.add_node_link(str(src), str(dst), parent=s)
+    lid = dpg.add_node_link(src, dst, parent=s)
     
-    src_node_id = dpg.get_item_parent(str(src))
-    dst_node_id = dpg.get_item_parent(str(dst))
-    try: src_node_id = int(src_node_id)
-    except: pass
-    try: dst_node_id = int(dst_node_id)
-    except: pass
-    try: src = int(src)
-    except: pass
-    try: dst = int(dst)
-    except: pass
+    src_node_id = dpg.get_item_parent(src)
+    dst_node_id = dpg.get_item_parent(dst)
     
     link_registry[lid] = {'source': src, 'target': dst, 'src_node_id': src_node_id, 'dst_node_id': dst_node_id}
 
 def del_link_cb(s, a): 
     dpg.delete_item(a)
     link_registry.pop(a, None)
-    link_registry.pop(int(a) if str(a).isdigit() else str(a), None)
 
 def add_node_cb(s, a, u): 
     node = NodeFactory.create_node(u)
@@ -413,26 +404,26 @@ def set_ui_value(tag, val):
         else: dpg.set_value(tag, val)
 
 def get_item_pos_safe(attr):
-    return dpg.get_item_pos(str(attr)) if dpg.does_item_exist(str(attr)) else [0,0]
+    return dpg.get_item_pos(attr) if dpg.does_item_exist(attr) else [0,0]
 
 def set_item_pos_safe(attr, pos):
-    if dpg.does_item_exist(str(attr)):
-        dpg.set_item_pos(str(attr), pos)
+    if dpg.does_item_exist(attr):
+        dpg.set_item_pos(attr, pos)
 
 def clear_editor():
     for lid in list(link_registry.keys()): 
-        if dpg.does_item_exist(str(lid)): 
-            dpg.delete_item(str(lid))
+        if dpg.does_item_exist(lid): 
+            dpg.delete_item(lid)
     for nid in list(node_registry.keys()): 
-        if dpg.does_item_exist(str(nid)): 
-            dpg.delete_item(str(nid))
+        if dpg.does_item_exist(nid): 
+            dpg.delete_item(nid)
     link_registry.clear()
     node_registry.clear()
 
 def add_dpg_link(src, dst, src_node, dst_node):
-    if not dpg.does_item_exist(str(src)) or not dpg.does_item_exist(str(dst)):
+    if not dpg.does_item_exist(src) or not dpg.does_item_exist(dst):
         return
-    lid = dpg.add_node_link(str(src), str(dst), parent="node_editor")
+    lid = dpg.add_node_link(src, dst, parent="node_editor")
     link_registry[lid] = {'source': src, 'target': dst, 'src_node_id': src_node, 'dst_node_id': dst_node}
 
 def delete_selection(sender, app_data):
@@ -442,11 +433,8 @@ def delete_selection(sender, app_data):
         if lid in link_registry: del link_registry[lid]
         if dpg.does_item_exist(lid): dpg.delete_item(lid)
     for nid in selected_nodes:
-        try: nid_int = int(nid)
-        except: nid_int = nid
-        
-        if nid_int not in node_registry: continue
-        node = node_registry[nid_int]
+        if nid not in node_registry: continue
+        node = node_registry[nid]
         my_ports = set(node.inputs.keys()) | set(node.outputs.keys())
         links_to_remove = []
         for lid, ldata in link_registry.items():

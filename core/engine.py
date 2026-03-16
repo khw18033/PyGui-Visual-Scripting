@@ -25,7 +25,7 @@ _id_counter = 1000000
 def generate_uuid():
     global _id_counter
     _id_counter += 1
-    return _id_counter
+    return f"uid_{_id_counter}"
 
 def write_log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")

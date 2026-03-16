@@ -14,6 +14,10 @@ class NodeFactory:
     def create_node(node_type, node_id=None):
         if node_id is None: 
             node_id = generate_uuid()
+        else:
+            node_id = str(node_id)
+            if node_id.isdigit():
+                node_id = f"uid_{node_id}"
         
         node = None
         if node_type == "START": node = StartNode(node_id)
