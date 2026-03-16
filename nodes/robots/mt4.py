@@ -456,7 +456,8 @@ class MT4UnityNode(BaseNode):
                             if 'y' in parsed: self.output_data[self.out_z] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
                             if 'gripper' in parsed: self.output_data[self.out_g] = float(parsed['gripper']) 
                             if 'roll' in parsed: self.output_data[self.out_r] = float(parsed['roll'])
-                except: pass 
+                except Exception as e:
+                    write_log(f"JSON Parse Error: {e}") 
                 
         return self.out_flow
 
@@ -485,7 +486,7 @@ class UDPReceiverNode(BaseNode):
             except: self.is_bound = True
         try:
             while True: 
-                data, _ = self.sock.recvfrom(4096); decoded = data.decode()
+                data, _ = self.sock.recvfrom(4096); decoded = data.decode('utf-8', errors='ignore').strip('\x00').strip()
                 now = time.time()
                 mt4_dashboard["latency"] = (now - mt4_dashboard.get("last_pkt_time", now)) * 1000.0 
                 mt4_dashboard["last_pkt_time"] = now
