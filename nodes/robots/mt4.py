@@ -5,10 +5,14 @@ import serial
 import os
 import csv
 import socket
+import re
 from collections import deque
 from nodes.base import BaseNode
 from core.input_manager import global_input_manager
 
+# ==========================================
+# ⚙️ MT4 전역 하드웨어 상태 관리 (Global State)
+# ==========================================
 ser = None 
 mt4_current_pos = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'roll': 0.0, 'gripper': 40.0}
 mt4_target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'roll': 0.0, 'gripper': 40.0}
@@ -21,7 +25,8 @@ MT4_LIMITS = {'min_x': 200, 'max_x': 280, 'min_y': -200, 'max_y': 200, 'min_z': 
 MT4_GRIPPER_MIN = 30.0
 MT4_GRIPPER_MAX = 60.0
 MT4_Z_OFFSET = 90.0
-MT4_UNITY_IP = "192.168.50.63"
+
+MT4_UNITY_IP = "192.168.50.63" 
 MT4_FEEDBACK_PORT = 5005
 
 mt4_mode = {"recording": False, "playing": False}
@@ -41,11 +46,14 @@ def send_unity_ui(msg_type, extra_data):
         sock.close()
     except: pass
 
+# 🚨 유니티 C# 콤마 버그 완벽 방어 파서 (소수점 강제 복구)
 def parse_unity_packet(raw_data):
-    try: return json.loads(raw_data)
+    fixed_data = re.sub(r'(\d+),(\d+)', r'\1.\2', raw_data)
+    try: return json.loads(fixed_data)
     except: pass
+    
     parsed = {}
-    for part in raw_data.split(','):
+    for part in fixed_data.split(','):
         if ':' in part:
             k, v = part.split(':', 1)
             parsed[k.strip()] = v.strip()
@@ -138,7 +146,7 @@ class MT4CalibrationNode(BaseNode):
         s = float(self.settings.get('scale', 1.0))
         if self.inputs.get("X In") is not None: self.outputs["X Out"] = float(self.inputs["X In"]) * s + float(self.settings.get('x_offset', 0.0))
         if self.inputs.get("Y In") is not None: self.outputs["Y Out"] = float(self.inputs["Y In"]) * s + float(self.settings.get('y_offset', 0.0))
-        if self.inputs.get("Z In") is not None: self.outputs["Z Out"] = float(self.inputs["Z In"]) * s + float(self.settings.get('z_offset', 0.0))
+        if self.inputs.get("Z In") is not None: self.outputs["Z Out"] = float(self.settings.get('z_offset', 0.0))
         return None
 
 class MT4TooltipNode(BaseNode):
@@ -197,7 +205,6 @@ class MT4UnityNode(BaseNode):
             self.outputs["Target Grip"] = mt4_target_goal['gripper']
         else:
             if raw_json:
-                # 🚨 유니티 방향키 파서로 드디어 데이터가 정상 유입됩니다!
                 parsed = parse_unity_packet(raw_json)
                 msg_type = parsed.get("type", "MOVE")
                 
@@ -221,7 +228,6 @@ class MT4UnityNode(BaseNode):
                     if 'roll' in parsed: self.outputs["Target Roll"] = float(parsed['roll'])
                     if 'gripper' in parsed: self.outputs["Target Grip"] = float(parsed['gripper']) 
                     
-                # 🚨 유니티 방향키 꾹 누름(연속 입력)을 끊김 없이 부드럽게 지원합니다.
                 elif msg_type in ["KEY", "DIRECTION"] and time.time() > mt4_collision_lock_until:
                     if time.time() - self.last_key_time > 0.05:
                         self.last_key_time = time.time()
@@ -268,7 +274,6 @@ class MT4KeyboardNode(BaseNode):
     def execute(self):
         global mt4_target_goal, mt4_manual_override_until, mt4_current_pos
         
-        # 🚨 핵심 수정: 수동 제어(오버라이드) 중일 때는 예전 값을 고집하지 않고 현재 목표값을 따라가도록 동기화!
         if time.time() < mt4_manual_override_until:
             self.outputs["Target X"] = mt4_target_goal['x']
             self.outputs["Target Y"] = mt4_target_goal['y']
@@ -276,7 +281,6 @@ class MT4KeyboardNode(BaseNode):
             self.outputs["Target Roll"] = mt4_target_goal['roll']
             self.outputs["Target Grip"] = mt4_target_goal['gripper']
         else:
-            from core.input_manager import global_input_manager 
             if time.time() - self.last_input_time > self.cooldown:
                 dx = dy = dz = dg = dr = 0
                 if global_input_manager.get_key('W'): dx = 1
@@ -300,8 +304,6 @@ class MT4KeyboardNode(BaseNode):
                     self.outputs["Target Z"] = self.outputs.get("Target Z", mt4_current_pos['z']) + (dz * step)
                     self.outputs["Target Grip"] = self.outputs.get("Target Grip", mt4_current_pos['gripper']) + (dg * g_step)
                     self.outputs["Target Roll"] = self.outputs.get("Target Roll", mt4_current_pos['roll']) + (dr * r_step)
-                    
-                    # 🚨 키보드 조작도 수동 제어로 인정하여, 조작 후 0.5초 동안 유니티/다른 노드와 충돌하는 것을 방지합니다.
                     mt4_manual_override_until = time.time() + 0.5
 
         self.outputs["Flow Out"] = True
@@ -343,6 +345,8 @@ class UDPReceiverNode(BaseNode):
     def execute(self):
         global MT4_UNITY_IP
         port = int(self.settings.get("port", 6000))
+        
+        # 🚨 UI에서 입력받은 지정 IP 주소만 충실하게 사용하도록 복구!
         MT4_UNITY_IP = str(self.settings.get("ip", "192.168.50.63"))
         
         if not self.is_bound or self.current_port != port:
@@ -362,7 +366,6 @@ class UDPReceiverNode(BaseNode):
                 received_data = decoded
         except: pass
 
-        # 🚨 데이터가 갱신되지 않으면 핀 데이터를 비워, 유니티 방향키가 무한 반복되어 굳는 현상을 방지합니다.
         if received_data:
             self.outputs["JSON Out"] = received_data
         else:
