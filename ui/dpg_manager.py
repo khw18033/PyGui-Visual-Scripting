@@ -90,7 +90,11 @@ class NodeUIRenderer:
                 for k, fid in getattr(node, 'ui_fields', {}).items():
                     pin_id = node.in_pins[k]
                     is_connected = any(l['target'] == pin_id for l in link_registry.values())
-                    if not is_connected: node.state[k] = dpg.get_value(fid)
+                    if not is_connected: 
+                        if time.time() < mt4_module.mt4_manual_override_until:
+                            dpg.set_value(fid, node.state.get(k, 0.0))
+                        else:
+                            node.state[k] = dpg.get_value(fid)
                 for k, fid in getattr(node, 'setting_fields', {}).items():
                     pin_id = node.setting_pins[k]
                     is_connected = any(l['target'] == pin_id for l in link_registry.values())
@@ -443,7 +447,7 @@ def delete_selection(sender, app_data):
         for lid in links_to_remove:
             if lid in link_registry: del link_registry[lid]
             if dpg.does_item_exist(lid): dpg.delete_item(lid)
-        del node_registry[nid_int]
+        del node_registry[nid]
         if dpg.does_item_exist(nid): dpg.delete_item(nid)
 
 def __init_ui__():

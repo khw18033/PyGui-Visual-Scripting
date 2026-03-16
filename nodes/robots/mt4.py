@@ -206,6 +206,7 @@ class MT4RobotDriver(BaseRobotDriver):
         self.last_cmd = ""
         self.last_write_time = 0
         self.write_interval = 0.0
+        self.last_inputs = {}
 
     def get_ui_schema(self): 
         return [('x', "X", 200.0), ('y', "Y", 0.0), ('z', "Z", 120.0), ('roll', "R", 0.0), ('gripper', "G", 40.0)]
@@ -221,12 +222,19 @@ class MT4RobotDriver(BaseRobotDriver):
         for key, _, _ in self.get_ui_schema():
             val = inputs.get(key)
             if val is not None:
-                if abs(float(val) - mt4_target_goal[key]) > 0.5:
+                last_val = self.last_inputs.get(key)
+                if last_val is None or abs(float(val) - float(last_val)) > 0.001:
                     inputs_changed = True
+                    self.last_inputs[key] = float(val)
 
         if time.time() > mt4_manual_override_until and inputs_changed:
             for key, _, _ in self.get_ui_schema():
                 if inputs.get(key) is not None: mt4_target_goal[key] = float(inputs[key])
+                
+        # If manual override is active, keep updating last_inputs to avoid snaps after expiration
+        if time.time() < mt4_manual_override_until:
+            for key, _, _ in self.get_ui_schema():
+                self.last_inputs[key] = mt4_target_goal.get(key, self.last_inputs.get(key, 0.0))
                 
         smooth = 1.0 if time.time() < mt4_manual_override_until else max(0.01, min(settings.get('smooth', 1.0), 1.0))
         dx = mt4_target_goal['x'] - mt4_current_pos['x']
@@ -483,6 +491,7 @@ class UDPReceiverNode(BaseNode):
                 mt4_dashboard["last_pkt_time"] = now
                 mt4_dashboard["status"] = "Connected"
                 if decoded != self.last_data_str:
+                    write_log(f"Unity Command: {decoded[:60]}...")
                     self.output_data[self.out_json] = decoded; self.last_data_str = decoded
         except: pass
         return self.out_flow
