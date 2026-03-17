@@ -364,25 +364,37 @@ def toggle_exec(s, a):
     dpg.set_item_label("btn_run", "STOP" if engine_module.is_running else "RUN SCRIPT")
 
 def link_cb(s, a): 
-    p1, p2 = a[0], a[1]
+    # [핵심 수정] DearPyGui가 반환하는 내부 정수형 ID를 문자열 Alias(uid_xxx)로 변환
+    p1_raw, p2_raw = a[0], a[1]
+    p1 = dpg.get_item_alias(p1_raw) or p1_raw
+    p2 = dpg.get_item_alias(p2_raw) or p2_raw
     
     p1_is_out = False
     for node in node_registry.values():
         if p1 in node.outputs.keys(): 
             p1_is_out = True; break
             
+    # 선 방향 보정
     src, dst = (p1, p2) if p1_is_out else (p2, p1)
-    lid = dpg.add_node_link(src, dst, parent=s)
     
-    # [수정된 부분] dpg.get_item_parent 대신 node_registry를 순회하여 정확한 문자열 ID를 찾습니다.
+    # UI상 선 그리기 (그릴 때는 raw id, alias 둘 다 무방)
+    lid = dpg.add_node_link(p1_raw, p2_raw, parent=s)
+    
+    # 데이터 흐름을 위한 소스/타겟 노드 추적
     src_node_id = None
     dst_node_id = None
     for nid, node in node_registry.items():
         if src in node.outputs: src_node_id = nid
         if dst in node.inputs: dst_node_id = nid
     
-    link_registry[lid] = {'source': src, 'target': dst, 'src_node_id': src_node_id, 'dst_node_id': dst_node_id}
-
+    # 링크 레지스트리에 정확한 문자열 UUID 등록
+    link_registry[lid] = {
+        'source': src, 
+        'target': dst, 
+        'src_node_id': src_node_id, 
+        'dst_node_id': dst_node_id
+    }
+    
 def del_link_cb(s, a): 
     dpg.delete_item(a)
     link_registry.pop(a, None)
