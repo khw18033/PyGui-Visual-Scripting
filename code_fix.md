@@ -357,3 +357,31 @@ dpg_manager.py: 유일하게 GUI 종속성을 갖는 파일입니다. 노드가 
 - 유니티에서 전송되는 JSON 문자열 마지막에 C# UDP 통신의 특성상 고정 버퍼로 인한 Null( ) 문자가 다수 포함되어 전송되는 경우가 잦음.
 - 기존 코드에서는 Null 문자가 로그 출력에는 잘 보이지 않아 정상적인 JSON 형태처럼 보였으나, 내부적으로 json.loads()를 거칠 때 JSONDecodeError 예외를 발생시키며 위치 갱신 로직을 무시하고 있었음.
 - **해결**: UDPReceiverNode에서 UDP 패킷을 수신한 뒤 .decode('utf-8', errors='ignore').strip('\x00').strip() 처리를 하여 널 문자와 공백을 완벽하게 제거한 뒤 파싱하도록 수정함. 추가 오류 식별을 위해 파싱 실패 시 write_log를 띄우도록 에러 처리도 보강함.
+
+### [2026-03-17 11:30:13] 유니티 로그 잘림 현상 원인 및 로봇 미작동 해결 방안 제시
+
+1. 유니티 커맨드 로그 잘림 현상 오해 해명
+- 문제 분석:
+  - `Unity Command.txt`에서 보이는 로그는 데이터가 실제로 끊긴 것이 아니라 `nodes/robots/mt4.py`에서 화면 및 파일 도배를 방지하기 위해 60자로 잘라 출력하도록 슬라이싱(`decoded[:60]`)이 걸려있는 상태임.
+- 조치 방안:
+  - 실제 데이터 통신(`decoded` 변수)은 온전히 수신되고 있으며, 필요한 경우 `write_log(f"Unity Command: {decoded[:60]}...")` 코드를 `write_log(f"Unity Command: {decoded}")`로 수정하면 잘리지 않은 전체 로그를 확인할 수 있음.
+
+2. 유니티 키보드 입력 시 로봇 미작동 원인 3가지 및 해법
+- 원인 1 (Manual Override):
+  - `nodes/robots/mt4.py`의 `MT4UnityNode.execute()` 내부에 `is_overridden = (time.time() < mt4_manual_override_until) or mt4_mode.get("playing", False)` 로직이 존재함.
+  - 파이썬 GUI 쪽에서 수동 입력(키보드)을 시도했거나 파일 재생을 시작했을 경우 유니티 측 명령의 우선순위가 뒤로 밀려 무시되는 상태임.
+- 원인 2 (Collision Lock):
+  - 유니티 등에서 보낸 `"val":"COLLISION"` 명령이 파싱되어 `mt4_collision_lock_until` 타이머가 걸리면 2초간 외부 조작이 먹히지 않는 상태가 됨.
+- 원인 3 (파서 호환성):
+  - 이전 수정 때 적용했던 유니티 방향키 커스텀 문자열 패킷 파서(`parse_unity_packet`)가 아키텍처 재편 과정에서 유실되고 구버전의 순수 `json.loads` 로직으로 롤백되었음. 유니티가 JSON이 아닌(`type:KEY`) 포맷으로 전송 중이라면 JSON 파싱 에러로 무시됨.
+- 조치 방안:
+  - 유니티의 방향키 데이터를 JSON 규격에 맞추거나, 또는 Python의 `MT4UnityNode`에 들어있던 `parse_unity_packet` 헬퍼 함수를 재구현하여 유연한 파싱을 복구해야 함.
+  - 오류 없이 정상 파싱되었다면, Python GUI(에디터)의 재생(Play)을 끄고 수동 조작을 잠시 멈춘 뒤에 유니티 측 입력을 우선하도록 대기하면 됨.
+
+### [2026-03-17 11:32:00] 드라이버 노드 입력 핀 변화 감지 버그 수정 (유니티/키보드 미작동 대응)
+- 문제 분석:
+  - \Answer_code.py\에서는 드라이버 노드(MT4_DRIVER)가 입력 핀의 데이터를 시스템 전역 변수인 \mt4_target_goal\과 직접 비교하여 값의 변화(inputs_changed)를 감지했음.
+  - 리팩토링된 odes/robots/mt4.py\에서는 최적화를 시도하려다 \self.last_inputs\라는 지역 래퍼 캐시를 도입했음. 이로 인해 최초 유니티/키보드 입력이 \self.last_inputs\에만 등록되고 \inputs_changed=True\가 덜 민감하게 트리거되거나, 틱 단위 통신에 의해 \last_inputs\와 현재 \al\이 동일해져 \mt4_target_goal\을 갱신하지 않고 스킵해버리는 오류가 발생함.
+- 조치 방안:
+  - \MT4RobotDriver.execute_command\의 \inputs_changed\ 감지 로직을 \Answer_code.py\와 동일하게 들어온 입력값(\al\)과 현재 시스템의 최종 목표값(\mt4_target_goal\)을 직접 비교(\bs > 0.001\)하도록 복구함.
+  - 이를 통해 유니티 노드나 키보드 노드에서 값이 쏟아져 들어올 때, 드라이버 노드가 중간 캐시에서 씹히지 않고 전역 타겟에 즉각 반영하여 로봇을 조작하게 됨.

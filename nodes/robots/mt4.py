@@ -222,8 +222,7 @@ class MT4RobotDriver(BaseRobotDriver):
         for key, _, _ in self.get_ui_schema():
             val = inputs.get(key)
             if val is not None:
-                last_val = self.last_inputs.get(key)
-                if last_val is None or abs(float(val) - float(last_val)) > 0.001:
+                if abs(float(val) - mt4_target_goal.get(key, 0.0)) > 0.001:
                     inputs_changed = True
                     self.last_inputs[key] = float(val)
 
