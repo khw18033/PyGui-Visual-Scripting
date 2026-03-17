@@ -1,0 +1,15 @@
+### [2026-03-17 20:42:00] Go1 로봇 및 비전(Vision) 시스템 모듈화 이식 (SRP 및 비동기 적용)
+- 문제 분석:
+  - 기존 통합 코드(`visual_scripting_Int_v11.py`)에 하드코딩되어 있던 Go1 제어 로직과 카메라(OpenCV) 기능들을 새로운 모듈형 아키텍처로 이식할 필요가 있었음.
+  - 특히 기존의 카메리 노드는 영상 획득, 왜곡 보정, 마커 탐지, 브로드캐스팅 등을 한 번에 처리하여 단일 책임 원칙(SRP)에 위배되었음.
+  - 또한 OpenCV의 프레임 읽기(`read()`)나 Flask 서버 구동이 메인 스레드에서 동기적(Blocking)으로 실행될 경우, 네트워크 지연 발생 시 전체 GUI가 멈춰버리는(Freeze) 치명적인 위험이 존재함.
+- 조치 방안:
+  - 단일 책임 원칙(SRP)을 적용하여 비전 파이프라인을 `VideoSourceNode`, `FisheyeUndistortNode`, `ArUcoDetectNode`, `FlaskStreamNode`로 잘게 쪼개어 독립적인 데이터 흐름(Data Flow) 노드로 재설계함.
+  - 영상 스트림 획득 및 Flask HTTP 서버를 백그라운드 데몬 스레드(Thread)로 분리하여 메인 GUI 루프의 실시간성을 완벽히 보장함.
+  - `nodes/robots/go1.py`를 신설하여 Go1 전용 네트워크 제어 노드(`Go1RobotDriver`, `Go1ActionNode`)를 순수 로직으로 구현함.
+  - `ui/dpg_manager.py`에 기존 MT4 로직과 파일 매니저 시스템을 100% 보존한 상태에서, Go1 전용 대시보드 탭과 노드 생성 버튼을 성공적으로 증축함.
+- 수정 및 추가 파일:
+  - `nodes/robots/go1.py` (신규)
+  - `ui/dpg_manager.py` (수정: Go1 대시보드 및 비전 UI 렌더러 추가)
+  - `core/factory.py` (수정: 신규 노드 생성기 등록)
+  - `main.py` (수정: Go1 통신용 백그라운드 스레드 시작 로직 추가)
