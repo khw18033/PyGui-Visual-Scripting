@@ -9,6 +9,9 @@ from nodes.robots.mt4 import (
     MT4GravitySagNode, MT4CalibrationNode, MT4TooltipNode, MT4BacklashNode
 )
 
+from nodes.robots.go1 import (Go1RobotDriver, Go1ActionNode, VideoSourceNode, 
+                              FisheyeUndistortNode, ArUcoDetectNode, FlaskStreamNode)
+
 class NodeFactory:
     @staticmethod
     def create_node(node_type, node_id=None):
@@ -36,6 +39,12 @@ class NodeFactory:
         elif node_type == "MT4_CALIB": node = MT4CalibrationNode(node_id)
         elif node_type == "MT4_TOOLTIP": node = MT4TooltipNode(node_id)
         elif node_type == "MT4_BACKLASH": node = MT4BacklashNode(node_id)
+        elif node_type == "GO1_DRIVER": node = UniversalRobotNode(node_id, Go1RobotDriver())
+        elif node_type == "GO1_ACTION": node = Go1ActionNode(node_id)
+        elif node_type == "VIDEO_SRC": node = VideoSourceNode(node_id)
+        elif node_type == "VIS_FISHEYE": node = FisheyeUndistortNode(node_id)
+        elif node_type == "VIS_ARUCO": node = ArUcoDetectNode(node_id)
+        elif node_type == "VIS_FLASK": node = FlaskStreamNode(node_id)
         
         if node: 
             node_registry[node_id] = node
