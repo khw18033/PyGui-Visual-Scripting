@@ -385,3 +385,14 @@ dpg_manager.py: 유일하게 GUI 종속성을 갖는 파일입니다. 노드가 
 - 조치 방안:
   - \MT4RobotDriver.execute_command\의 \inputs_changed\ 감지 로직을 \Answer_code.py\와 동일하게 들어온 입력값(\al\)과 현재 시스템의 최종 목표값(\mt4_target_goal\)을 직접 비교(\bs > 0.001\)하도록 복구함.
   - 이를 통해 유니티 노드나 키보드 노드에서 값이 쏟아져 들어올 때, 드라이버 노드가 중간 캐시에서 씹히지 않고 전역 타겟에 즉각 반영하여 로봇을 조작하게 됨.
+
+### [2026-03-17 19:56:55] 유니티 연결 시 로봇 미작동 최종 해결 (노드 간 데이터 흐름 단절 수정)
+- 문제 분석:
+  - 유니티 측에서 전송하는 JSON 데이터 패킷은 정상적으로 수신되어 로그와 Latency가 갱신되고 있었으나, 실제 로봇 구동을 담당하는 `MT4_DRIVER` 노드로 좌표 데이터가 전달되지 않음.
+  - 원인을 추적한 결과, 마우스로 노드 선을 이을 때 실행되는 `ui/dpg_manager.py`의 `link_cb` 콜백 함수에서 DearPyGui 프레임워크가 핀의 ID를 우리가 부여한 문자열 UUID(`uid_...`)가 아닌 내부 시스템 정수형 ID로 반환하고 있었음.
+  - 이 정수형 ID로 인해 타입 불일치가 발생하여 `if src in node.outputs:` 등의 검사 로직이 항상 `False` 처리되었고, 결과적으로 `link_registry`에 출발지/도착지 노드 ID가 `None`으로 저장되며 시각적으로만 선이 연결되고 실제 데이터 파이프라인은 공중분해되는 상태였음.
+- 조치 방안:
+  - `dpg_manager.py`의 `link_cb` 함수 내에 `dpg.get_item_alias(p1_raw) or p1_raw` 로직을 추가하여, DearPyGui가 반환한 정수형 ID를 문자열 UUID(Alias)로 강제 변환하도록 수정함.
+  - 이를 통해 선을 연결할 때 정확한 문자열 ID를 기반으로 노드 간 출도착지(`src_node_id`, `dst_node_id`)가 레지스트리에 정상 등록되도록 하여, `UDP Receiver` $\rightarrow$ `Unity Logic` $\rightarrow$ `MT4 Core Driver`로 이어지는 데이터 흐름을 완벽하게 개통함.
+- 수정 파일:
+  - `ui/dpg_manager.py`
