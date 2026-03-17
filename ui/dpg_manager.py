@@ -374,8 +374,12 @@ def link_cb(s, a):
     src, dst = (p1, p2) if p1_is_out else (p2, p1)
     lid = dpg.add_node_link(src, dst, parent=s)
     
-    src_node_id = dpg.get_item_parent(src)
-    dst_node_id = dpg.get_item_parent(dst)
+    # [수정된 부분] dpg.get_item_parent 대신 node_registry를 순회하여 정확한 문자열 ID를 찾습니다.
+    src_node_id = None
+    dst_node_id = None
+    for nid, node in node_registry.items():
+        if src in node.outputs: src_node_id = nid
+        if dst in node.inputs: dst_node_id = nid
     
     link_registry[lid] = {'source': src, 'target': dst, 'src_node_id': src_node_id, 'dst_node_id': dst_node_id}
 
@@ -436,7 +440,10 @@ def delete_selection(sender, app_data):
     for lid in selected_links:
         if lid in link_registry: del link_registry[lid]
         if dpg.does_item_exist(lid): dpg.delete_item(lid)
-    for nid in selected_nodes:
+    for raw_nid in selected_nodes:
+        # [수정된 부분] 반환된 정수 ID를 문자열 Alias로 변환합니다.
+        nid = dpg.get_item_alias(raw_nid) or raw_nid 
+        
         if nid not in node_registry: continue
         node = node_registry[nid]
         my_ports = set(node.inputs.keys()) | set(node.outputs.keys())
