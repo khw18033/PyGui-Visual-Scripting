@@ -12,6 +12,8 @@ from nodes.robots.mt4 import (
 from nodes.robots.go1 import (Go1RobotDriver, Go1ActionNode, VideoSourceNode, 
                               FisheyeUndistortNode, ArUcoDetectNode, FlaskStreamNode)
 
+from nodes.robots.ep01 import EPRobotDriver, EPActionNode
+
 class NodeFactory:
     @staticmethod
     def create_node(node_type, node_id=None):
@@ -45,6 +47,8 @@ class NodeFactory:
         elif node_type == "VIS_FISHEYE": node = FisheyeUndistortNode(node_id)
         elif node_type == "VIS_ARUCO": node = ArUcoDetectNode(node_id)
         elif node_type == "VIS_FLASK": node = FlaskStreamNode(node_id)
+        elif node_type == "EP_DRIVER": node = UniversalRobotNode(node_id, EPRobotDriver())
+        elif node_type == "EP_ACTION": node = EPActionNode(node_id)
         
         if node: 
             node_registry[node_id] = node

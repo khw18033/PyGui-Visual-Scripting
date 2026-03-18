@@ -27,6 +27,13 @@ try:
 except ImportError:
     HAS_GO1 = False
 
+# --- [추가] RoboMaster EP 연동 ---
+try:
+    from nodes.robots.ep01 import ep_dashboard, ep_state, ep_target_vel, EP_IP, EP_PORT, ep_cmd_sock
+    HAS_EP = True
+except ImportError:
+    HAS_EP = False
+
 sys_net_str = "Loading Network..."
 def network_monitor_thread():
     global sys_net_str
@@ -79,6 +86,16 @@ def go1_action_callback(sender, app_data, user_data):
         try: go1_module.go1_sock.sendto(cmd_str.encode(), (GO1_IP, GO1_PORT))
         except: pass
 
+def ep_manual_control_callback(sender, app_data, user_data):
+    if not HAS_EP: return
+    axis, step = user_data
+    ep_target_vel[axis] = ep_target_vel.get(axis, 0.0) + step
+
+def ep_action_callback(sender, app_data, user_data):
+    if not HAS_EP or not ep_cmd_sock: return
+    try: ep_cmd_sock.sendto(user_data.encode(), (EP_IP, EP_PORT))
+    except: pass
+
 class NodeUIRenderer:
     key_map = {"A": 65, "B": 66, "C": 67, "S": 83, "W": 87, "SPACE": 32}
 
@@ -116,12 +133,13 @@ class NodeUIRenderer:
                 node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)
                 node.state['J'] = dpg.is_key_down(dpg.mvKey_J); node.state['U'] = dpg.is_key_down(dpg.mvKey_U)
                 node.state['Z'] = dpg.is_key_down(dpg.mvKey_Z); node.state['X'] = dpg.is_key_down(dpg.mvKey_X)
-            elif t == "MT4_DRIVER":
+            elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER"]:
                 for k, fid in getattr(node, 'ui_fields', {}).items():
                     pin_id = node.in_pins[k]
                     is_connected = any(l['target'] == pin_id for l in link_registry.values())
                     if not is_connected: 
-                        override_time = getattr(mt4_module, 'mt4_manual_override_until', 0)
+                        # MT4일 때만 수동 조작 오버라이드 딜레이 적용
+                        override_time = getattr(mt4_module, 'mt4_manual_override_until', 0) if t == "MT4_DRIVER" else 0
                         if time.time() < override_time: dpg.set_value(fid, node.state.get(k, 0.0))
                         else: node.state[k] = dpg.get_value(fid)
                 for k, fid in getattr(node, 'setting_fields', {}).items():
@@ -139,6 +157,8 @@ class NodeUIRenderer:
             
             # --- [Vision & Go1] UI -> State ---
             elif t == "GO1_ACTION" and hasattr(node, 'combo_act'):
+                node.state['action'] = dpg.get_value(node.combo_act)
+            elif t == "EP_ACTION" and hasattr(node, 'combo_act'):
                 node.state['action'] = dpg.get_value(node.combo_act)
             elif t == "VIDEO_SRC" and hasattr(node, 'ui_url'):
                 node.state['url'] = dpg.get_value(node.ui_url)
@@ -159,7 +179,7 @@ class NodeUIRenderer:
         elif t == "UDP_RECV" and hasattr(node, 'port'):
             dpg.set_value(node.port, node.state.get('port', 6000)); dpg.set_value(node.ip, node.state.get('ip', '192.168.50.63'))
         elif t == "MT4_KEYBOARD" and hasattr(node, 'combo_keys'): dpg.set_value(node.combo_keys, node.state.get('keys', 'WASD'))
-        elif t == "MT4_DRIVER":
+        elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER"]:
             for k, fid in getattr(node, 'ui_fields', {}).items(): dpg.set_value(fid, node.state.get(k, 0.0))
             for k, fid in getattr(node, 'setting_fields', {}).items(): dpg.set_value(fid, node.state.get(k, 1.0))
             
@@ -173,6 +193,9 @@ class NodeUIRenderer:
             dpg.set_value(node.ui_port, node.state.get('port', 5000))
             dpg.set_value(node.ui_run, node.state.get('is_running', False))
 
+        elif t == "EP_ACTION" and hasattr(node, 'combo_act'): 
+            dpg.set_value(node.combo_act, node.state.get('action', 'LED Red'))
+
     @staticmethod
     def render(node):
         t = node.type_str
@@ -184,7 +207,7 @@ class NodeUIRenderer:
         elif t == "CONSTANT": NodeUIRenderer._render_constant(node)
         elif t == "PRINT": NodeUIRenderer._render_print(node)
         elif t == "LOGGER": NodeUIRenderer._render_logger(node)
-        elif t == "MT4_DRIVER": NodeUIRenderer._render_universal(node)
+        elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER"]: NodeUIRenderer._render_universal(node)
         elif t == "MT4_KEYBOARD": NodeUIRenderer._render_mt4_keyboard(node)
         elif t == "MT4_UNITY": NodeUIRenderer._render_mt4_unity(node)
         elif t == "UDP_RECV": NodeUIRenderer._render_udp(node)
@@ -198,6 +221,9 @@ class NodeUIRenderer:
         elif t == "VIS_FISHEYE": NodeUIRenderer._render_fisheye(node)
         elif t == "VIS_ARUCO": NodeUIRenderer._render_aruco(node)
         elif t == "VIS_FLASK": NodeUIRenderer._render_flask(node)
+        # --- EP01 ---
+        elif t == "EP_ACTION": NodeUIRenderer._render_ep_action(node)
+
 
     @staticmethod
     def _render_start(node):
@@ -263,7 +289,7 @@ class NodeUIRenderer:
     @staticmethod
     def _render_universal(node):
         driver_name = getattr(node.driver.__class__, '__name__', 'MT4')
-        label_str = "Go1 Core Driver" if "Go1" in driver_name else "MT4 Core Driver"
+        label_str = "Go1 Core Driver" if "Go1" in driver_name else "EP Core Driver" if "EP" in driver_name else "MT4 Core Driver"
         with dpg.node(tag=node.node_id, parent="node_editor", label=label_str):
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
             _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
@@ -400,6 +426,15 @@ class NodeUIRenderer:
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.ui_port = dpg.add_input_int(label="Port", width=80, default_value=5000)
                 node.ui_run = dpg.add_checkbox(label="Start Server")
+
+    @staticmethod
+    def _render_ep_action(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="EP Action"):
+            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
+            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_act = dpg.add_combo(["LED Red", "LED Blue", "Blaster Fire", "Arm Center", "Grip Open", "Grip Close"], default_value="LED Red", width=120)
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
 # Callback functions
 def toggle_exec(s, a): 
@@ -581,6 +616,38 @@ def __init_ui__():
                         dpg.add_text("Vy: 0.0", tag="go1_dash_vy")
                         dpg.add_text("Vyaw: 0.0", tag="go1_dash_vyaw")
 
+            # ================= [EP Dashboard Tab] =================
+            with dpg.tab(label="EP Dashboard"):
+                with dpg.group(horizontal=True):
+                    with dpg.child_window(width=250, height=140, border=True):
+                        dpg.add_text("EP Status", color=(150,150,150))
+                        dpg.add_text("HW: Offline", tag="ep_dash_link", color=(255,0,0))
+                        dpg.add_text("Battery: -%", tag="ep_dash_battery", color=(0,255,0))
+                        dpg.add_text("SN: Unknown", tag="ep_dash_sn", color=(200,200,200))
+                    
+                    with dpg.child_window(width=300, height=140, border=True):
+                        dpg.add_text("Manual Control", color=(255,200,0))
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="Vx+", width=60, callback=ep_manual_control_callback, user_data=('vx', 0.5))
+                            dpg.add_button(label="Vx-", width=60, callback=ep_manual_control_callback, user_data=('vx', -0.5))
+                            dpg.add_text("|")
+                            dpg.add_button(label="Vy+", width=60, callback=ep_manual_control_callback, user_data=('vy', 0.5))
+                            dpg.add_button(label="Vy-", width=60, callback=ep_manual_control_callback, user_data=('vy', -0.5))
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="Yaw+", width=60, callback=ep_manual_control_callback, user_data=('vz', 0.5))
+                            dpg.add_button(label="Yaw-", width=60, callback=ep_manual_control_callback, user_data=('vz', -0.5))
+                            dpg.add_text("|")
+                            dpg.add_button(label="STOP", width=130, callback=lambda s,a,u: ep_target_vel.update({'vx':0.0, 'vy':0.0, 'vz':0.0}) if HAS_EP else None)
+
+                    with dpg.child_window(width=200, height=140, border=True):
+                        dpg.add_text("Actions", color=(0,255,255))
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="Fire", width=60, callback=ep_action_callback, user_data="blaster fire;")
+                            dpg.add_button(label="Grip Open", width=80, callback=ep_action_callback, user_data="robotic_gripper open 1;")
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="Red", width=60, callback=ep_action_callback, user_data="led control comp all r 255 g 0 b 0 effect solid;")
+                            dpg.add_button(label="Grip Close", width=80, callback=ep_action_callback, user_data="robotic_gripper close 1;")
+
             # ================= [Files & System Tab] =================
             with dpg.tab(label="Files & System"):
                 with dpg.group(horizontal=True):
@@ -625,6 +692,11 @@ def __init_ui__():
                 dpg.add_button(label="FLASK", callback=add_node_cb, user_data="VIS_FLASK")
                 dpg.add_spacer(width=50)
                 dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
+            
+            with dpg.group(horizontal=True):
+                dpg.add_text("EP01 Tools:", color=(100,200,255))
+                dpg.add_button(label="EP DRIVER", callback=add_node_cb, user_data="EP_DRIVER")
+                dpg.add_button(label="EP ACTION", callback=add_node_cb, user_data="EP_ACTION")
 
         with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
@@ -676,6 +748,16 @@ def start_gui():
             dpg.set_value("go1_dash_vx", f"Vx: {go1_target_vel['vx']:.2f}")
             dpg.set_value("go1_dash_vy", f"Vy: {go1_target_vel['vy']:.2f}")
             dpg.set_value("go1_dash_vyaw", f"Vyaw: {go1_target_vel['vyaw']:.2f}")
+
+        if HAS_EP:
+            ep_link = ep_dashboard.get('hw_link', 'Offline')
+            dpg.set_value("ep_dash_link", f"HW: {ep_link}")
+            if "Online" in ep_link: dpg.configure_item("ep_dash_link", color=(0,255,0))
+            elif "Connecting" in ep_link: dpg.configure_item("ep_dash_link", color=(255,200,0))
+            else: dpg.configure_item("ep_dash_link", color=(255,0,0))
+            
+            bat = ep_state.get('battery', -1)
+            dpg.set_value("ep_dash_battery", f"Battery: {bat}%" if bat >= 0 else "Battery: -%")
 
         # --- Node Engine Tick ---
         if engine_module.is_running and (time.time() - last_logic_time > LOGIC_RATE):
