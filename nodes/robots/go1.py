@@ -15,7 +15,7 @@ from core.engine import generate_uuid, PortType, write_log, HwStatus, node_regis
 go1_sock = None
 GO1_HOSTNAME = "raspberrypi.local"
 GO1_IP = "192.168.12.1" # Fallback IP
-GO1_PORT = 15102
+GO1_PORT = 8080
 
 go1_target_vel = {'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0}
 go1_dashboard = {"status": "Idle", "hw_link": HwStatus.OFFLINE}
