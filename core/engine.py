@@ -36,7 +36,7 @@ def execute_graph_once():
     start_node = next((n for n in node_registry.values() if n.type_str == "START"), None)
     
     for node in node_registry.values():
-        if node.type_str in ["COND_KEY", "MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER", "VIDEO_SRC", "VIS_FLASK", "MT4_UNITY", "UDP_RECV", "LOGGER", "CONSTANT", "MT4_SAG", "MT4_CALIB", "MT4_TOOLTIP", "MT4_BACKLASH", "MT4_KEYBOARD"]: 
+        if node.type_str in ["COND_KEY", "MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER", "VIDEO_SRC", "VIS_FLASK", "MT4_UNITY", "GO1_UNITY", "UDP_RECV", "LOGGER", "CONSTANT", "MT4_SAG", "MT4_CALIB", "MT4_TOOLTIP", "MT4_BACKLASH", "MT4_KEYBOARD", "GO1_KEYBOARD"]:
             try: node.execute()
             except Exception as e: print(f"[{node.label}] Error: {e}")
 
