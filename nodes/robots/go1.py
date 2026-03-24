@@ -13,19 +13,35 @@ from core.engine import generate_uuid, PortType, write_log, HwStatus, node_regis
 
 # ================= [Go1 Globals & Network] =================
 go1_sock = None
+<<<<<<< HEAD
 GO1_IP = "192.168.50.159"
+=======
+GO1_HOSTNAME = "raspberrypi.local"
+GO1_IP = "192.168.12.1" # Fallback IP
+>>>>>>> 26e27d60bf92267a45a7af01e7e4daa94d19b528
 GO1_PORT = 8080
 
 go1_target_vel = {'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0}
 go1_dashboard = {"status": "Idle", "hw_link": HwStatus.OFFLINE}
+go1_manual_override_until = 0.0 # 수동 제어 우선권 변수
 
 def init_go1_network():
-    global go1_sock
+    global go1_sock, GO1_IP
+    
+    # 1. Hostname으로 동적 IP 탐색 시도
+    try:
+        resolved_ip = socket.gethostbyname(GO1_HOSTNAME)
+        GO1_IP = resolved_ip
+        write_log(f"Go1: Resolved '{GO1_HOSTNAME}' to {GO1_IP}")
+    except Exception as e:
+        write_log(f"Go1: Hostname resolve failed, using fallback IP {GO1_IP}")
+
+    # 2. 소켓 생성
     try:
         go1_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         go1_sock.settimeout(0.5)
         go1_dashboard["hw_link"] = HwStatus.ONLINE
-        write_log("Go1: Network UDP Initialized")
+        write_log(f"Go1: Network UDP Initialized on {GO1_IP}:{GO1_PORT}")
     except Exception as e:
         go1_dashboard["hw_link"] = HwStatus.OFFLINE
         write_log(f"Go1 Net Error: {e}")
@@ -265,3 +281,77 @@ class FlaskStreamNode(BaseNode):
             write_log(f"Flask Stream started on port {port}")
             
         return None
+    
+class Go1KeyboardNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Go1 Keyboard", "GO1_KEYBOARD")
+        self.in_flow = generate_uuid(); self.inputs[self.in_flow] = PortType.FLOW
+        self.out_vx = generate_uuid(); self.outputs[self.out_vx] = PortType.DATA
+        self.out_vy = generate_uuid(); self.outputs[self.out_vy] = PortType.DATA
+        self.out_vyaw = generate_uuid(); self.outputs[self.out_vyaw] = PortType.DATA
+        self.out_flow = generate_uuid(); self.outputs[self.out_flow] = PortType.FLOW
+        self.state.update({'keys': 'WASD', 'W':False, 'A':False, 'S':False, 'D':False, 'Q':False, 'E':False, 'is_focused':False})
+
+    def execute(self):
+        if self.state.get('is_focused', False): return self.out_flow
+
+        speed = 0.2
+        yaw_speed = 0.5
+        vx = 0.0; vy = 0.0; vyaw = 0.0
+        
+        keys = self.state.get('keys', 'WASD')
+        if keys == "WASD":
+            if self.state.get('W', False): vx = speed
+            if self.state.get('S', False): vx = -speed
+            if self.state.get('A', False): vy = speed
+            if self.state.get('D', False): vy = -speed
+            if self.state.get('Q', False): vyaw = yaw_speed
+            if self.state.get('E', False): vyaw = -yaw_speed
+        else:
+            if self.state.get('UP', False): vx = speed
+            if self.state.get('DOWN', False): vx = -speed
+            if self.state.get('LEFT', False): vy = speed
+            if self.state.get('RIGHT', False): vy = -speed
+
+        self.output_data[self.out_vx] = vx
+        self.output_data[self.out_vy] = vy
+        self.output_data[self.out_vyaw] = vyaw
+        return self.out_flow
+
+class Go1UnityNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Go1 Unity Logic", "GO1_UNITY")
+        self.in_flow = generate_uuid(); self.inputs[self.in_flow] = PortType.FLOW
+        self.data_in_id = generate_uuid(); self.inputs[self.data_in_id] = PortType.DATA
+        self.out_vx = generate_uuid(); self.outputs[self.out_vx] = PortType.DATA
+        self.out_vy = generate_uuid(); self.outputs[self.out_vy] = PortType.DATA
+        self.out_vyaw = generate_uuid(); self.outputs[self.out_vyaw] = PortType.DATA
+        self.out_flow = generate_uuid(); self.outputs[self.out_flow] = PortType.FLOW
+        self.vx = 0.0; self.vy = 0.0; self.vyaw = 0.0
+
+    def execute(self):
+        import json
+        global go1_manual_override_until
+        
+        raw_data = self.fetch_input_data(self.data_in_id)
+        if raw_data:
+            try:
+                parsed = json.loads(raw_data)
+                if parsed.get("type") == "GO1_MOVE":
+                    self.vx = float(parsed.get("vx", 0.0))
+                    self.vy = float(parsed.get("vy", 0.0))
+                    self.vyaw = float(parsed.get("vyaw", 0.0))
+            except: pass
+
+        # 대시보드 버튼을 통한 수동 조작 우선권 부여
+        is_overridden = time.time() < go1_manual_override_until
+        if not is_overridden:
+            self.output_data[self.out_vx] = self.vx
+            self.output_data[self.out_vy] = self.vy
+            self.output_data[self.out_vyaw] = self.vyaw
+        else:
+            self.output_data[self.out_vx] = None
+            self.output_data[self.out_vy] = None
+            self.output_data[self.out_vyaw] = None
+
+        return self.out_flow

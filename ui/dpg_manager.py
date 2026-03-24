@@ -132,7 +132,15 @@ class NodeUIRenderer:
                 node.state['LEFT'] = dpg.is_key_down(dpg.mvKey_Left); node.state['RIGHT'] = dpg.is_key_down(dpg.mvKey_Right)
                 node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)
                 node.state['J'] = dpg.is_key_down(dpg.mvKey_J); node.state['U'] = dpg.is_key_down(dpg.mvKey_U)
-                node.state['Z'] = dpg.is_key_down(dpg.mvKey_Z); node.state['X'] = dpg.is_key_down(dpg.mvKey_X)
+                node.state['Z'] = dpg.is_key_down(dpg.mvKey_Z); node.state['X'] = dpg.is_key_down(dpg.mvKey_X)            
+            elif t == "GO1_KEYBOARD" and hasattr(node, 'combo_keys'):
+                node.state['is_focused'] = is_focused
+                node.state['keys'] = dpg.get_value(node.combo_keys)
+                node.state['W'] = dpg.is_key_down(dpg.mvKey_W); node.state['S'] = dpg.is_key_down(dpg.mvKey_S)
+                node.state['A'] = dpg.is_key_down(dpg.mvKey_A); node.state['D'] = dpg.is_key_down(dpg.mvKey_D)
+                node.state['UP'] = dpg.is_key_down(dpg.mvKey_Up); node.state['DOWN'] = dpg.is_key_down(dpg.mvKey_Down)
+                node.state['LEFT'] = dpg.is_key_down(dpg.mvKey_Left); node.state['RIGHT'] = dpg.is_key_down(dpg.mvKey_Right)
+                node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)            
             elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER"]:
                 for k, fid in getattr(node, 'ui_fields', {}).items():
                     pin_id = node.in_pins[k]
@@ -184,6 +192,8 @@ class NodeUIRenderer:
             for k, fid in getattr(node, 'setting_fields', {}).items(): dpg.set_value(fid, node.state.get(k, 1.0))
             
         # --- [Vision & Go1] State -> UI ---
+        elif t == "GO1_KEYBOARD" and hasattr(node, 'combo_keys'): 
+            dpg.set_value(node.combo_keys, node.state.get('keys', 'WASD'))
         elif t == "GO1_ACTION" and hasattr(node, 'combo_act'):
             dpg.set_value(node.combo_act, node.state.get('action', 'Stand Up'))
         elif t == "VIDEO_SRC" and hasattr(node, 'ui_url'):
@@ -216,6 +226,8 @@ class NodeUIRenderer:
         elif t == "MT4_TOOLTIP": NodeUIRenderer._render_tooltip(node)
         elif t == "MT4_BACKLASH": NodeUIRenderer._render_backlash(node)
         # --- Go1 & Vision ---
+        elif t == "GO1_KEYBOARD": NodeUIRenderer._render_go1_keyboard(node)
+        elif t == "GO1_UNITY": NodeUIRenderer._render_go1_unity(node)
         elif t == "GO1_ACTION": NodeUIRenderer._render_go1_action(node)
         elif t == "VIDEO_SRC": NodeUIRenderer._render_video_src(node)
         elif t == "VIS_FISHEYE": NodeUIRenderer._render_fisheye(node)
@@ -389,6 +401,31 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.out_z, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Z Out", color=(100,255,100))
 
     # --- [추가] Go1 & Vision Renderers ---
+
+    @staticmethod
+    def _render_go1_keyboard(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Go1 Keyboard"):
+            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
+            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
+                dpg.add_text("WASD: Move / QE: Yaw", color=(255,150,150))
+            with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vx")
+            with dpg.node_attribute(tag=node.out_vy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vy")
+            with dpg.node_attribute(tag=node.out_vyaw, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Yaw")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_go1_unity(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Unity Logic (Go1)"):
+            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
+            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.data_in_id, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("JSON")
+            with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vx")
+            with dpg.node_attribute(tag=node.out_vy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vy")
+            with dpg.node_attribute(tag=node.out_vyaw, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Yaw")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
     @staticmethod
     def _render_go1_action(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="Go1 Action"):
@@ -678,12 +715,14 @@ def __init_ui__():
                 dpg.add_text("MT4 Tools:", color=(255,200,0))
                 dpg.add_button(label="MT4 DRIVER", callback=add_node_cb, user_data="MT4_DRIVER")
                 dpg.add_button(label="MT4 ACTION", callback=add_node_cb, user_data="MT4_ACTION")
-                dpg.add_button(label="KEY", callback=add_node_cb, user_data="MT4_KEYBOARD")
-                dpg.add_button(label="UNITY", callback=add_node_cb, user_data="MT4_UNITY")
+                dpg.add_button(label="MT4 KEY", callback=add_node_cb, user_data="MT4_KEYBOARD")
+                dpg.add_button(label="MT4 UNITY", callback=add_node_cb, user_data="MT4_UNITY")
                 dpg.add_button(label="UDP", callback=add_node_cb, user_data="UDP_RECV")
                 
             with dpg.group(horizontal=True):
                 dpg.add_text("Go1 & Vision:", color=(100,200,255))
+                dpg.add_button(label="GO1 KEY", callback=add_node_cb, user_data="GO1_KEYBOARD")
+                dpg.add_button(label="GO1 UNITY", callback=add_node_cb, user_data="GO1_UNITY")
                 dpg.add_button(label="GO1 DRIVER", callback=add_node_cb, user_data="GO1_DRIVER")
                 dpg.add_button(label="GO1 ACTION", callback=add_node_cb, user_data="GO1_ACTION")
                 dpg.add_button(label="VIDEO SRC", callback=add_node_cb, user_data="VIDEO_SRC")
