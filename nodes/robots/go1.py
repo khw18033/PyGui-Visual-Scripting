@@ -13,7 +13,7 @@ from core.engine import generate_uuid, PortType, write_log, HwStatus, node_regis
 
 # ================= [Go1 Globals & Network] =================
 go1_sock = None
-GO1_IP = "192.168.12.1"
+GO1_IP = "192.168.50.159"
 GO1_PORT = 8080
 
 go1_target_vel = {'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0}
