@@ -381,7 +381,7 @@ class MT4UnityNode(BaseNode):
                             send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
                     elif msg_type == "MOVE":
                         if time.time() > mt4_collision_lock_until:
-                            if 'z' in parsed: self.output_data[self.out_x] = float(parsed['z'] * 1.2) * 1000.0
+                            if 'z' in parsed: self.output_data[self.out_x] = float(parsed['z'] / 1.2) * 1000.0
                             if 'x' in parsed: 
                                 unity_x_mm = float(parsed['x']) * 1000.0
                                 self.output_data[self.out_y] = -(unity_x_mm + 30.0)
