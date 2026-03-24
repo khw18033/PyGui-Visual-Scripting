@@ -1214,10 +1214,14 @@ while dpg.is_dearpygui_running():
 
     if time.time() - last_fb_time > 0.05:
         try:
+            # 역보정 로직: 실제 로봇 위치를 유니티가 '원하는 가상 위치'로 뻥튀기/오프셋 처리
+            calibrated_x_for_unity = mt4_current_pos['x'] * 1.2  # 1.2배 결함 역보정
+            calibrated_y_for_unity = mt4_current_pos['y'] - 30.0 # 30mm 우측 편향 역보정
+
             fb = {
-                "x": -mt4_current_pos['y']/1000.0, 
+                "x": -calibrated_y_for_unity / 1000.0, 
                 "y": (mt4_current_pos['z'] - MT4_Z_OFFSET) / 1000.0, 
-                "z": mt4_current_pos['x']/1000.0, 
+                "z": calibrated_x_for_unity / 1000.0, 
                 "roll": mt4_current_pos['roll'],
                 "gripper": mt4_current_pos['gripper'], 
                 "status": "Running"
