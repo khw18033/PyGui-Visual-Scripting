@@ -381,10 +381,12 @@ class MT4UnityNode(BaseNode):
                             send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
                     elif msg_type == "MOVE":
                         if time.time() > mt4_collision_lock_until:
-                            if 'z' in parsed: self.output_data[self.out_x] = float(parsed['z'] / 1.2) * 1000.0
+                            if 'z' in parsed: 
+                                self.output_data[self.out_x] = (float(parsed['z']) * 1000.0) / 1.2
                             if 'x' in parsed: 
                                 unity_x_mm = float(parsed['x']) * 1000.0
-                                self.output_data[self.out_y] = -(unity_x_mm + 30.0)
+                                self.output_data[self.out_y] = -unity_x_mm + 30.0
+
                             if 'y' in parsed: self.output_data[self.out_z] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
                             if 'gripper' in parsed: self.output_data[self.out_g] = float(parsed['gripper']) 
                             if 'roll' in parsed: self.output_data[self.out_r] = float(parsed['roll'])
@@ -1214,9 +1216,8 @@ while dpg.is_dearpygui_running():
 
     if time.time() - last_fb_time > 0.05:
         try:
-            # 역보정 로직: 실제 로봇 위치를 유니티가 '원하는 가상 위치'로 뻥튀기/오프셋 처리
-            calibrated_x_for_unity = mt4_current_pos['x'] * 1.2  # 1.2배 결함 역보정
-            calibrated_y_for_unity = mt4_current_pos['y'] - 30.0 # 30mm 우측 편향 역보정
+            calibrated_x_for_unity = mt4_current_pos['x'] * 1.2
+            calibrated_y_for_unity = mt4_current_pos['y'] - 30.0
 
             fb = {
                 "x": -calibrated_y_for_unity / 1000.0, 
