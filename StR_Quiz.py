@@ -255,7 +255,6 @@ class UniversalRobotNode(BaseNode):
         for k, lbl, def_v in self.driver.get_settings_schema():
             self.state[k] = def_v
         
-    # [수정 후]
     def execute(self):
         inputs = {k: self.fetch_input_data(aid) for k, aid in self.in_pins.items()}
         settings = {k: self.fetch_input_data(aid) for k, aid in self.setting_pins.items()}
@@ -379,18 +378,20 @@ class MT4UnityNode(BaseNode):
                         elif val == "LOG_FAIL":
                             mt4_log_event_queue.append("FAIL")
                             send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
+                    # 수정할 부분-----------------------------
                     elif msg_type == "MOVE":
                         if time.time() > mt4_collision_lock_until:
                             if 'z' in parsed: 
-                                self.output_data[self.out_x] = (float(parsed['z']) * 1000.0) / 1.2
+                                self.output_data[self.out_x] = (float(parsed['z']) * 1000.0) / 1.3
                             if 'x' in parsed: 
                                 unity_x_mm = float(parsed['x']) * 1000.0
-                                self.output_data[self.out_y] = -unity_x_mm + 30.0
+                                self.output_data[self.out_y] = -unity_x_mm + 50.0
 
                             if 'y' in parsed: self.output_data[self.out_z] = (float(parsed['y']) * 1000.0) + MT4_Z_OFFSET
                             if 'gripper' in parsed: self.output_data[self.out_g] = float(parsed['gripper']) 
                             if 'roll' in parsed: self.output_data[self.out_r] = float(parsed['roll'])
                 except: pass 
+                    # --------------------------------------
                 
         return self.outputs
 
@@ -1214,10 +1215,11 @@ while dpg.is_dearpygui_running():
     
     if dpg.does_item_exist("sys_tab_net"): dpg.set_value("sys_tab_net", sys_net_str)
 
+    # 수정할 부분-----------------------------
     if time.time() - last_fb_time > 0.05:
         try:
-            calibrated_x_for_unity = mt4_current_pos['x'] * 1.2
-            calibrated_y_for_unity = mt4_current_pos['y'] - 30.0
+            calibrated_x_for_unity = mt4_current_pos['x'] * 1.3
+            calibrated_y_for_unity = mt4_current_pos['y'] - 50.0
 
             fb = {
                 "x": -calibrated_y_for_unity / 1000.0, 
@@ -1231,6 +1233,7 @@ while dpg.is_dearpygui_running():
             sock_send.sendto(json.dumps(fb).encode(), (MT4_UNITY_IP, MT4_FEEDBACK_PORT))
         except: pass
         last_fb_time = time.time()
+    # --------------------------------------
 
     if is_running and (time.time() - last_logic_time > LOGIC_RATE):
         NodeUIRenderer.sync_ui_to_state()
