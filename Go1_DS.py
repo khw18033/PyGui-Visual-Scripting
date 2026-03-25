@@ -151,39 +151,6 @@ def get_save_files():
     if not os.path.exists(SAVE_DIR): return []
     return [f for f in os.listdir(SAVE_DIR) if f.endswith(".json")]
 
-# ================= [MT4 State & Config] =================
-ser = None 
-mt4_current_pos = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0}
-mt4_target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'gripper': 40.0} 
-mt4_manual_override_until = 0.0 
-mt4_dashboard = {"status": "Idle", "hw_link": "Offline", "latency": 0.0, "last_pkt_time": 0.0}
-
-# ★ [V9 추가] 로깅, 경로 제어, 유니티 통신용 상태 변수
-PATH_DIR = "path_record"
-LOG_DIR = "result_log"
-os.makedirs(PATH_DIR, exist_ok=True)
-os.makedirs(LOG_DIR, exist_ok=True)
-
-mt4_mode = {"recording": False, "playing": False}
-mt4_collision_lock_until = 0.0 # 충돌 잠금 타이머
-mt4_record_f = None
-mt4_record_writer = None
-mt4_record_temp_name = ""
-mt4_log_event_queue = deque() # 유니티의 성공/실패 로그 이벤트를 담을 큐
-
-# 유니티 5007포트(SystemManager UI)로 메시지 전송
-def send_unity_ui(msg_type, extra_data):
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        msg = f"type:{msg_type},extra:{extra_data}"
-        sock.sendto(msg.encode('utf-8'), (MT4_UNITY_IP, 5007))
-    except: pass
-
-MT4_UNITY_IP = "192.168.50.63"; MT4_FEEDBACK_PORT = 5005
-MT4_LIMITS = {'min_x': 100, 'max_x': 280, 'min_y': -200, 'max_y': 200, 'min_z': 0, 'max_z': 280}
-MT4_GRIPPER_MIN = 30.0; MT4_GRIPPER_MAX = 60.0
-MT4_Z_OFFSET = 90.0
-
 # ================= [Go1 State & Config] =================
 HIGHLEVEL = 0xee; LOCAL_PORT = 8090; ROBOT_IP = resolve_hostname("raspberrypi.local") or "192.168.50.159"; ROBOT_PORT = 8082
 GO1_UNITY_IP = "192.168.50.246"; UNITY_STATE_PORT = 15101; UNITY_CMD_PORT = 15102; UNITY_RX_PORT = 15100
@@ -231,35 +198,6 @@ class BaseRobotDriver(ABC):
     @abstractmethod
     def execute_command(self, inputs, settings): pass
 
-class MT4RobotDriver(BaseRobotDriver):
-    def __init__(self):
-        self.last_cmd = ""; self.last_write_time = 0; self.write_interval = 0.0
-    def get_ui_schema(self): return {'x': ("X", 200.0), 'y': ("Y", 0.0), 'z': ("Z", 120.0), 'gripper': ("G", 40.0)}
-    def get_settings_schema(self): return {'smooth': ("Smth", 1.0), 'speed': ("Spd", 2.0)}
-    def execute_command(self, inputs, settings):
-        global mt4_current_pos, mt4_target_goal, mt4_manual_override_until, ser
-        if time.time() < mt4_collision_lock_until: return # 충돌 락
-        if time.time() > mt4_manual_override_until:
-            for k in self.get_ui_schema().keys():
-                if inputs.get(k) is not None: mt4_target_goal[k] = float(inputs[k])
-        smooth = 1.0 if time.time() < mt4_manual_override_until else max(0.01, min(settings.get('smooth', 1.0), 1.0))
-        dx = mt4_target_goal['x'] - mt4_current_pos['x']; dy = mt4_target_goal['y'] - mt4_current_pos['y']; dz = mt4_target_goal['z'] - mt4_current_pos['z']
-        nx = mt4_current_pos['x'] + dx * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['x']
-        ny = mt4_current_pos['y'] + dy * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['y']
-        nz = mt4_current_pos['z'] + dz * smooth if not (abs(dx)<0.5 and abs(dy)<0.5 and abs(dz)<0.5) else mt4_target_goal['z']
-        ng = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
-        nx = max(MT4_LIMITS['min_x'], min(nx, MT4_LIMITS['max_x'])); ny = max(MT4_LIMITS['min_y'], min(ny, MT4_LIMITS['max_y'])); nz = max(MT4_LIMITS['min_z'], min(nz, MT4_LIMITS['max_z']))
-        new_state = {'x': nx, 'y': ny, 'z': nz, 'gripper': ng}
-        if time.time() - self.last_write_time >= self.write_interval:
-            cmd = f"G0 X{nx:.1f} Y{ny:.1f} Z{nz:.1f}\nM3 S{int(ng)}\n"
-            if cmd != self.last_cmd:
-                try: 
-                    if ser and ser.is_open: ser.write(cmd.encode()); self.last_write_time = time.time()
-                except: mt4_dashboard["hw_link"] = "Offline"
-                self.last_cmd = cmd
-        mt4_current_pos.update(new_state)
-        return new_state
-
 class Go1RobotDriver(BaseRobotDriver):
     def get_ui_schema(self): return {'vx': ("Vx In", 0.0), 'vy': ("Vy In", 0.0), 'wz': ("Wz In", 0.0)}
     
@@ -302,8 +240,7 @@ class UniversalRobotNode(BaseNode):
         self.settings_schema = self.driver.get_settings_schema()
         self.in_pins = {}; self.ui_fields = {}; self.setting_pins = {}; self.setting_fields = {}
         self.cache_ui = {k: 0.0 for k in self.schema.keys()}
-        if isinstance(self.driver, MT4RobotDriver): self.label = "MT4 Driver"; self.type_str = "MT4_DRIVER"  
-        elif isinstance(self.driver, Go1RobotDriver): self.label = "Go1 Driver"; self.type_str = "GO1_DRIVER"  
+        if isinstance(self.driver, Go1RobotDriver): self.label = "Go1 Driver"; self.type_str = "GO1_DRIVER"  
         elif isinstance(self.driver, EPRobotDriver): self.label = "EP Driver"; self.type_str = "EP_DRIVER"
 
     def build_ui(self):
@@ -340,144 +277,7 @@ class UniversalRobotNode(BaseNode):
         for k, v in self.setting_fields.items():
             if k in data: dpg.set_value(v, data[k])
 
-# ================= [MT4 Dashboard & Threads] =================
-def mt4_manual_control_callback(sender, app_data, user_data):
-    global mt4_manual_override_until, mt4_target_goal, mt4_current_pos
-    mt4_manual_override_until = time.time() + 1.5; axis, step = user_data; mt4_target_goal[axis] = mt4_current_pos[axis] + step; mt4_apply_limits_and_move()
 
-def mt4_move_to_coord_callback(sender, app_data, user_data):
-    global mt4_manual_override_until, mt4_target_goal
-    mt4_manual_override_until = time.time() + 2.0; mt4_target_goal['x'] = float(dpg.get_value("input_x")); mt4_target_goal['y'] = float(dpg.get_value("input_y"))
-    mt4_target_goal['z'] = float(dpg.get_value("input_z")); mt4_target_goal['gripper'] = float(dpg.get_value("input_g")); mt4_apply_limits_and_move()
-
-def mt4_apply_limits_and_move():
-    global mt4_target_goal, mt4_current_pos, ser
-    if time.time() < mt4_collision_lock_until: return # 충돌 락
-    mt4_target_goal['x'] = max(MT4_LIMITS['min_x'], min(mt4_target_goal['x'], MT4_LIMITS['max_x']))
-    mt4_target_goal['y'] = max(MT4_LIMITS['min_y'], min(mt4_target_goal['y'], MT4_LIMITS['max_y']))
-    mt4_target_goal['z'] = max(MT4_LIMITS['min_z'], min(mt4_target_goal['z'], MT4_LIMITS['max_z']))
-    mt4_target_goal['gripper'] = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
-    
-    # ★ 기존에 있던 mt4_current_pos 덮어쓰기와 ser.write() 코드를 완전히 삭제합니다. 
-    # MT4RobotDriver가 백그라운드에서 안전하게 부드러운 이동 및 전송을 대신 처리합니다.
-
-def get_mt4_paths(): return [f for f in os.listdir(PATH_DIR) if f.endswith(".csv")]
-
-def toggle_mt4_record(custom_name=None):
-    global mt4_record_f, mt4_record_writer, mt4_record_temp_name
-    if mt4_mode["recording"]:
-        mt4_mode["recording"] = False
-        if mt4_record_f: mt4_record_f.close()
-        
-        # ★ 유니티에서 보낸 이름이 없고 GUI에서 누른 경우, GUI 입력창의 이름을 가져옴
-        if not custom_name and dpg.does_item_exist("path_name_input"):
-            custom_name = dpg.get_value("path_name_input")
-            
-        # 지정한 이름으로 파일명 변경
-        if custom_name and mt4_record_temp_name:
-            if not custom_name.endswith(".csv"): custom_name += ".csv"
-            final_path = os.path.join(PATH_DIR, custom_name)
-            try: os.rename(mt4_record_temp_name, final_path)
-            except: pass
-                
-        dpg.set_item_label("btn_mt4_record", "Start Recording")
-        if dpg.does_item_exist("combo_mt4_path"): dpg.configure_item("combo_mt4_path", items=get_mt4_paths())
-        
-        log_msg = f"MT4 Path Saved: {custom_name}" if custom_name else "MT4 Path Saved"
-        write_log(log_msg)
-        
-        # ★ 유니티 UI로 저장 완료 메시지 띄우기 및 드롭다운 목록 즉시 갱신!
-        send_unity_ui("STATUS", f"저장 완료: {custom_name if custom_name else '기본 이름'}")
-        send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
-    else:
-        mt4_mode["recording"] = True
-        fname = os.path.join(PATH_DIR, f"path_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-        mt4_record_temp_name = fname
-        mt4_record_f = open(fname, 'w', newline='')
-        mt4_record_writer = csv.writer(mt4_record_f)
-        mt4_record_writer.writerow(['x', 'y', 'z', 'gripper'])
-        dpg.set_item_label("btn_mt4_record", "Stop Recording")
-        write_log("MT4 Path Recording Started.")
-        
-        # ★ 유니티 UI로 녹화 시작 메시지 띄우기!
-        send_unity_ui("STATUS", "경로 녹화 시작...")
-
-def play_mt4_path(sender=None, app_data=None, user_data=None, filename=None):
-    if not filename: filename = dpg.get_value("combo_mt4_path")
-    if not filename or mt4_mode["playing"] or time.time() < mt4_collision_lock_until: return
-    filepath = os.path.join(PATH_DIR, filename)
-    if os.path.exists(filepath): threading.Thread(target=play_mt4_path_thread, args=(filepath,), daemon=True).start()
-
-def play_mt4_path_thread(filepath):
-    global mt4_mode, mt4_target_goal, mt4_manual_override_until
-    mt4_mode["playing"] = True
-    mt4_manual_override_until = time.time() + 86400 # 재생 중 조작 잠금
-    write_log(f"MT4 Playing path: {os.path.basename(filepath)}")
-    send_unity_ui("STATUS", f"경로 재생 중: {os.path.basename(filepath)}")
-    try:
-        with open(filepath, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if time.time() < mt4_collision_lock_until or not mt4_mode["playing"]: break
-                mt4_target_goal['x'] = float(row['x']); mt4_target_goal['y'] = float(row['y'])
-                mt4_target_goal['z'] = float(row['z']); mt4_target_goal['gripper'] = float(row['gripper'])
-                mt4_apply_limits_and_move()
-                time.sleep(0.05)
-    except Exception as e: 
-        write_log(f"Play Error: {e}") # pass 대신 에러 내용을 출력하도록 수정
-    mt4_mode["playing"] = False; mt4_manual_override_until = time.time()
-    send_unity_ui("STATUS", "경로 재생 완료")
-    write_log("MT4 Playback finished.")
-
-def mt4_background_logger_thread():
-    global mt4_record_writer
-    log_filename = os.path.join(LOG_DIR, f"mt4_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-    with open(log_filename, 'w', newline='') as mt4_log_f:
-        mt4_log_writer = csv.writer(mt4_log_f)
-        mt4_log_writer.writerow(['timestamp', 'event', 'target_x', 'target_y', 'target_z', 'target_g', 'current_x', 'current_y', 'current_z', 'current_g'])
-        
-        while True:
-            time.sleep(0.05) # ★ 0.1(10Hz)에서 0.05(20Hz)로 재생 속도와 완벽히 맞춤
-            
-            event_str = "TICK"
-            if mt4_log_event_queue: event_str = mt4_log_event_queue.popleft()
-            
-            # 상시 로깅
-            mt4_log_writer.writerow([time.time(), event_str, mt4_target_goal['x'], mt4_target_goal['y'], mt4_target_goal['z'], mt4_target_goal['gripper'], mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['gripper']])
-            mt4_log_f.flush()
-            
-            # ★ 경로 녹화 (중복 생략 코드를 제거하여, 정지 시간까지 1:1로 리얼타임 녹화)
-            if mt4_mode["recording"] and mt4_record_writer:
-                curr_tuple = (mt4_current_pos['x'], mt4_current_pos['y'], mt4_current_pos['z'], mt4_current_pos['gripper'])
-                mt4_record_writer.writerow(curr_tuple)
-                mt4_record_f.flush()
-
-def mt4_homing_callback(sender, app_data, user_data): threading.Thread(target=mt4_homing_thread_func, daemon=True).start()
-def mt4_homing_thread_func():
-    global ser, mt4_manual_override_until, mt4_target_goal, mt4_current_pos
-    if ser:
-        mt4_manual_override_until = time.time() + 20.0
-        mt4_dashboard["status"] = "HOMING..."; write_log("Homing...")
-        ser.write(b"$H\r\n"); time.sleep(15); ser.write(b"M20\r\n"); ser.write(b"G90\r\n"); ser.write(b"G1 F2000\r\n")
-        mt4_target_goal.update({'x':200.0, 'y':0.0, 'z':120.0, 'gripper':40.0}); mt4_current_pos.update(mt4_target_goal)
-        ser.write(b"G0 X200 Y0 Z120 F2000\r\n"); ser.write(b"M3 S40\r\n")
-        mt4_dashboard["status"] = "Idle"; write_log("Homing Done")
-
-def init_mt4_serial():
-    global ser
-    try:
-        ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=0.05); mt4_dashboard["hw_link"] = "Online"; write_log("System: MT4 Connected")
-        time.sleep(2); ser.write(b"$H\r\n"); time.sleep(15); ser.write(b"M20\r\n"); ser.write(b"G90\r\n"); ser.write(b"G1 F2000\r\n"); time.sleep(1)
-        ser.write(b"G0 X200 Y0 Z120 F2000\r\n"); ser.write(b"M3 S40\r\n") 
-    except Exception as e: mt4_dashboard["hw_link"] = "Simulation"; write_log(f"MT4 Sim Mode ({e})"); ser = None
-
-def auto_reconnect_mt4_thread():
-    global ser
-    while True:
-        if ser is None and os.path.exists('/dev/ttyUSB0'):
-            try: init_mt4_serial() 
-            except: pass
-        time.sleep(3) 
 
 # ================= [V8 File-based Vision (All Cameras Calibration & ArUco)] =================
 def go1_vision_worker_thread():
@@ -998,163 +798,6 @@ def ep_comm_thread():
                 ep_robot_inst.chassis.drive_speed(x=ep_node_intent['vx'], y=ep_node_intent['vy'], z=ep_node_intent['wz'], timeout=0.5)
                 is_moving = True
             except: pass
-
-# ================= [MT4 Specific Nodes] =================
-class MT4CommandActionNode(BaseNode):
-    def __init__(self, node_id):
-        super().__init__(node_id, "MT4 Action", "MT4_ACTION")
-        self.combo_id = None; self.in_val1 = None; self.in_val2 = None; self.in_val3 = None; self.out_flow = None; self.field_v1 = None; self.field_v2 = None; self.field_v3 = None
-    def build_ui(self):
-        with dpg.node(tag=self.node_id, parent="node_editor", label="MT4 Action"):
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                self.combo_id = dpg.add_combo(["Move Relative (XYZ)", "Move Absolute (XYZ)", "Set Gripper (Abs)", "Grip Relative (Add)", "Homing"], default_value="Move Relative (XYZ)", width=150)
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as v1: dpg.add_text("X / Grip"); self.field_v1 = dpg.add_input_float(width=60, default_value=0); self.inputs[v1] = "Data"; self.in_val1 = v1
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as v2: dpg.add_text("Y"); self.field_v2 = dpg.add_input_float(width=60, default_value=0); self.inputs[v2] = "Data"; self.in_val2 = v2
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as v3: dpg.add_text("Z"); self.field_v3 = dpg.add_input_float(width=60, default_value=0); self.inputs[v3] = "Data"; self.in_val3 = v3
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
-    def execute(self):
-        global mt4_manual_override_until, mt4_target_goal, mt4_current_pos
-        mt4_manual_override_until = time.time() + 1.0 
-        mode = dpg.get_value(self.combo_id)
-        v1 = self.fetch_input_data(self.in_val1); v1 = float(v1) if v1 is not None else dpg.get_value(self.field_v1)
-        v2 = self.fetch_input_data(self.in_val2); v2 = float(v2) if v2 is not None else dpg.get_value(self.field_v2)
-        v3 = self.fetch_input_data(self.in_val3); v3 = float(v3) if v3 is not None else dpg.get_value(self.field_v3)
-
-        if mode.startswith("Move Rel"): mt4_target_goal['x'] += v1; mt4_target_goal['y'] += v2; mt4_target_goal['z'] += v3
-        elif mode.startswith("Move Abs"): mt4_target_goal['x'] = v1; mt4_target_goal['y'] = v2; mt4_target_goal['z'] = v3
-        elif mode.startswith("Set Grip"): mt4_target_goal['gripper'] = v1
-        elif mode.startswith("Grip Rel"): mt4_target_goal['gripper'] += v1
-        elif mode == "Homing": pass 
-        
-        mt4_target_goal['x'] = max(MT4_LIMITS['min_x'], min(mt4_target_goal['x'], MT4_LIMITS['max_x'])); mt4_target_goal['y'] = max(MT4_LIMITS['min_y'], min(mt4_target_goal['y'], MT4_LIMITS['max_y']))
-        mt4_target_goal['z'] = max(MT4_LIMITS['min_z'], min(mt4_target_goal['z'], MT4_LIMITS['max_z'])); mt4_target_goal['gripper'] = max(MT4_GRIPPER_MIN, min(mt4_target_goal['gripper'], MT4_GRIPPER_MAX))
-        mt4_current_pos.update(mt4_target_goal)
-        if ser and ser.is_open: ser.write(f"G0 X{mt4_target_goal['x']:.1f} Y{mt4_target_goal['y']:.1f} Z{mt4_target_goal['z']:.1f}\nM3 S{int(mt4_target_goal['gripper'])}\n".encode())
-        return self.out_flow
-    def get_settings(self): return {"mode": dpg.get_value(self.combo_id), "v1": dpg.get_value(self.field_v1), "v2": dpg.get_value(self.field_v2), "v3": dpg.get_value(self.field_v3)}
-    def load_settings(self, data): dpg.set_value(self.combo_id, data.get("mode", "Move Relative (XYZ)")); dpg.set_value(self.field_v1, data.get("v1", 0)); dpg.set_value(self.field_v2, data.get("v2", 0)); dpg.set_value(self.field_v3, data.get("v3", 0))
-
-class MT4KeyboardNode(BaseNode):
-    def __init__(self, node_id):
-        super().__init__(node_id, "Keyboard (MT4)", "MT4_KEYBOARD")
-        self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None
-        self.step_size = 10.0; self.grip_step = 5.0; self.cooldown = 0.2; self.last_input_time = 0.0
-        self.combo_keys = None 
-    def build_ui(self):
-        with dpg.node(tag=self.node_id, parent="node_editor", label="MT4 Keyboard"):
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                self.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
-                dpg.add_text("XY Move / QE: Z / UJ: Grip", color=(255,150,150))
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as x: dpg.add_text("Target X"); self.outputs[x] = "Data"; self.out_x = x
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as y: dpg.add_text("Target Y"); self.outputs[y] = "Data"; self.out_y = y
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as z: dpg.add_text("Target Z"); self.outputs[z] = "Data"; self.out_z = z
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as g: dpg.add_text("Target Grip"); self.outputs[g] = "Data"; self.out_g = g
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("Flow Out"); self.outputs[f] = "Flow"
-    def execute(self):
-        # ★ [추가된 부분] 파일 이름 입력창에 커서가 깜빡일 때는 키 입력을 무시하고 흐름만 통과시킵니다.
-        if dpg.is_item_focused("file_name_input") or (dpg.does_item_exist("path_name_input") and dpg.is_item_focused("path_name_input")):
-            for k, v in self.outputs.items():
-                if v == "Flow": return k
-            return None
-        
-        global mt4_manual_override_until, mt4_target_goal
-        if time.time() - self.last_input_time > self.cooldown:
-            dx=0; dy=0; dz=0; dg=0
-            key_mode = dpg.get_value(self.combo_keys)
-            if key_mode == "WASD":
-                if dpg.is_key_down(dpg.mvKey_W): dx=1
-                if dpg.is_key_down(dpg.mvKey_S): dx=-1
-                if dpg.is_key_down(dpg.mvKey_A): dy=1
-                if dpg.is_key_down(dpg.mvKey_D): dy=-1
-            else:
-                if dpg.is_key_down(dpg.mvKey_Up): dx=1
-                if dpg.is_key_down(dpg.mvKey_Down): dx=-1
-                if dpg.is_key_down(dpg.mvKey_Left): dy=1
-                if dpg.is_key_down(dpg.mvKey_Right): dy=-1
-
-            if dpg.is_key_down(dpg.mvKey_Q): dz=1
-            if dpg.is_key_down(dpg.mvKey_E): dz=-1
-            if dpg.is_key_down(dpg.mvKey_J): dg=1
-            if dpg.is_key_down(dpg.mvKey_U): dg=-1
-            if dx or dy or dz or dg:
-                mt4_manual_override_until = time.time() + 0.5; self.last_input_time = time.time()
-                mt4_target_goal['x']+=dx*self.step_size; mt4_target_goal['y']+=dy*self.step_size; mt4_target_goal['z']+=dz*self.step_size; mt4_target_goal['gripper']+=dg*self.grip_step
-        self.output_data[self.out_x]=mt4_target_goal['x']; self.output_data[self.out_y]=mt4_target_goal['y']; self.output_data[self.out_z]=mt4_target_goal['z']; self.output_data[self.out_g]=mt4_target_goal['gripper']
-        for k, v in self.outputs.items():
-            if v == "Flow": return k
-        return None
-    def get_settings(self): return {"keys": dpg.get_value(self.combo_keys)}
-    def load_settings(self, data): dpg.set_value(self.combo_keys, data.get("keys", "WASD"))
-
-class MT4UnityNode(BaseNode):
-    def __init__(self, node_id):
-        super().__init__(node_id, "Unity Logic (MT4)", "MT4_UNITY")
-        self.data_in_id = None; self.out_x = None; self.out_y = None; self.out_z = None; self.out_g = None
-        self.last_processed_json = ""  # ★ 이 한 줄을 끝에 추가해 주세요!
-    def build_ui(self):
-        with dpg.node(tag=self.node_id, parent="node_editor", label="Unity Logic (MT4)"):
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as in_flow: dpg.add_text("Flow In"); self.inputs[in_flow] = "Flow"
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as d_in: dpg.add_text("JSON"); self.inputs[d_in] = "Data"; self.data_in_id = d_in
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_x: dpg.add_text("Target X"); self.outputs[out_x] = "Data"; self.out_x = out_x
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_y: dpg.add_text("Target Y"); self.outputs[out_y] = "Data"; self.out_y = out_y
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_z: dpg.add_text("Target Z"); self.outputs[out_z] = "Data"; self.out_z = out_z
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out_g: dpg.add_text("Target Grip"); self.outputs[out_g] = "Data"; self.out_g = out_g
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f_out: dpg.add_text("Flow Out"); self.outputs[f_out] = "Flow"
-    def execute(self):
-        global mt4_collision_lock_until
-        if time.time() - mt4_dashboard.get("last_pkt_time", 0) > 0.5:
-            self.output_data[self.out_x] = None; self.output_data[self.out_y] = None; self.output_data[self.out_z] = None; self.output_data[self.out_g] = None
-            return self.outputs
-            
-        raw_json = self.fetch_input_data(self.data_in_id)
-        if raw_json and raw_json != self.last_processed_json:
-            self.last_processed_json = raw_json
-            try:
-                parsed = json.loads(raw_json)
-                msg_type = parsed.get("type", "MOVE")
-                
-                # ★ 유니티가 보낸 Raw Command 처리
-                if msg_type == "CMD":
-                    val = parsed.get("val", "")
-                    
-                    if val == "COLLISION":
-                        mt4_collision_lock_until = time.time() + 2.0 # 2초간 조작 무시
-                        if ser and ser.is_open: ser.write(b"!") # 하드웨어 급정지
-                        write_log("MT4 Collision Detected! Robot Locked.")
-                        send_unity_ui("STATUS", "충돌 감지! 로봇 긴급 정지")
-                        
-                    elif val == "START_REC":
-                        if not mt4_mode["recording"]: toggle_mt4_record()
-                        
-                    elif val.startswith("STOP_REC:"):
-                        fname = val.split(":")[1]
-                        if mt4_mode["recording"]: toggle_mt4_record(custom_name=fname)
-                        
-                    elif val == "REQ_FILES":
-                        send_unity_ui("FILE_LIST", f"[{'|'.join(get_mt4_paths())}]")
-                        
-                    elif val.startswith("PLAY:"):
-                        fname = val.split(":")[1]
-                        play_mt4_path(filename=fname)
-                        
-                    elif val == "LOG_SUCCESS":
-                        mt4_log_event_queue.append("SUCCESS")
-                        send_unity_ui("LOG", "<color=green>SUCCESS 기록 완료</color>")
-                        
-                    elif val == "LOG_FAIL":
-                        mt4_log_event_queue.append("FAIL")
-                        send_unity_ui("LOG", "<color=red>FAIL 기록 완료</color>")
-
-                # ★ XYZ 및 그리퍼 이동 처리 (충돌 시나 재생 중일 때는 유니티 명령 무시)
-                elif msg_type == "MOVE" and not mt4_mode["playing"] and time.time() > mt4_collision_lock_until:
-                    self.output_data[self.out_x] = parsed.get('z', 0) * 1000.0
-                    self.output_data[self.out_y] = -parsed.get('x', 0) * 1000.0
-                    self.output_data[self.out_z] = (parsed.get('y', 0) * 1000.0) + MT4_Z_OFFSET
-                    self.output_data[self.out_g] = parsed.get('gripper') 
-            except: pass 
-        return self.outputs
     
 # --- EP Nodes ---
 class EPRobotDriver(BaseRobotDriver):
@@ -1550,7 +1193,7 @@ def execute_graph_once():
         if isinstance(node, StartNode): start_node = node; break
     
     for node in node_registry.values():
-        if not isinstance(node, (StartNode, MT4CommandActionNode, Go1CommandActionNode, LogicIfNode, LogicLoopNode, ConditionKeyNode)):
+        if not isinstance(node, (StartNode, Go1CommandActionNode, LogicIfNode, LogicLoopNode, ConditionKeyNode)):
             try: node.execute()
             except: pass
 
@@ -1588,10 +1231,6 @@ class NodeFactory:
         elif node_type == "CONSTANT": node = ConstantNode(node_id)
         elif node_type == "PRINT": node = PrintNode(node_id)
         elif node_type == "LOGGER": node = LoggerNode(node_id)
-        elif node_type == "MT4_DRIVER": node = UniversalRobotNode(node_id, MT4RobotDriver())
-        elif node_type == "MT4_ACTION": node = MT4CommandActionNode(node_id)
-        elif node_type == "MT4_KEYBOARD": node = MT4KeyboardNode(node_id)
-        elif node_type == "MT4_UNITY": node = MT4UnityNode(node_id)
         elif node_type == "UDP_RECV": node = UDPReceiverNode(node_id)
         elif node_type == "GO1_DRIVER": node = UniversalRobotNode(node_id, Go1RobotDriver())
         elif node_type == "GO1_ACTION": node = Go1CommandActionNode(node_id)
@@ -1744,8 +1383,6 @@ def force_cleanup_cameras():
 force_cleanup_cameras()
 atexit.register(force_cleanup_cameras)
 
-init_mt4_serial()
-threading.Thread(target=auto_reconnect_mt4_thread, daemon=True).start()
 threading.Thread(target=network_monitor_thread, daemon=True).start()
 threading.Thread(target=go1_v4_comm_thread, daemon=True).start()
 threading.Thread(target=camera_worker_thread, daemon=True).start()
@@ -1754,7 +1391,6 @@ threading.Thread(target=go1_vision_worker_thread, daemon=True).start()
 threading.Thread(target=global_image_cleanup_thread, daemon=True).start()
 threading.Thread(target=start_flask_app, daemon=True).start()
 threading.Thread(target=lambda: (time.sleep(1), update_file_list()), daemon=True).start()
-threading.Thread(target=mt4_background_logger_thread, daemon=True).start() # ★ 추가
 threading.Thread(target=ep_comm_thread, daemon=True).start()
 
 dpg.create_context()
@@ -1768,44 +1404,6 @@ with dpg.theme() as estop_theme:
 
 with dpg.window(tag="PrimaryWindow"):
     with dpg.tab_bar():
-        with dpg.tab(label="MT4 Dashboard"):
-            with dpg.group(horizontal=True):
-                with dpg.child_window(width=250, height=130, border=True):
-                    dpg.add_text("MT4 Status", color=(150,150,150)); 
-                    dpg.add_text("Status: Idle", tag="mt4_dash_status", color=(0,255,0))
-                    dpg.add_text(f"HW: {mt4_dashboard['hw_link']}", tag="mt4_dash_link", color=(0,255,0) if mt4_dashboard["hw_link"]=="Online" else (255,0,0))
-                    dpg.add_text("Latency: 0.0 ms", tag="mt4_dash_latency", color=(255,255,0))
-                with dpg.child_window(width=350, height=130, border=True):
-                    dpg.add_text("Manual Control (10mm, Grip 5mm)", color=(255,200,0))
-                    with dpg.group(horizontal=True):
-                        dpg.add_button(label="X+", width=60, callback=mt4_manual_control_callback, user_data=('x', 10)); dpg.add_button(label="X-", width=60, callback=mt4_manual_control_callback, user_data=('x', -10))
-                        dpg.add_text("|"); dpg.add_button(label="Y+", width=60, callback=mt4_manual_control_callback, user_data=('y', 10)); dpg.add_button(label="Y-", width=60, callback=mt4_manual_control_callback, user_data=('y', -10))
-                    with dpg.group(horizontal=True):
-                        dpg.add_button(label="Z+", width=60, callback=mt4_manual_control_callback, user_data=('z', 10)); dpg.add_button(label="Z-", width=60, callback=mt4_manual_control_callback, user_data=('z', -10))
-                        dpg.add_text("|"); dpg.add_button(label="G+", width=60, callback=mt4_manual_control_callback, user_data=('gripper', 5)); dpg.add_button(label="G-", width=60, callback=mt4_manual_control_callback, user_data=('gripper', -5))
-                with dpg.child_window(width=300, height=130, border=True):
-                    dpg.add_text("Direct Coord", color=(0,255,255))
-                    with dpg.group(horizontal=True):
-                        dpg.add_text("X"); dpg.add_input_int(tag="input_x", width=50, default_value=200, step=0)
-                        dpg.add_text("Y"); dpg.add_input_int(tag="input_y", width=50, default_value=0, step=0)
-                    with dpg.group(horizontal=True):
-                        dpg.add_text("Z"); dpg.add_input_int(tag="input_z", width=50, default_value=120, step=0)
-                        dpg.add_text("G"); dpg.add_input_int(tag="input_g", width=50, default_value=40, step=0)
-                    with dpg.group(horizontal=True):
-                        dpg.add_button(label="Move", width=100, callback=mt4_move_to_coord_callback)
-                        dpg.add_button(label="Homing", width=100, callback=mt4_homing_callback)
-                with dpg.child_window(width=150, height=130, border=True):
-                    dpg.add_text("Coords", color=(0,255,255))
-                    dpg.add_text("X: 0", tag="mt4_x"); dpg.add_text("Y: 0", tag="mt4_y")
-                    dpg.add_text("Z: 0", tag="mt4_z"); dpg.add_text("G: 0", tag="mt4_g")
-                # 기존 "Coords" 자식 윈도우 아래쪽 또는 옆에 추가
-                with dpg.child_window(width=200, height=155, border=True):
-                    dpg.add_text("Record & Play", color=(255,100,200))
-                    dpg.add_input_text(tag="path_name_input", default_value="my_path", width=130) # ★ 파일 이름 입력창 추가
-                    dpg.add_button(label="Start Recording", tag="btn_mt4_record", width=130, callback=lambda s,a,u: toggle_mt4_record())
-                    dpg.add_combo(items=get_mt4_paths(), tag="combo_mt4_path", width=130)
-                    dpg.add_button(label="Play Selected", width=130, callback=play_mt4_path)
-
         with dpg.tab(label="Go1 Dashboard"):
             with dpg.group(horizontal=True):
                 with dpg.child_window(width=250, height=150, border=True):
@@ -1886,16 +1484,6 @@ with dpg.window(tag="PrimaryWindow"):
             dpg.add_button(label="CONST", callback=add_node_cb, user_data="CONSTANT")
             dpg.add_button(label="PRINT", callback=add_node_cb, user_data="PRINT")
             dpg.add_button(label="LOG", callback=add_node_cb, user_data="LOGGER")
-            
-            dpg.add_spacer(width=30)
-            
-            dpg.add_text("MT4 Tools:", color=(255,200,0))
-            dpg.add_button(label="DRIVER", callback=add_node_cb, user_data="MT4_DRIVER")
-            dpg.add_button(label="ACTION", callback=add_node_cb, user_data="MT4_ACTION")
-            dpg.add_button(label="KEY", callback=add_node_cb, user_data="MT4_KEYBOARD")
-            dpg.add_button(label="UNITY", callback=add_node_cb, user_data="MT4_UNITY")
-            dpg.add_button(label="UDP", callback=add_node_cb, user_data="UDP_RECV")
-            
             dpg.add_spacer(width=50)
             dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
 
@@ -1919,22 +1507,12 @@ with dpg.window(tag="PrimaryWindow"):
 
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
-dpg.create_viewport(title='PyGui V9', width=1280, height=800, vsync=True)
+dpg.create_viewport(title='Go1 PyGui Eduver', width=1280, height=800, vsync=True)
 dpg.setup_dearpygui(); dpg.set_primary_window("PrimaryWindow", True); dpg.show_viewport()
 
 last_logic_time = 0; LOGIC_RATE = 0.02
 
 while dpg.is_dearpygui_running():
-    if mt4_dashboard["last_pkt_time"] > 0: dpg.set_value("mt4_dash_status", f"Status: {mt4_dashboard['status']}")
-    dpg.set_value("mt4_x", f"X: {mt4_current_pos['x']:.1f}"); dpg.set_value("mt4_y", f"Y: {mt4_current_pos['y']:.1f}")
-    dpg.set_value("mt4_z", f"Z: {mt4_current_pos['z']:.1f}"); dpg.set_value("mt4_g", f"G: {mt4_current_pos['gripper']:.1f}")
-
-    mt4_hw_str = mt4_dashboard.get('hw_link', 'Offline')
-    dpg.set_value("mt4_dash_link", f"HW: {mt4_hw_str}")
-    if mt4_hw_str == "Online": dpg.configure_item("mt4_dash_link", color=(0,255,0))
-    elif mt4_hw_str == "Simulation": dpg.configure_item("mt4_dash_link", color=(255,200,0))
-    else: dpg.configure_item("mt4_dash_link", color=(255,0,0))
-
     hw_link_str = go1_dashboard.get('hw_link', 'Offline')
     dpg.set_value("go1_dash_link", f"HW: {hw_link_str}")
     
