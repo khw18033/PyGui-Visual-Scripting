@@ -405,7 +405,7 @@ def camera_worker_thread():
                 write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
-               # 1단계: 카메라 강제 종료(sudo)와 송출 시작(일반) 로직 완벽 분리
+               # 1단계: 카메라 강제 종료(sudo)와 송출 시작(일반) 로직 완벽 분리.
                 write_log("[Cam START] Step 1: Sending kill & start SSH commands to Nano...")
                 for nano in nanos:
                     import os
