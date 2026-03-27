@@ -73,31 +73,6 @@ except ImportError as e:
     HAS_UNITREE_SDK = False
     print(f"Warning: 'robot_interface' module not found. ({e})")
 
-# ================= [Robomaster SDK Import (EP)] =================
-# ================= [Robomaster SDK Import (EP)] =================
-from unittest.mock import MagicMock
-
-# ★ 핵심 트릭: 파이썬 메모리에 가짜 libmedia_codec 모듈을 주입하여 DJI SDK가 에러를 내지 않게 속입니다!
-sys.modules['libmedia_codec'] = MagicMock()
-sys.modules['libmedia_codec.media_codec'] = MagicMock()
-
-try:
-    from robomaster import robot
-    HAS_ROBOMASTER_SDK = True
-except ImportError as e:
-    HAS_ROBOMASTER_SDK = False
-    print(f"Warning: 'robomaster' module not found. ({e})")
-
-# ================= [EP State & Config] =================
-ep_robot_inst = None
-# ... (아래는 기존 코드 그대로 유지)
-
-# ================= [EP State & Config] =================
-ep_robot_inst = None
-ep_state = {'battery': -1, 'pos_x': 0.0, 'pos_y': 0.0, 'speed': 0.0, 'accel_x': 0.0, 'accel_y': 0.0, 'accel_z': 0.0}
-ep_node_intent = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'stop': False, 'trigger_time': time.monotonic()}
-ep_dashboard = {"hw_link": "Offline", "sn": "Unknown", "conn_type": "None"}
-
 # ================= [Global Core Settings] =================
 node_registry = {}
 link_registry = {}
@@ -240,8 +215,7 @@ class UniversalRobotNode(BaseNode):
         self.settings_schema = self.driver.get_settings_schema()
         self.in_pins = {}; self.ui_fields = {}; self.setting_pins = {}; self.setting_fields = {}
         self.cache_ui = {k: 0.0 for k in self.schema.keys()}
-        if isinstance(self.driver, Go1RobotDriver): self.label = "Go1 Driver"; self.type_str = "GO1_DRIVER"  
-        elif isinstance(self.driver, EPRobotDriver): self.label = "EP Driver"; self.type_str = "EP_DRIVER"
+        if isinstance(self.driver, Go1RobotDriver): self.label = "Go1 Driver"; self.type_str = "GO1_DRIVER"
 
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label=self.label):
@@ -702,155 +676,6 @@ def go1_v4_comm_thread():
         try: sock_tx_state.sendto(msg_state.encode("utf-8"), (GO1_UNITY_IP, UNITY_STATE_PORT)); sock_tx_cmd.sendto(msg_cmd.encode("utf-8"), (GO1_UNITY_IP, UNITY_CMD_PORT))
         except: pass
 
-# --- EP Telemetry Callbacks ---
-def ep_sub_pos(info): ep_state['pos_x'], ep_state['pos_y'], _ = info
-def ep_sub_vel(info): ep_state['speed'] = math.sqrt(info[0]**2 + info[1]**2)
-def ep_sub_bat(info): ep_state['battery'] = int(info[0]) if isinstance(info, (tuple, list)) else int(info)
-def ep_sub_imu(info): ep_state['accel_x'], ep_state['accel_y'], ep_state['accel_z'] = info[:3]
-
-# --- EP Connection Engine ---
-def connect_ep_thread_func(conn_mode):
-    global ep_robot_inst
-    
-    # [로그 1] SDK 설치 여부 및 시작 로그
-    if not HAS_ROBOMASTER_SDK:
-        ep_dashboard["hw_link"] = "Simulation"
-        write_log("EP_DEBUG: 'robomaster' SDK not found. Skipping connection.")
-        return
-        
-    ep_dashboard["hw_link"] = f"Connecting ({conn_mode.upper()})..."
-    write_log(f"System: Attempting EP Connection via {conn_mode.upper()}...")
-    
-    # [로그 2] 기존 로봇 객체가 있다면 정리하는 과정 로깅
-    if ep_robot_inst is not None:
-        write_log("EP_DEBUG: Cleaning up previous robot instance...")
-        try: 
-            ep_robot_inst.close()
-            write_log("EP_DEBUG: Previous instance closed.")
-        except Exception as e: 
-            write_log(f"EP_DEBUG: Error closing previous instance: {e}")
-            pass
-
-    try:
-        write_log("EP_DEBUG: Instantiating robot.Robot()...")
-        ep_robot_inst = robot.Robot()
-        
-        # [로그 3] Initialize 직전/직후 로깅 (이 구간에서 가장 많이 멈춥니다)
-        write_log(f"EP_DEBUG: Calling initialize(conn_type='{conn_mode}')...")
-        ep_robot_inst.initialize(conn_type=conn_mode)
-        write_log("EP_DEBUG: Initialize completed successfully.")
-        
-        # [로그 4] SN 획득 및 센서 구독 로깅
-        write_log("EP_DEBUG: Getting Serial Number...")
-        ep_dashboard["sn"] = ep_robot_inst.get_sn()
-        
-        ep_dashboard["hw_link"] = f"Online ({conn_mode.upper()})"
-        ep_dashboard["conn_type"] = conn_mode.upper()
-        write_log(f"System: EP Connected! (SN: {ep_dashboard['sn']})")
-        
-        write_log("EP_DEBUG: Subscribing to telemetry (Pos, Vel, Bat, IMU)...")
-        ep_robot_inst.chassis.sub_position(freq=1, callback=ep_sub_pos)
-        ep_robot_inst.chassis.sub_velocity(freq=5, callback=ep_sub_vel)
-        ep_robot_inst.battery.sub_battery_info(freq=1, callback=ep_sub_bat)
-        ep_robot_inst.chassis.sub_imu(freq=10, callback=ep_sub_imu)
-        write_log("EP_DEBUG: All subscriptions active.")
-        
-    except Exception as e:
-        ep_robot_inst = None
-        ep_dashboard["hw_link"] = "Offline"
-        
-        # [로그 5] 에러 발생 시 traceback 모듈을 사용해 정확히 어디서 멈췄는지 상세 출력
-        import traceback
-        error_details = traceback.format_exc()
-        write_log(f"EP Connect Error (Detailed): {e}")
-        print(f"\n[EP_CRITICAL_ERROR_TRACE]\n{error_details}\n")
-
-def btn_connect_ep_sta(s, a): threading.Thread(target=connect_ep_thread_func, args=("sta",), daemon=True).start()
-def btn_connect_ep_ap(s, a): threading.Thread(target=connect_ep_thread_func, args=("ap",), daemon=True).start()
-
-# --- EP Control Loop (with sender2.py Brake Sequence) ---
-def ep_comm_thread():
-    global ep_node_intent, ep_robot_inst
-    is_moving = False
-    while True:
-        time.sleep(0.05)
-        if ep_robot_inst is None or ep_dashboard["hw_link"] == "Offline": continue
-        
-        tnow = time.monotonic()
-        # 노드/키보드에서 0.2초 이상 신호가 없으면(손을 떼면) 정지 판정
-        active = (tnow - ep_node_intent['trigger_time']) < 0.2
-        
-        if ep_node_intent['stop'] or not active:
-            if is_moving:
-                write_log("EP: 🛑 정지 시퀀스 시작 (Active Brake -> Wheel Lock)")
-                try:
-                    ep_robot_inst.chassis.drive_speed(x=0, y=0, z=0, timeout=0.1)
-                    time.sleep(0.05)
-                    # ★ 성공판 로직: 완전히 멈추기 위해 drive_wheels 사용
-                    for _ in range(3):
-                        ep_robot_inst.chassis.drive_wheels(w1=0, w2=0, w3=0, w4=0)
-                        time.sleep(0.1)
-                except Exception as e: write_log(f"EP Brake Error: {e}")
-                is_moving = False; ep_node_intent['stop'] = False
-        else:
-            try:
-                # x: 전후, y: 좌우, z: 제자리 회전 (deg/s)
-                ep_robot_inst.chassis.drive_speed(x=ep_node_intent['vx'], y=ep_node_intent['vy'], z=ep_node_intent['wz'], timeout=0.5)
-                is_moving = True
-            except: pass
-    
-# --- EP Nodes ---
-class EPRobotDriver(BaseRobotDriver):
-    def get_ui_schema(self): return {'vx': ("Vx(m/s)", 0.0), 'vy': ("Vy(m/s)", 0.0), 'wz': ("Wz(deg/s)", 0.0)}
-    def get_settings_schema(self): return {}
-    def execute_command(self, inputs, settings):
-        global ep_node_intent
-        if inputs.get('vx') is not None or inputs.get('vy') is not None or inputs.get('wz') is not None:
-            ep_node_intent['vx'] = float(inputs.get('vx') or 0)
-            ep_node_intent['vy'] = float(inputs.get('vy') or 0)
-            ep_node_intent['wz'] = float(inputs.get('wz') or 0)
-            ep_node_intent['trigger_time'] = time.monotonic()
-        return None
-
-class EPKeyboardNode(BaseNode):
-    def __init__(self, node_id): super().__init__(node_id, "Keyboard (EP)", "EP_KEYBOARD"); self.out_vx = None; self.out_vy = None; self.out_wz = None; self.combo_keys = None
-    def build_ui(self):
-        with dpg.node(tag=self.node_id, parent="node_editor", label="Keyboard (EP Intent)"):
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                self.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
-                dpg.add_text("Move / QE: Turn\nSpace: Stop", color=(100,255,100))
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as vx: dpg.add_text("Target Vx"); self.outputs[vx] = "Data"; self.out_vx = vx
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as vy: dpg.add_text("Target Vy"); self.outputs[vy] = "Data"; self.out_vy = vy
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as wz: dpg.add_text("Target Wz"); self.outputs[wz] = "Data"; self.out_wz = wz
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("Flow Out"); self.outputs[f] = "Flow"
-    def execute(self):
-        if dpg.is_item_focused("file_name_input") or (dpg.does_item_exist("path_name_input") and dpg.is_item_focused("path_name_input")): return None
-        global ep_node_intent; vx = 0.0; vy = 0.0; wz = 0.0
-        EP_V_MAX = 0.5; EP_W_MAX = 60.0 # 안전 속도 (0.5m/s, 60deg/s)
-        
-        km = dpg.get_value(self.combo_keys)
-        if km == "WASD":
-            if dpg.is_key_down(dpg.mvKey_W): vx = EP_V_MAX
-            if dpg.is_key_down(dpg.mvKey_S): vx = -EP_V_MAX
-            if dpg.is_key_down(dpg.mvKey_A): vy = -EP_V_MAX
-            if dpg.is_key_down(dpg.mvKey_D): vy = EP_V_MAX
-        else:
-            if dpg.is_key_down(dpg.mvKey_Up): vx = EP_V_MAX
-            if dpg.is_key_down(dpg.mvKey_Down): vx = -EP_V_MAX
-            if dpg.is_key_down(dpg.mvKey_Left): vy = -EP_V_MAX
-            if dpg.is_key_down(dpg.mvKey_Right): vy = EP_V_MAX
-
-        if dpg.is_key_down(dpg.mvKey_Q): wz = -EP_W_MAX
-        if dpg.is_key_down(dpg.mvKey_E): wz = EP_W_MAX
-        if dpg.is_key_down(dpg.mvKey_Spacebar): ep_node_intent['stop'] = True
-        
-        if vx or vy or wz: ep_node_intent['vx'] = vx; ep_node_intent['vy'] = vy; ep_node_intent['wz'] = wz; ep_node_intent['trigger_time'] = time.monotonic()
-        self.output_data[self.out_vx]=vx; self.output_data[self.out_vy]=vy; self.output_data[self.out_wz]=wz
-        for k, v in self.outputs.items():
-            if v == "Flow": return k
-        return None
-
 class UDPReceiverNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "UDP Receiver", "UDP_RECV")
@@ -1241,8 +1066,6 @@ class NodeFactory:
         elif node_type == "TARGET_IP": node = TargetIpNode(node_id)
         elif node_type == "MULTI_SENDER": node = MultiSenderNode(node_id)
         elif node_type == "GET_GO1_STATE": node = GetGo1StateNode(node_id)
-        elif node_type == "EP_DRIVER": node = UniversalRobotNode(node_id, EPRobotDriver())
-        elif node_type == "EP_KEYBOARD": node = EPKeyboardNode(node_id)
         
         if node: node.build_ui(); node_registry[node_id] = node; return node
         return None
@@ -1391,7 +1214,6 @@ threading.Thread(target=go1_vision_worker_thread, daemon=True).start()
 threading.Thread(target=global_image_cleanup_thread, daemon=True).start()
 threading.Thread(target=start_flask_app, daemon=True).start()
 threading.Thread(target=lambda: (time.sleep(1), update_file_list()), daemon=True).start()
-threading.Thread(target=ep_comm_thread, daemon=True).start()
 
 dpg.create_context()
 with dpg.handler_registry(): dpg.add_key_press_handler(dpg.mvKey_Delete, callback=delete_selection)
@@ -1436,30 +1258,6 @@ with dpg.window(tag="PrimaryWindow"):
                     dpg.add_text("Cam 2 (L / R): 192.168.123.14")
                     dpg.add_text("Cam 3 (Bottom): 192.168.123.15")
 
-        with dpg.tab(label="EP Dashboard"):
-            with dpg.group(horizontal=True):
-                with dpg.child_window(width=250, height=150, border=True):
-                    dpg.add_text("EP Status", color=(150,150,150))
-                    dpg.add_text(f"HW: {ep_dashboard['hw_link']}", tag="ep_dash_link", color=(0,255,0))
-                    dpg.add_text("Battery: -%", tag="ep_dash_battery", color=(100,255,100))
-                    dpg.add_text("SN: Unknown", tag="ep_dash_sn", color=(200,200,200))
-                    dpg.add_spacer(height=5)
-                    with dpg.group(horizontal=True):
-                        # ★ 두 개의 네트워크 모드 접속 버튼
-                        dpg.add_button(label="Conn STA", callback=btn_connect_ep_sta, width=80)
-                        dpg.add_button(label="Conn AP", callback=btn_connect_ep_ap, width=80)
-                with dpg.child_window(width=300, height=150, border=True):
-                    dpg.add_text("Odometry", color=(0,255,255))
-                    dpg.add_text("Pos X: 0.000", tag="ep_dash_px")
-                    dpg.add_text("Pos Y: 0.000", tag="ep_dash_py")
-                    dpg.add_text("Speed: 0.000", tag="ep_dash_spd")
-                    dpg.add_text("Accel Z: 0.000", tag="ep_dash_acc")
-                with dpg.child_window(width=250, height=150, border=True):
-                    dpg.add_text("Commands", color=(255,200,0))
-                    dpg.add_text("Vx Cmd: 0.00", tag="ep_dash_vx")
-                    dpg.add_text("Vy Cmd: 0.00", tag="ep_dash_vy")
-                    dpg.add_text("Wz Cmd: 0.00", tag="ep_dash_wz")
-
         with dpg.tab(label="Files & System"):
             with dpg.group(horizontal=True):
                 with dpg.child_window(width=650, height=100, border=True):
@@ -1498,11 +1296,6 @@ with dpg.window(tag="PrimaryWindow"):
             dpg.add_button(label="TARGET_IP", callback=add_node_cb, user_data="TARGET_IP")
             dpg.add_button(label="SENDER", callback=add_node_cb, user_data="MULTI_SENDER")
             dpg.add_button(label="GO1_STATE", callback=add_node_cb, user_data="GET_GO1_STATE")
-
-            dpg.add_text("EP Tools:", color=(100,255,100))
-            dpg.add_button(label="DRIVER", callback=add_node_cb, user_data="EP_DRIVER")
-            dpg.add_button(label="KEY", callback=add_node_cb, user_data="EP_KEYBOARD")
-
         
 
     with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
@@ -1547,20 +1340,6 @@ while dpg.is_dearpygui_running():
 
     if dpg.does_item_exist("dash_host_ip"): dpg.set_value("dash_host_ip", sys_net_str)
     if dpg.does_item_exist("sys_tab_net"): dpg.set_value("sys_tab_net", sys_net_str)
-
-    # [EP Dashboard Update]
-    ep_link_str = ep_dashboard.get('hw_link', 'Offline')
-    dpg.set_value("ep_dash_link", f"HW: {ep_link_str}")
-    if "Online" in ep_link_str: dpg.configure_item("ep_dash_link", color=(0,255,0))
-    elif "Connecting" in ep_link_str: dpg.configure_item("ep_dash_link", color=(255,200,0))
-    else: dpg.configure_item("ep_dash_link", color=(255,0,0))
-    
-    dpg.set_value("ep_dash_battery", f"Battery: {ep_state['battery']}%" if ep_state['battery'] >= 0 else "Battery: -%")
-    dpg.set_value("ep_dash_sn", f"SN: {ep_dashboard['sn']}")
-    dpg.set_value("ep_dash_px", f"Pos X: {ep_state['pos_x']:.3f}"); dpg.set_value("ep_dash_py", f"Pos Y: {ep_state['pos_y']:.3f}")
-    dpg.set_value("ep_dash_spd", f"Speed: {ep_state['speed']:.3f}"); dpg.set_value("ep_dash_acc", f"Accel Z: {ep_state['accel_z']:.3f}")
-    dpg.set_value("ep_dash_vx", f"Vx Cmd: {ep_node_intent['vx']:.2f}"); dpg.set_value("ep_dash_vy", f"Vy Cmd: {ep_node_intent['vy']:.2f}")
-    dpg.set_value("ep_dash_wz", f"Wz Cmd: {ep_node_intent['wz']:.2f}")
     
     if is_running and (time.time() - last_logic_time > LOGIC_RATE):
         execute_graph_once()
