@@ -408,26 +408,30 @@ def camera_worker_thread():
                # 1단계: go1_master_all.sh 의 원본 로직 완벽 복구
                 write_log("[Cam START] Step 1: Sending robust SSH command to Nano...")
                 for nano in nanos:
-                    # pkill 실패 방지(|| true)와 백그라운드 분리 대기시간(sleep 1) 추가!
+                    import os
+                    # 가상환경이더라도 사용자의 진짜 홈 디렉토리 경로를 강제로 찾아냅니다.
+                    key_path = os.path.expanduser("~/.ssh/id_rsa")
+                    
                     remote_cmd = (
                         f"bash -lc 'cd /home/unitree ; "
                         f"pkill -f go1_send_both || true ; "
                         f"pkill -f gst-launch-1.0 || true ; "
-                        f"nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 & "
+                        f"nohup ./go1_send_both.sh {pc_ip} > send_both_py.log 2>&1 & "
                         f"sleep 1'"
                     )
                     
                     ssh_cmd = [
                         "ssh",
-                        "-o", "StrictHostKeyChecking=no",  # 귀찮은 known_hosts 경고 무시
+                        "-i", key_path,                    # ★ 내가 가진 보안 키를 무조건 사용하도록 강제 지시
+                        "-o", "StrictHostKeyChecking=no", 
+                        "-o", "BatchMode=yes",             # ★ 터미널이 없는 백그라운드 환경이므로 무조건 묻지마 접속 모드 켜기
                         "-o", "ConnectTimeout=5",
-                        "-J", "pi@192.168.50.41",          # 라즈베리파이 징검다리
+                        "-J", "pi@192.168.50.41",          
                         nano,
                         remote_cmd
                     ]
                     
                     try:
-                        # shell=False (기본값)인 리스트 형태가 가상환경에서 가장 깔끔하게 들어갑니다.
                         result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
                         
                         if result.returncode == 0:
