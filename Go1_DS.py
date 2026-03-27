@@ -397,11 +397,28 @@ def camera_worker_thread():
                 # 1단계: 로봇 내부(나노)로 영상 송출 명령 전송
                 write_log("[Cam START] Step 1: Sending SSH command to Nano13 (Front only)...")
                 for nano in nanos:
-                    remote_cmd = f"echo 123 | sudo -S bash -c 'fuser -k /dev/video0 /dev/video1 2>/dev/null; cd /home/unitree; ./kill_camera.sh || true; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 &'"
-                    try: 
-                        subprocess.Popen(["ssh", "-o", "StrictHostKeyChecking=accept-new", nano, remote_cmd])
-                        write_log(f"[Cam START] SSH command sent successfully to {nano}")
-                    except Exception as e: 
+                    remote_cmd = (
+                        f"echo 123 | sudo -S -p '' bash -c "
+                        f"'fuser -k /dev/video0 /dev/video1 2>/dev/null; "
+                        f"cd /home/unitree; ./kill_camera.sh || true; "
+                        f"nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 &'"
+                    )
+                    ssh_cmd = [
+                        "ssh",
+                        "-o", "StrictHostKeyChecking=accept-new",
+                        "-o", "BatchMode=yes",
+                        "-o", "ConnectTimeout=5",
+                        nano,
+                        remote_cmd,
+                    ]
+                    try:
+                        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
+                        if result.returncode == 0:
+                            write_log(f"[Cam START] SSH command sent successfully to {nano}")
+                        else:
+                            err_msg = (result.stderr or result.stdout or "unknown error").strip()
+                            write_log(f"[Cam START ERROR] SSH failed for {nano}: {err_msg}")
+                    except Exception as e:
                         write_log(f"[Cam START ERROR] SSH failed for {nano}: {e}")
                 
                 # 2단계: 로컬(노트북)에 남아있던 기존 GStreamer 찌꺼기 프로세스 정리
@@ -438,10 +455,25 @@ def camera_worker_thread():
                 # 1단계: 로봇 내부(나노)의 송출 스크립트 강제 종료
                 write_log("[Cam STOP] Step 1: Sending kill commands to Nano13...")
                 for nano in nanos:
-                    script = f"echo 123 | sudo -S bash -c 'pkill -f go1_send_cam || true; cd /home/unitree && ./kill_camera.sh || true'"
-                    try: 
-                        subprocess.Popen(["ssh", "-o", "StrictHostKeyChecking=accept-new", nano, script])
-                    except: pass
+                    script = (
+                        "echo 123 | sudo -S -p '' bash -c "
+                        "'pkill -f go1_send_cam || true; cd /home/unitree && ./kill_camera.sh || true'"
+                    )
+                    ssh_cmd = [
+                        "ssh",
+                        "-o", "StrictHostKeyChecking=accept-new",
+                        "-o", "BatchMode=yes",
+                        "-o", "ConnectTimeout=5",
+                        nano,
+                        script,
+                    ]
+                    try:
+                        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
+                        if result.returncode != 0:
+                            err_msg = (result.stderr or result.stdout or "unknown error").strip()
+                            write_log(f"[Cam STOP WARN] SSH failed for {nano}: {err_msg}")
+                    except Exception as e:
+                        write_log(f"[Cam STOP WARN] SSH failed for {nano}: {e}")
                 
                 # 2단계: 로컬(노트북)의 수신 프로세스 종료
                 write_log("[Cam STOP] Step 2: Terminating local GStreamer receivers...")
