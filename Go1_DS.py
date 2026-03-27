@@ -408,30 +408,29 @@ def camera_worker_thread():
                 # 1단계: go1_master_all.sh 의 견고한 원격 실행 로직 이식
                 write_log("[Cam START] Step 1: Sending robust SSH command to Nano...")
                 for nano in nanos:
-                    # 따옴표 꼬임을 방지하기 위해 로봇 내부 명령어만 따로 분리
+                    import os
+                    
+                    # sudo 권한으로 실행되더라도, 명령을 내린 원래 계정(예: khw18033)을 역추적합니다.
+                    actual_user = os.environ.get('SUDO_USER') or os.environ.get('USER')
+                    
+                    # 동적으로 알아낸 원래 주인의 폴더에서 SSH 키를 가져옵니다.
+                    key_path = f"/home/{actual_user}/.ssh/id_rsa"
+                    
+                    ssh_options = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=5"
                     remote_cmd = f"bash -lc 'cd /home/unitree && pkill -f go1_send_both ; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 < /dev/null &'"
                     
-                    # 쉘 이스케이프 문제를 원천 차단하는 리스트 형태 사용
-                    ssh_cmd = [
-                        "ssh",
-                        "-o", "StrictHostKeyChecking=no",
-                        "-o", "BatchMode=yes",
-                        "-o", "ConnectTimeout=5",
-                        "-i", os.path.expanduser("~/.ssh/id_rsa"), # '~' 경로를 파이썬이 확실히 인식하도록 변환
-                        "-J", "pi@192.168.50.41",  # ★ 새로 찾은 라즈베리파이 IP
-                        nano,
-                        remote_cmd
-                    ]
+                    # 조립된 동적 키 경로를 사용
+                    ssh_cmd_str = f"ssh {ssh_options} -i {key_path} -J pi@192.168.50.41 {nano} \"{remote_cmd}\""
                     
                     try:
-                        # shell=False(기본값)로 실행하여 파이썬의 임의 변환을 차단
-                        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
+                        result = subprocess.run(ssh_cmd_str, shell=True, capture_output=True, text=True, timeout=10)
                         
                         if result.returncode == 0:
                             write_log(f"[Cam START] SSH command sent successfully to {nano}")
                         else:
                             err_msg = (result.stderr or "").strip()
                             write_log(f"[Cam START ERROR] SSH failed for {nano}: rc={result.returncode}, stderr='{err_msg}'")
+                            write_log(f"[DEBUG] 사용된 경로: {key_path}") # 동적 경로가 잘 잡혔는지 확인용
                     except Exception as e:
                         write_log(f"[Cam START ERROR] SSH execution failed: {e}")
                 
