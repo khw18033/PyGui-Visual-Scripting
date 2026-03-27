@@ -402,6 +402,7 @@ def camera_worker_thread():
                         f"sudo -n /usr/bin/pkill -f '[g]o1_send_both' || true; "
                         f"cd /home/unitree; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 &"
                     )
+                    fallback_cmd = f"cd /home/unitree; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 &"
                     ssh_cmd = [
                         "ssh",
                         "-o", "StrictHostKeyChecking=accept-new",
@@ -419,7 +420,26 @@ def camera_worker_thread():
                             out_msg = (result.stdout or "").strip()
                             if not err_msg and not out_msg:
                                 err_msg = f"no stderr/stdout (rc={result.returncode})"
-                            write_log(f"[Cam START ERROR] SSH failed for {nano}: rc={result.returncode}, stderr='{err_msg}', stdout='{out_msg}'")
+                            write_log(f"[Cam START WARN] SSH cleanup+start failed for {nano}: rc={result.returncode}, stderr='{err_msg}', stdout='{out_msg}'")
+
+                            # 일부 Nano 환경에서 sudo 정리 명령이 세션을 끊는 경우가 있어 시작 명령만 재시도
+                            fallback_ssh_cmd = [
+                                "ssh",
+                                "-o", "StrictHostKeyChecking=accept-new",
+                                "-o", "BatchMode=yes",
+                                "-o", "ConnectTimeout=5",
+                                nano,
+                                fallback_cmd,
+                            ]
+                            fallback_result = subprocess.run(fallback_ssh_cmd, capture_output=True, text=True, timeout=10)
+                            if fallback_result.returncode == 0:
+                                write_log(f"[Cam START] Fallback start command sent successfully to {nano}")
+                            else:
+                                fb_err = (fallback_result.stderr or "").strip()
+                                fb_out = (fallback_result.stdout or "").strip()
+                                if not fb_err and not fb_out:
+                                    fb_err = f"no stderr/stdout (rc={fallback_result.returncode})"
+                                write_log(f"[Cam START ERROR] Fallback start failed for {nano}: rc={fallback_result.returncode}, stderr='{fb_err}', stdout='{fb_out}'")
                     except Exception as e:
                         write_log(f"[Cam START ERROR] SSH failed for {nano}: {e}")
                 
