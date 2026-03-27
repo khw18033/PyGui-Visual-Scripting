@@ -405,27 +405,44 @@ def camera_worker_thread():
                 write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
-               # 1단계: 과거 성공했던 코드의 관리자 권한(sudo) + Popen 로직 완벽 적용
-                write_log("[Cam START] Step 1: Sending sudo SSH command to Nano...")
+               # 1단계: 카메라 강제 종료(sudo)와 송출 시작(일반) 로직 완벽 분리
+                write_log("[Cam START] Step 1: Sending kill & start SSH commands to Nano...")
                 for nano in nanos:
                     import os
                     key_path = os.path.expanduser("~/.ssh/id_rsa")
                     
-                    # 옛날 코드의 문자열 포맷을 띄어쓰기까지 그대로 가져옵니다. 
-                    remote_cmd = f"echo 123 | sudo -S bash -c 'fuser -k /dev/video0 /dev/video1 2>/dev/null; cd /home/unitree; ./kill_camera.sh || true; pkill -f gst-launch-1.0 || true; nohup ./go1_send_both.sh {pc_ip} > send_both_py.log 2>&1 &'"
+                    # 1-1. 카메라 강제 해제 (관리자 권한으로 찌꺼기 완벽 제거)
+                    kill_cmd = (
+                        "bash -lc '"
+                        "echo 123 | sudo -S fuser -k /dev/video0 /dev/video1 2>/dev/null ; "
+                        "cd /home/unitree ; "
+                        "./kill_camera.sh || true ; "
+                        "pkill -f go1_send_both || true ; "
+                        "pkill -f gst-launch-1.0 || true'"
+                    )
                     
-                    ssh_cmd = [
-                        "ssh",
-                        "-i", key_path,
+                    # 1-2. 송출 스크립트 실행 (일반 권한으로 실행해야 GStreamer가 정상 작동함!)
+                    start_cmd = (
+                        f"bash -lc '"
+                        f"cd /home/unitree ; "
+                        f"nohup ./go1_send_both.sh {pc_ip} > send_both_py.log 2>&1 < /dev/null & "
+                        f"sleep 1'"
+                    )
+                    
+                    base_ssh = [
+                        "ssh", "-i", key_path, 
                         "-o", "StrictHostKeyChecking=accept-new",
-                        "-J", "pi@192.168.50.41",  # 징검다리는 필수 유지
-                        nano,
-                        remote_cmd
+                        "-J", "pi@192.168.50.41", nano
                     ]
                     
                     try:
-                        subprocess.Popen(ssh_cmd)
-                        write_log(f"[Cam START] Sudo SSH command sent successfully to {nano}")
+                        # 킬 명령어 먼저 실행 (깔끔하게 죽일 때까지 잠시 대기)
+                        subprocess.run(base_ssh + [kill_cmd], capture_output=True, text=True, timeout=10)
+                        
+                        # 송출 명령어 이어서 실행 (백그라운드로 던짐)
+                        subprocess.run(base_ssh + [start_cmd], capture_output=True, text=True, timeout=10)
+                        
+                        write_log(f"[Cam START] SSH commands sent successfully to {nano}")
                     except Exception as e:
                         write_log(f"[Cam START ERROR] SSH execution failed: {e}")
                 
