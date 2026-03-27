@@ -405,30 +405,21 @@ def camera_worker_thread():
                 write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
-                # ★ 1단계: go1_master_all.sh 의 견고한 원격 실행 로직 이식
+                # 1단계: go1_master_all.sh 의 견고한 원격 실행 로직 이식
                 write_log("[Cam START] Step 1: Sending robust SSH command to Nano...")
                 for nano in nanos:
-                    # bash -lc 로 감싸고, 기존 찌꺼기 프로세스를 먼저 죽이는 쉘 스크립트 로직 적용
-                    remote_script = f"""bash -lc '
-                        cd /home/unitree || exit 1
-                        pkill -f "go1_send_cam" 2>/dev/null || true
-                        pkill -f "go1_send_both.sh" 2>/dev/null || true
-                        pkill -f "gst-launch-1.0" 2>/dev/null || true
-                        
-                        nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 &
-                    '"""
+                    # 파이썬 subprocess의 간섭을 막기 위해 단일 문자열로 작성
+                    # 핵심: < /dev/null 을 추가하여 SSH가 뻗지 않도록 방지
+                    ssh_cmd_str = (
+                        f"ssh -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5 "
+                        f"-i ~/.ssh/id_rsa -J pi@192.168.50.159 {nano} "
+                        f"\"bash -lc 'cd /home/unitree && pkill -f go1_send_both ; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 < /dev/null &'\""
+                    )
                     
-                    ssh_cmd = [
-                        "ssh",
-                        "-o", "StrictHostKeyChecking=no", 
-                        "-o", "BatchMode=yes",
-                        "-o", "ConnectTimeout=5",
-                        "-J", "pi@raspberrypi.local",  # ★ 만약 위 코드 수정 후에도 안 된다면 이 줄의 주석(#)을 지워보세요!
-                        nano,
-                        remote_script
-                    ]
                     try:
-                        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
+                        # shell=True 옵션으로 수동 터미널 테스트와 100% 동일한 환경 구성
+                        result = subprocess.run(ssh_cmd_str, shell=True, capture_output=True, text=True, timeout=10)
+                        
                         if result.returncode == 0:
                             write_log(f"[Cam START] SSH command sent successfully to {nano}")
                         else:
