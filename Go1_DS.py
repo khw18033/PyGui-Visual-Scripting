@@ -423,9 +423,14 @@ def camera_worker_thread():
                 
                 time.sleep(2)
                 camera_state['status'] = 'Running'
+                camera_state['timer_started_logged'] = False  # ★ 타이머 시작 로그 플래그
+                camera_state['last_interval_count'] = 0  # ★ 10초 간격 카운트
                 write_log("[Cam START] Front camera stream is now Running.")
                 
             elif cmd == 'STOP':
+                # ★ STOP 커맨드로 인한 종료 상황 로그
+                if camera_state['status'] == 'Running':
+                    write_log("[Cam Timer] 카메라 타이머 종료")
                 camera_state['status'] = 'Stopping...'
                 camera_state['duration'] = 0
                 write_log("[Cam STOP] Initiating stream shutdown...")
@@ -449,8 +454,22 @@ def camera_worker_thread():
                 
         # 타이머 체크 로직
         if camera_state['status'] == 'Running' and camera_state.get('duration', 0) > 0:
-            if time.time() - camera_state.get('start_time', 0) >= camera_state['duration']:
-                write_log(f"[Cam Timer] Reached {camera_state['duration']}s. Auto-stopping.")
+            elapsed = time.time() - camera_state.get('start_time', 0)
+            
+            # ★ 타이머 시작 로그 (1회만)
+            if not camera_state.get('timer_started_logged', False):
+                write_log("[Cam Timer] 카메라 타이머 시작")
+                camera_state['timer_started_logged'] = True
+            
+            # ★ 10초 간격 로그
+            interval_count = int(elapsed // 10)
+            if interval_count > camera_state.get('last_interval_count', 0) and interval_count > 0:
+                write_log(f"[Cam Timer] {interval_count * 10}초 경과")
+                camera_state['last_interval_count'] = interval_count
+            
+            # ★ 타이머 만료 시
+            if elapsed >= camera_state['duration']:
+                write_log("[Cam Timer] 카메라 타이머 종료")
                 camera_state['status'] = 'Stopping...'
                 camera_state['duration'] = 0
                 camera_command_queue.append(('STOP', ''))
