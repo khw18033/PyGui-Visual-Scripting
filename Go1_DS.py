@@ -398,10 +398,9 @@ def camera_worker_thread():
                 write_log("[Cam START] Step 1: Sending SSH command to Nano13 (Front only)...")
                 for nano in nanos:
                     remote_cmd = (
-                        f"sudo -n bash -c "
-                        f"'fuser -k /dev/video0 /dev/video1 2>/dev/null; "
-                        f"cd /home/unitree; ./kill_camera.sh || true; "
-                        f"nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 &'"
+                        f"sudo -n /usr/bin/fuser -k /dev/video0 /dev/video1 2>/dev/null || true; "
+                        f"sudo -n /home/unitree/kill_camera.sh || true; "
+                        f"cd /home/unitree; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 &"
                     )
                     ssh_cmd = [
                         "ssh",
@@ -456,8 +455,8 @@ def camera_worker_thread():
                 write_log("[Cam STOP] Step 1: Sending kill commands to Nano13...")
                 for nano in nanos:
                     script = (
-                        "sudo -n bash -c "
-                        "'pkill -f go1_send_cam || true; cd /home/unitree && ./kill_camera.sh || true'"
+                        "sudo -n /usr/bin/pkill -f go1_send_cam || true; "
+                        "sudo -n /home/unitree/kill_camera.sh || true"
                     )
                     ssh_cmd = [
                         "ssh",
