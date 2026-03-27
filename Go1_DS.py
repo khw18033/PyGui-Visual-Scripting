@@ -415,8 +415,11 @@ def camera_worker_thread():
                         if result.returncode == 0:
                             write_log(f"[Cam START] SSH command sent successfully to {nano}")
                         else:
-                            err_msg = (result.stderr or result.stdout or "unknown error").strip()
-                            write_log(f"[Cam START ERROR] SSH failed for {nano}: {err_msg}")
+                            err_msg = (result.stderr or "").strip()
+                            out_msg = (result.stdout or "").strip()
+                            if not err_msg and not out_msg:
+                                err_msg = f"no stderr/stdout (rc={result.returncode})"
+                            write_log(f"[Cam START ERROR] SSH failed for {nano}: rc={result.returncode}, stderr='{err_msg}', stdout='{out_msg}'")
                     except Exception as e:
                         write_log(f"[Cam START ERROR] SSH failed for {nano}: {e}")
                 
@@ -470,8 +473,11 @@ def camera_worker_thread():
                     try:
                         result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
                         if result.returncode != 0:
-                            err_msg = (result.stderr or result.stdout or "unknown error").strip()
-                            write_log(f"[Cam STOP WARN] SSH failed for {nano}: {err_msg}")
+                            err_msg = (result.stderr or "").strip()
+                            out_msg = (result.stdout or "").strip()
+                            if not err_msg and not out_msg:
+                                err_msg = f"no stderr/stdout (rc={result.returncode})"
+                            write_log(f"[Cam STOP WARN] SSH failed for {nano}: rc={result.returncode}, stderr='{err_msg}', stdout='{out_msg}'")
                     except Exception as e:
                         write_log(f"[Cam STOP WARN] SSH failed for {nano}: {e}")
                 
