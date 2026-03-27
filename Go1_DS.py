@@ -453,10 +453,24 @@ def camera_worker_thread():
                 write_log("[Cam START] Step 3: Setting up local GStreamer receiver (10 fps)...")
                 try:
                     os.makedirs(target_folder, exist_ok=True)
-                    # 수신된 JPEG 디코딩 -> videorate(10fps) -> JPEG 인코딩 -> 저장
-                    gst_cmd = f"gst-launch-1.0 -q udpsrc port=9400 caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" ! rtpjpegdepay ! jpegdec ! videorate drop-only=true ! video/x-raw,framerate=10/1 ! jpegenc ! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
+                    # 송신 포맷이 Nano 설정에 따라 JPEG/H264로 달라질 수 있어 자동 폴백으로 수신
+                    jpeg_rx = (
+                        f"gst-launch-1.0 -q udpsrc port=9400 "
+                        f"caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" "
+                        f"! rtpjpegdepay ! jpegdec ! videorate drop-only=true "
+                        f"! video/x-raw,framerate=10/1 ! jpegenc "
+                        f"! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
+                    )
+                    h264_rx = (
+                        f"gst-launch-1.0 -q udpsrc port=9400 "
+                        f"caps=\"application/x-rtp,media=video,encoding-name=H264\" "
+                        f"! rtph264depay ! avdec_h264 ! videorate drop-only=true "
+                        f"! video/x-raw,framerate=10/1 ! jpegenc "
+                        f"! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
+                    )
+                    gst_cmd = f"bash -lc '{jpeg_rx} || {h264_rx}'"
                     subprocess.Popen(gst_cmd, shell=True)
-                    write_log(f"[Cam START] Receiver listening on port 9400 -> {target_folder}")
+                    write_log(f"[Cam START] Receiver listening on port 9400 -> {target_folder} (JPEG->H264 fallback)")
                 except Exception as e:
                     write_log(f"[Cam START ERROR] Failed to start receiver: {e}")
                 
