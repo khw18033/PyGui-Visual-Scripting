@@ -423,7 +423,7 @@ def camera_worker_thread():
                         "-o", "StrictHostKeyChecking=no", 
                         "-o", "BatchMode=yes",
                         "-o", "ConnectTimeout=5",
-                        # "-J", "pi@raspberrypi.local",  # ★ 만약 위 코드 수정 후에도 안 된다면 이 줄의 주석(#)을 지워보세요!
+                        "-J", "pi@raspberrypi.local",  # ★ 만약 위 코드 수정 후에도 안 된다면 이 줄의 주석(#)을 지워보세요!
                         nano,
                         remote_script
                     ]
