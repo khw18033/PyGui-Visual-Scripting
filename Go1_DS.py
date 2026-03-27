@@ -399,29 +399,33 @@ def camera_worker_thread():
                 camera_state['start_time'] = time.time()
                 camera_state['duration'] = duration
                 
-                # 사용자가 지정한 폴더로 CAMERA_CONFIG 업데이트
                 CAMERA_CONFIG.clear()
                 CAMERA_CONFIG.append({"folder": target_folder, "id": "go1_front"})
                 
                 write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
-                # 1단계: 로봇 내부(나노)로 영상 송출 명령 전송
-                write_log("[Cam START] Step 1: Sending SSH command to Nano13 (Front only)...")
+                # ★ 1단계: go1_master_all.sh 의 견고한 원격 실행 로직 이식
+                write_log("[Cam START] Step 1: Sending robust SSH command to Nano...")
                 for nano in nanos:
-                    remote_cmd = (
-                        f"sudo -n /usr/bin/fuser -k /dev/video0 /dev/video1 2>/dev/null || true; "
-                        f"sudo -n /usr/bin/pkill -f '[g]o1_send_both' || true; "
-                        f"cd /home/unitree; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 &"
-                    )
-                    fallback_cmd = f"cd /home/unitree; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 &"
+                    # bash -lc 로 감싸고, 기존 찌꺼기 프로세스를 먼저 죽이는 쉘 스크립트 로직 적용
+                    remote_script = f"""bash -lc '
+                        cd /home/unitree || exit 1
+                        pkill -f "go1_send_cam" 2>/dev/null || true
+                        pkill -f "go1_send_both.sh" 2>/dev/null || true
+                        pkill -f "gst-launch-1.0" 2>/dev/null || true
+                        
+                        nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 &
+                    '"""
+                    
                     ssh_cmd = [
                         "ssh",
-                        "-o", "StrictHostKeyChecking=accept-new",
+                        "-o", "StrictHostKeyChecking=no", 
                         "-o", "BatchMode=yes",
                         "-o", "ConnectTimeout=5",
+                        # "-J", "pi@raspberrypi.local",  # ★ 만약 위 코드 수정 후에도 안 된다면 이 줄의 주석(#)을 지워보세요!
                         nano,
-                        remote_cmd,
+                        remote_script
                     ]
                     try:
                         result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
@@ -429,84 +433,44 @@ def camera_worker_thread():
                             write_log(f"[Cam START] SSH command sent successfully to {nano}")
                         else:
                             err_msg = (result.stderr or "").strip()
-                            out_msg = (result.stdout or "").strip()
-                            if not err_msg and not out_msg:
-                                err_msg = f"no stderr/stdout (rc={result.returncode})"
-                            write_log(f"[Cam START WARN] SSH cleanup+start failed for {nano}: rc={result.returncode}, stderr='{err_msg}', stdout='{out_msg}'")
-
-                            # 일부 Nano 환경에서 sudo 정리 명령이 세션을 끊는 경우가 있어 시작 명령만 재시도
-                            fallback_ssh_cmd = [
-                                "ssh",
-                                "-o", "StrictHostKeyChecking=accept-new",
-                                "-o", "BatchMode=yes",
-                                "-o", "ConnectTimeout=5",
-                                nano,
-                                fallback_cmd,
-                            ]
-                            fallback_result = subprocess.run(fallback_ssh_cmd, capture_output=True, text=True, timeout=10)
-                            if fallback_result.returncode == 0:
-                                write_log(f"[Cam START] Fallback start command sent successfully to {nano}")
-                            else:
-                                fb_err = (fallback_result.stderr or "").strip()
-                                fb_out = (fallback_result.stdout or "").strip()
-                                if not fb_err and not fb_out:
-                                    fb_err = f"no stderr/stdout (rc={fallback_result.returncode})"
-                                write_log(f"[Cam START ERROR] Fallback start failed for {nano}: rc={fallback_result.returncode}, stderr='{fb_err}', stdout='{fb_out}'")
+                            write_log(f"[Cam START ERROR] SSH failed for {nano}: rc={result.returncode}, stderr='{err_msg}'")
                     except Exception as e:
-                        write_log(f"[Cam START ERROR] SSH failed for {nano}: {e}")
+                        write_log(f"[Cam START ERROR] SSH execution failed: {e}")
                 
-                # 2단계: 로컬(노트북)에 남아있던 기존 GStreamer 찌꺼기 프로세스 정리
+                # 2단계: 로컬 찌꺼기 프로세스 정리
                 write_log("[Cam START] Step 2: Cleaning up existing local GStreamer processes...")
                 try: subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
                 except: pass
                 time.sleep(0.5)
                 
-                # 3단계: 정면(9400 포트)만 10 fps 로 변환하여 수신 파이프라인 생성
-                write_log("[Cam START] Step 3: Setting up local GStreamer receiver (10 fps)...")
+                # ★ 3단계: pc_recv_all.sh 의 깔끔한 GStreamer 수신 파이프라인 이식 (불필요한 Fallback 제거)
+                write_log("[Cam START] Step 3: Setting up local GStreamer receiver...")
                 try:
                     os.makedirs(target_folder, exist_ok=True)
                     gst_log_path = os.path.join(target_folder, "receiver_gst.log")
-                    # 송신 포맷이 Nano 설정에 따라 JPEG/H264로 달라질 수 있어 자동 폴백으로 수신
-                    jpeg_rx = (
+                    
+                    # pc_recv_all.sh 와 완전히 동일한 옵션 사용
+                    gst_cmd = (
                         f"gst-launch-1.0 -q udpsrc port=9400 "
                         f"caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" "
-                        f"! rtpjpegdepay ! jpegdec ! videorate drop-only=true "
-                        f"! video/x-raw,framerate=10/1 ! jpegenc "
-                        f"! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
+                        f"! rtpjpegdepay ! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
                     )
-                    h264_rx = (
-                        f"gst-launch-1.0 -q udpsrc port=9400 "
-                        f"caps=\"application/x-rtp,media=video,encoding-name=H264\" "
-                        f"! rtph264depay ! h264parse ! decodebin ! videoconvert ! videorate drop-only=true "
-                        f"! video/x-raw,framerate=10/1 ! jpegenc "
-                        f"! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
-                    )
-                    gst_cmd = f"{jpeg_rx} || {h264_rx}"
+                    
                     with open(gst_log_path, "w", encoding="utf-8") as gst_log:
                         rx_proc = subprocess.Popen(["bash", "-lc", gst_cmd], stdout=gst_log, stderr=subprocess.STDOUT)
 
                     time.sleep(0.8)
-                    rc = rx_proc.poll()
-                    if rc is None:
-                        write_log(f"[Cam START] Receiver listening on port 9400 -> {target_folder} (JPEG->H264 fallback)")
+                    if rx_proc.poll() is None:
+                        write_log(f"[Cam START] Receiver listening on port 9400 -> {target_folder}")
                     else:
-                        tail_msg = ""
-                        try:
-                            with open(gst_log_path, "r", encoding="utf-8", errors="ignore") as f:
-                                tail_lines = f.readlines()[-8:]
-                                tail_msg = " | ".join([ln.strip() for ln in tail_lines if ln.strip()])
-                        except Exception:
-                            pass
-                        write_log(f"[Cam START ERROR] Receiver exited immediately (rc={rc}). Log: {gst_log_path}")
-                        if tail_msg:
-                            write_log(f"[Cam START ERROR] gst tail: {tail_msg}")
+                        write_log(f"[Cam START ERROR] Receiver exited immediately. Check log: {gst_log_path}")
                 except Exception as e:
                     write_log(f"[Cam START ERROR] Failed to start receiver: {e}")
                 
                 time.sleep(2)
                 camera_state['status'] = 'Running'
-                camera_state['timer_started_logged'] = False  # ★ 타이머 시작 로그 플래그
-                camera_state['last_interval_count'] = 0  # ★ 10초 간격 카운트
+                camera_state['timer_started_logged'] = False
+                camera_state['last_interval_count'] = 0
                 write_log("[Cam START] Front camera stream is now Running.")
                 
             elif cmd == 'STOP':
