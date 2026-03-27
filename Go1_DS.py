@@ -405,32 +405,36 @@ def camera_worker_thread():
                 write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
-                # 1단계: go1_master_all.sh 의 견고한 원격 실행 로직 이식
+               # 1단계: go1_master_all.sh 의 원본 로직 완벽 복구
                 write_log("[Cam START] Step 1: Sending robust SSH command to Nano...")
                 for nano in nanos:
-                    import os
+                    # pkill 실패 방지(|| true)와 백그라운드 분리 대기시간(sleep 1) 추가!
+                    remote_cmd = (
+                        f"bash -lc 'cd /home/unitree ; "
+                        f"pkill -f go1_send_both || true ; "
+                        f"pkill -f gst-launch-1.0 || true ; "
+                        f"nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 & "
+                        f"sleep 1'"
+                    )
                     
-                    # sudo 권한으로 실행되더라도, 명령을 내린 원래 계정(예: khw18033)을 역추적합니다.
-                    actual_user = os.environ.get('SUDO_USER') or os.environ.get('USER')
-                    
-                    # 동적으로 알아낸 원래 주인의 폴더에서 SSH 키를 가져옵니다.
-                    key_path = f"/home/{actual_user}/.ssh/id_rsa"
-                    
-                    ssh_options = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=5"
-                    remote_cmd = f"bash -lc 'cd /home/unitree && pkill -f go1_send_both ; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 < /dev/null &'"
-                    
-                    # 조립된 동적 키 경로를 사용
-                    ssh_cmd_str = f"ssh {ssh_options} -i {key_path} -J pi@192.168.50.41 {nano} \"{remote_cmd}\""
+                    ssh_cmd = [
+                        "ssh",
+                        "-o", "StrictHostKeyChecking=no",  # 귀찮은 known_hosts 경고 무시
+                        "-o", "ConnectTimeout=5",
+                        "-J", "pi@192.168.50.41",          # 라즈베리파이 징검다리
+                        nano,
+                        remote_cmd
+                    ]
                     
                     try:
-                        result = subprocess.run(ssh_cmd_str, shell=True, capture_output=True, text=True, timeout=10)
+                        # shell=False (기본값)인 리스트 형태가 가상환경에서 가장 깔끔하게 들어갑니다.
+                        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
                         
                         if result.returncode == 0:
                             write_log(f"[Cam START] SSH command sent successfully to {nano}")
                         else:
                             err_msg = (result.stderr or "").strip()
                             write_log(f"[Cam START ERROR] SSH failed for {nano}: rc={result.returncode}, stderr='{err_msg}'")
-                            write_log(f"[DEBUG] 사용된 경로: {key_path}") # 동적 경로가 잘 잡혔는지 확인용
                     except Exception as e:
                         write_log(f"[Cam START ERROR] SSH execution failed: {e}")
                 
