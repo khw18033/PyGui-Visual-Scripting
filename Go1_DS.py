@@ -101,6 +101,17 @@ def get_wifi_ssid():
     try: return subprocess.check_output(['iwgetid','-r']).decode('utf-8').strip() or "Unknown"
     except: return "Unknown"
 
+def safe_resolve_hostname(hostname):
+    try:
+        return socket.gethostbyname(hostname)
+    except socket.gaierror:
+        return None
+
+def extract_ip_from_target(target):
+    if "@" in target:
+        return target.split("@", 1)[1]
+    return target
+
 # 백그라운드에서 모든 네트워크를 실시간 감지
 sys_net_str = "Loading Network..."
 def network_monitor_thread():
@@ -146,6 +157,7 @@ latest_display_frame = None
 camera_state = {'status': 'Stopped', 'target_ip': ''}; camera_command_queue = deque()
 sender_state = {'status': 'Stopped'}; sender_command_queue = deque(); multi_sender_active = False
 TARGET_FPS = 10; INTERVAL = 1.0 / TARGET_FPS; KEEP_COUNT = -1 # 사진 삭제하지 않음
+GO1_CAMERA_NANOS = ["unitree@192.168.123.13"]
 CAMERA_CONFIG = [
     {"folder": "/dev/shm/go1_front", "id": "go1_front"}
 ]
@@ -374,7 +386,7 @@ def start_flask_app():
 def camera_worker_thread():
     global camera_state, CAMERA_CONFIG
     # 정면 카메라 1개만 사용
-    nanos = ["unitree@192.168.123.13"]
+    nanos = GO1_CAMERA_NANOS
     
     while True:
         if camera_command_queue:
@@ -1320,12 +1332,12 @@ with dpg.window(tag="PrimaryWindow"):
                 # ★ [새로 추가할 부분: 세 번째 박스 Network Info] ★
                 with dpg.child_window(width=260, height=150, border=True):
                     dpg.add_text("Network Info", color=(100,200,255))
-                    dpg.add_text(f"Host IP: {get_local_ip()}", color=(200,200,200))
-                    dpg.add_text(f"Relay (Pi): {ROBOT_IP}", color=(200,200,200))
+                    dpg.add_text("Host IP: Loading...", tag="dash_host_ip", color=(200,200,200))
+                    dpg.add_text(f"Relay (Pi): {ROBOT_IP}", tag="dash_relay_ip", color=(200,200,200))
+                    dpg.add_text(f"Go1 Nano: {extract_ip_from_target(GO1_CAMERA_NANOS[0])}", tag="dash_nano_ip", color=(200,200,200))
+                    dpg.add_text(f"Unity Target: {GO1_UNITY_IP}", tag="dash_unity_ip", color=(200,200,200))
                     dpg.add_separator()
-                    dpg.add_text("Cam 1 (Front): 192.168.123.13")
-                    dpg.add_text("Cam 2 (L / R): 192.168.123.14")
-                    dpg.add_text("Cam 3 (Bottom): 192.168.123.15")
+                    dpg.add_text("Interfaces: Loading...", tag="dash_net_if", color=(170,170,170))
 
         with dpg.tab(label="Files & System"):
             with dpg.group(horizontal=True):
@@ -1407,7 +1419,13 @@ while dpg.is_dearpygui_running():
     if is_aruco_on and HAS_CV2_FLASK: dpg.configure_item("go1_dash_aruco", default_value="ArUco: ON (Port 5000)", color=(0,255,255))
     else: dpg.configure_item("go1_dash_aruco", default_value="ArUco: OFF", color=(200,200,200))
 
-    if dpg.does_item_exist("dash_host_ip"): dpg.set_value("dash_host_ip", sys_net_str)
+    if dpg.does_item_exist("dash_host_ip"): dpg.set_value("dash_host_ip", f"Host IP: {get_local_ip()}")
+    if dpg.does_item_exist("dash_relay_ip"):
+        current_relay_ip = safe_resolve_hostname("raspberrypi.local") or ROBOT_IP
+        dpg.set_value("dash_relay_ip", f"Relay (Pi): {current_relay_ip}")
+    if dpg.does_item_exist("dash_nano_ip"): dpg.set_value("dash_nano_ip", f"Go1 Nano: {extract_ip_from_target(GO1_CAMERA_NANOS[0])}")
+    if dpg.does_item_exist("dash_unity_ip"): dpg.set_value("dash_unity_ip", f"Unity Target: {GO1_UNITY_IP}")
+    if dpg.does_item_exist("dash_net_if"): dpg.set_value("dash_net_if", f"Interfaces: {sys_net_str.replace(chr(10), ' | ')}")
     if dpg.does_item_exist("sys_tab_net"): dpg.set_value("sys_tab_net", sys_net_str)
     
     if is_running and (time.time() - last_logic_time > LOGIC_RATE):
