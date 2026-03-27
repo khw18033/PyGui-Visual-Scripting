@@ -422,12 +422,12 @@ def camera_worker_thread():
                         f"sleep 1'"
                     )
                     
-                    # 징검다리(-J) 제거, 기존처럼 accept-new 사용
                     ssh_cmd = [
                         "ssh",
                         "-i", key_path,
                         "-o", "StrictHostKeyChecking=accept-new", 
                         "-o", "ConnectTimeout=5",
+                        "-J", "pi@192.168.50.41",
                         nano,
                         remote_cmd
                     ]
