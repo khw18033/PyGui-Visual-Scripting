@@ -408,17 +408,24 @@ def camera_worker_thread():
                 # 1단계: go1_master_all.sh 의 견고한 원격 실행 로직 이식
                 write_log("[Cam START] Step 1: Sending robust SSH command to Nano...")
                 for nano in nanos:
-                    # 파이썬 subprocess의 간섭을 막기 위해 단일 문자열로 작성
-                    # 핵심: < /dev/null 을 추가하여 SSH가 뻗지 않도록 방지
-                    ssh_cmd_str = (
-                        f"ssh -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5 "
-                        f"-i ~/.ssh/id_rsa -J pi@192.168.50.41 {nano} "
-                        f"\"bash -lc 'cd /home/unitree && pkill -f go1_send_both ; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 < /dev/null &'\""
-                    )
+                    # 따옴표 꼬임을 방지하기 위해 로봇 내부 명령어만 따로 분리
+                    remote_cmd = f"bash -lc 'cd /home/unitree && pkill -f go1_send_both ; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 < /dev/null &'"
+                    
+                    # 쉘 이스케이프 문제를 원천 차단하는 리스트 형태 사용
+                    ssh_cmd = [
+                        "ssh",
+                        "-o", "StrictHostKeyChecking=no",
+                        "-o", "BatchMode=yes",
+                        "-o", "ConnectTimeout=5",
+                        "-i", os.path.expanduser("~/.ssh/id_rsa"), # '~' 경로를 파이썬이 확실히 인식하도록 변환
+                        "-J", "pi@192.168.50.41",  # ★ 새로 찾은 라즈베리파이 IP
+                        nano,
+                        remote_cmd
+                    ]
                     
                     try:
-                        # shell=True 옵션으로 수동 터미널 테스트와 100% 동일한 환경 구성
-                        result = subprocess.run(ssh_cmd_str, shell=True, capture_output=True, text=True, timeout=10)
+                        # shell=False(기본값)로 실행하여 파이썬의 임의 변환을 차단
+                        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
                         
                         if result.returncode == 0:
                             write_log(f"[Cam START] SSH command sent successfully to {nano}")
