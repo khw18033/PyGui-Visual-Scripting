@@ -77,6 +77,7 @@ except ImportError as e:
 node_registry = {}
 link_registry = {}
 is_running = False
+go1_camera_started_flag = False # 한번만 시작되도록 추적하는 플래그
 SAVE_DIR = "Node_File_Integrated"
 if not os.path.exists(SAVE_DIR): os.makedirs(SAVE_DIR)
 system_log_buffer = deque(maxlen=50)
@@ -144,13 +145,9 @@ latest_display_frame = None
 # V4 File-based Camera
 camera_state = {'status': 'Stopped', 'target_ip': ''}; camera_command_queue = deque()
 sender_state = {'status': 'Stopped'}; sender_command_queue = deque(); multi_sender_active = False
-TARGET_FPS = 30; INTERVAL = 1.0 / TARGET_FPS; KEEP_COUNT = 300
+TARGET_FPS = 10; INTERVAL = 1.0 / TARGET_FPS; KEEP_COUNT = -1 # 사진 삭제하지 않음
 CAMERA_CONFIG = [
-    {"folder": "/dev/shm/go1_front", "id": "go1_front"},
-    {"folder": "/dev/shm/go1_underfront", "id": "go1_underfront"},
-    {"folder": "/dev/shm/go1_nano14_left", "id": "go1_left"},
-    {"folder": "/dev/shm/go1_nano14_right", "id": "go1_right"},
-    {"folder": "/dev/shm/go1_nano15_bottom", "id": "go1_bottom"}
+    {"folder": "/dev/shm/go1_front", "id": "go1_front"}
 ]
 
 def clamp(x, lo, hi): return lo if x < lo else hi if x > hi else x
@@ -375,20 +372,30 @@ def start_flask_app():
 
 # ================= [Go1 Background Threads] =================
 def camera_worker_thread():
-    global camera_state
-    nanos = ["unitree@192.168.123.13", "unitree@192.168.123.14", "unitree@192.168.123.15"]
+    global camera_state, CAMERA_CONFIG
+    # 정면 카메라 1개만 사용
+    nanos = ["unitree@192.168.123.13"]
     
     while True:
         if camera_command_queue:
-            cmd, pc_ip = camera_command_queue.popleft()
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            cmd_data = camera_command_queue.popleft()
+            cmd = cmd_data[0]
             
-            if cmd == 'START':
+            if cmd == 'START_CMD':
+                _, pc_ip, target_folder, duration = cmd_data
                 camera_state['status'] = 'Starting...'
-                write_log(f"[Cam START] Target PC IP: {pc_ip}")
+                camera_state['start_time'] = time.time()
+                camera_state['duration'] = duration
+                
+                # 사용자가 지정한 폴더로 CAMERA_CONFIG 업데이트
+                CAMERA_CONFIG.clear()
+                CAMERA_CONFIG.append({"folder": target_folder, "id": "go1_front"})
+                
+                write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
                 # 1단계: 로봇 내부(나노)로 영상 송출 명령 전송
-                write_log("[Cam START] Step 1: Sending SSH commands to Nanos...")
+                write_log("[Cam START] Step 1: Sending SSH command to Nano13 (Front only)...")
                 for nano in nanos:
                     remote_cmd = f"echo 123 | sudo -S bash -c 'fuser -k /dev/video0 /dev/video1 2>/dev/null; cd /home/unitree; ./kill_camera.sh || true; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 &'"
                     try: 
@@ -399,77 +406,60 @@ def camera_worker_thread():
                 
                 # 2단계: 로컬(노트북)에 남아있던 기존 GStreamer 찌꺼기 프로세스 정리
                 write_log("[Cam START] Step 2: Cleaning up existing local GStreamer processes...")
-                try:
-                    subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
-                except Exception as e:
-                    write_log(f"[Cam START WARN] Process cleanup issue: {e}")
+                try: subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
+                except: pass
                 time.sleep(0.5)
                 
-                # 3단계: 5개의 각 포트별로 GStreamer 수신 파이프라인 생성
-                write_log("[Cam START] Step 3: Setting up local GStreamer receivers...")
-                recv_configs = [
-                    ("9400", "/dev/shm/go1_front", "front"), 
-                    ("9401", "/dev/shm/go1_underfront", "underfront"), 
-                    ("9410", "/dev/shm/go1_nano14_left", "left"), 
-                    ("9411", "/dev/shm/go1_nano14_right", "right"), 
-                    ("9420", "/dev/shm/go1_nano15_bottom", "bottom")
-                ]
-                
-                for port, outdir, prefix in recv_configs:
-                    try:
-                        os.makedirs(outdir, exist_ok=True)
-                        gst_cmd = f"gst-launch-1.0 -q udpsrc port={port} caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" ! rtpjpegdepay ! multifilesink location=\"{outdir}/{prefix}_%06d.jpg\" sync=false"
-                        subprocess.Popen(gst_cmd, shell=True)
-                        write_log(f"[Cam START] Receiver listening on port {port} -> {outdir}")
-                    except Exception as e:
-                        write_log(f"[Cam START ERROR] Failed to start receiver on port {port}: {e}")
+                # 3단계: 정면(9400 포트)만 10 fps 로 변환하여 수신 파이프라인 생성
+                write_log("[Cam START] Step 3: Setting up local GStreamer receiver (10 fps)...")
+                try:
+                    os.makedirs(target_folder, exist_ok=True)
+                    # 수신된 JPEG 디코딩 -> videorate(10fps) -> JPEG 인코딩 -> 저장
+                    gst_cmd = f"gst-launch-1.0 -q udpsrc port=9400 caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" ! rtpjpegdepay ! jpegdec ! videorate drop-only=true ! video/x-raw,framerate=10/1 ! jpegenc ! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
+                    subprocess.Popen(gst_cmd, shell=True)
+                    write_log(f"[Cam START] Receiver listening on port 9400 -> {target_folder}")
+                except Exception as e:
+                    write_log(f"[Cam START ERROR] Failed to start receiver: {e}")
                 
                 time.sleep(2)
                 camera_state['status'] = 'Running'
-                write_log("[Cam START] All camera streams are now Running.")
+                write_log("[Cam START] Front camera stream is now Running.")
                 
             elif cmd == 'STOP':
                 camera_state['status'] = 'Stopping...'
+                camera_state['duration'] = 0
                 write_log("[Cam STOP] Initiating stream shutdown...")
                 
                 # 1단계: 로봇 내부(나노)의 송출 스크립트 강제 종료
-                write_log("[Cam STOP] Step 1: Sending kill commands to Nanos...")
+                write_log("[Cam STOP] Step 1: Sending kill commands to Nano13...")
                 for nano in nanos:
                     script = f"echo 123 | sudo -S bash -c 'pkill -f go1_send_cam || true; cd /home/unitree && ./kill_camera.sh || true'"
                     try: 
                         subprocess.Popen(["ssh", "-o", "StrictHostKeyChecking=accept-new", nano, script])
-                        write_log(f"[Cam STOP] Kill command sent to {nano}")
-                    except Exception as e: 
-                        # 기존에는 pass로 덮어뒀던 에러를 표출하도록 수정
-                        write_log(f"[Cam STOP ERROR] Failed to send kill command to {nano}: {e}")
+                    except: pass
                 
                 # 2단계: 로컬(노트북)의 수신 프로세스 종료
                 write_log("[Cam STOP] Step 2: Terminating local GStreamer receivers...")
-                try:
-                    subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
-                except Exception as e:
-                    write_log(f"[Cam STOP WARN] Local termination issue: {e}")
+                try: subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
+                except: pass
                     
                 time.sleep(1)
                 camera_state['status'] = 'Stopped'
                 write_log("[Cam STOP] Stream completely stopped.")
                 
+        # 타이머 체크 로직
+        if camera_state['status'] == 'Running' and camera_state.get('duration', 0) > 0:
+            if time.time() - camera_state.get('start_time', 0) >= camera_state['duration']:
+                write_log(f"[Cam Timer] Reached {camera_state['duration']}s. Auto-stopping.")
+                camera_state['status'] = 'Stopping...'
+                camera_state['duration'] = 0
+                camera_command_queue.append(('STOP', ''))
+                
         time.sleep(0.1)
 
 def global_image_cleanup_thread():
     while True:
-        for config in CAMERA_CONFIG:
-            folder = config["folder"]
-            if os.path.exists(folder):
-                try:
-                    files = glob.glob(os.path.join(folder, "*.jpg"))
-                    if len(files) > KEEP_COUNT:
-                        # 이름이 아닌 '파일 생성 시간'을 기준으로 정확하게 정렬하도록 수정
-                        files.sort(key=os.path.getctime) 
-                        for f in files[:len(files) - KEEP_COUNT]:
-                            try: os.remove(f)
-                            except OSError: pass
-                except Exception: pass
+        # 파일이 삭제되는 기능 제거됨 -> 무한 대기
         time.sleep(2)
 
 async def send_image_async(session, filepath, camera_id, server_url):
@@ -676,41 +666,6 @@ def go1_v4_comm_thread():
         try: sock_tx_state.sendto(msg_state.encode("utf-8"), (GO1_UNITY_IP, UNITY_STATE_PORT)); sock_tx_cmd.sendto(msg_cmd.encode("utf-8"), (GO1_UNITY_IP, UNITY_CMD_PORT))
         except: pass
 
-class UDPReceiverNode(BaseNode):
-    def __init__(self, node_id):
-        super().__init__(node_id, "UDP Receiver", "UDP_RECV")
-        self.out_flow = None; self.port = None; self.ip = None; self.out_json = None
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.sock.setblocking(False)
-        self.is_bound = False; self.last_data_str = ""
-    def build_ui(self):
-        with dpg.node(tag=self.node_id, parent="node_editor", label="UDP Receiver (MT4 JSON)"):
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as f: dpg.add_text("Flow In"); self.inputs[f]="Flow"
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_input_int(label="Port", width=80, default_value=6000, tag=f"p_{self.node_id}"); self.port=f"p_{self.node_id}"
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_input_text(label="IP", width=100, default_value="192.168.50.63", tag=f"i_{self.node_id}"); self.ip=f"i_{self.node_id}"
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as d: dpg.add_text("JSON Out"); self.outputs[d]="Data"; self.out_json=d
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as o: dpg.add_text("Flow Out"); self.outputs[o]="Flow"; self.out_flow=o
-    def execute(self):
-        global MT4_UNITY_IP
-        port = dpg.get_value(self.port); MT4_UNITY_IP = dpg.get_value(self.ip)
-        if not self.is_bound:
-            try: self.sock.bind(('0.0.0.0', port)); self.is_bound = True; write_log(f"UDP: Bound to port {port}")
-            except: self.is_bound = True
-        try:
-            while True: 
-                data, _ = self.sock.recvfrom(4096); decoded = data.decode()
-                if decoded != self.last_data_str:
-                    self.output_data[self.out_json] = decoded; self.last_data_str = decoded
-                    mt4_dashboard["last_pkt_time"] = time.time(); mt4_dashboard["status"] = "Connected"
-        except: pass
-        try:
-            fb = {"x": -mt4_current_pos['y']/1000.0, "y": (mt4_current_pos['z'] - MT4_Z_OFFSET) / 1000.0, "z": mt4_current_pos['x']/1000.0, "gripper": mt4_current_pos['gripper'], "status": "Running"}
-            sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock_send.sendto(json.dumps(fb).encode(), (MT4_UNITY_IP, MT4_FEEDBACK_PORT))
-        except: pass
-        return self.out_flow
-    def get_settings(self): return {"port": dpg.get_value(self.port), "ip": dpg.get_value(self.ip)}
-    def load_settings(self, data): dpg.set_value(self.port, data.get("port", 6000)); dpg.set_value(self.ip, data.get("ip", "192.168.50.63"))
-
 # ================= [Go1 Specific Nodes] =================
 class TargetIpNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Target IP Config", "TARGET_IP"); self.field_ip = None; self.out_ip = None
@@ -724,12 +679,17 @@ class TargetIpNode(BaseNode):
     
 # (기존 V4 카메라 노드 유지)
 class CameraControlNode(BaseNode):
-    def __init__(self, node_id): super().__init__(node_id, "Camera Control", "CAM_CTRL"); self.combo_action = None; self.in_ip = None; self.out_flow = None; self.chk_aruco = None; self.input_size = None; self.chk_calib = None
+    def __init__(self, node_id): super().__init__(node_id, "Camera Control", "CAM_CTRL"); self.combo_action = None; self.in_ip = None; self.out_flow = None; self.chk_aruco = None; self.input_size = None; self.chk_calib = None; self.input_folder = None; self.input_duration = None
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label="File Save Camera (Go1)"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
                 self.combo_action = dpg.add_combo(["Start Stream", "Stop Stream"], default_value="Start Stream", width=140)
+                dpg.add_spacer(height=3)
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Folder:"); self.input_folder = dpg.add_input_text(width=110, default_value="/dev/shm/go1_front")
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Timer(s):"); self.input_duration = dpg.add_input_float(width=70, default_value=10.0, step=1.0)
                 dpg.add_spacer(height=3)
                 self.chk_calib = dpg.add_checkbox(label="Enable Calibration", default_value=True) # ★ 보정 체크박스 추가
                 self.chk_aruco = dpg.add_checkbox(label="Enable ArUco Tracking", default_value=False)
@@ -739,17 +699,33 @@ class CameraControlNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as ip_in: dpg.add_text("Target IP In", color=(255,150,200)); self.inputs[ip_in] = "Data"; self.in_ip = ip_in
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
     def execute(self):
-        global aruco_settings, calib_settings
+        global aruco_settings, calib_settings, go1_camera_started_flag
         aruco_settings['enabled'] = dpg.get_value(self.chk_aruco)
         aruco_settings['marker_size'] = dpg.get_value(self.input_size)
         calib_settings['enabled'] = dpg.get_value(self.chk_calib) # ★ 상태 저장
         
         action = dpg.get_value(self.combo_action); ext_ip = self.fetch_input_data(self.in_ip); target_ip = ext_ip if ext_ip else get_local_ip()
-        if action == "Start Stream" and camera_state['status'] in ['Stopped', 'Stopping...']: camera_command_queue.append(('START', target_ip))
-        elif action == "Stop Stream" and camera_state['status'] in ['Running', 'Starting...']: camera_command_queue.append(('STOP', target_ip))
+        
+        # go1 로봇 연결 상태 확인
+        hw_link = go1_dashboard.get('hw_link', 'Offline')
+        is_connected = "Online" in hw_link or "Simulation" in hw_link
+
+        if is_connected and not go1_camera_started_flag:
+            if action == "Start Stream":
+                if camera_state['status'] in ['Stopped', 'Stopping...']:
+                    folder = dpg.get_value(self.input_folder)
+                    dur = dpg.get_value(self.input_duration)
+                    camera_command_queue.append(('START_CMD', target_ip, folder, dur))
+                go1_camera_started_flag = True
+        elif not is_connected:
+            go1_camera_started_flag = False
+
+        if action == "Stop Stream" and camera_state['status'] in ['Running', 'Starting...']:
+            camera_command_queue.append(('STOP', target_ip))
+            
         return self.out_flow
-    def get_settings(self): return {"act": dpg.get_value(self.combo_action), "aruco": dpg.get_value(self.chk_aruco), "size": dpg.get_value(self.input_size), "calib": dpg.get_value(self.chk_calib)}
-    def load_settings(self, data): dpg.set_value(self.combo_action, data.get("act", "Start Stream")); dpg.set_value(self.chk_aruco, data.get("aruco", False)); dpg.set_value(self.input_size, data.get("size", 0.03)); dpg.set_value(self.chk_calib, data.get("calib", True))
+    def get_settings(self): return {"act": dpg.get_value(self.combo_action), "aruco": dpg.get_value(self.chk_aruco), "size": dpg.get_value(self.input_size), "calib": dpg.get_value(self.chk_calib), "folder": dpg.get_value(self.input_folder), "dur": dpg.get_value(self.input_duration)}
+    def load_settings(self, data): dpg.set_value(self.combo_action, data.get("act", "Start Stream")); dpg.set_value(self.chk_aruco, data.get("aruco", False)); dpg.set_value(self.input_size, data.get("size", 0.03)); dpg.set_value(self.chk_calib, data.get("calib", True)); dpg.set_value(self.input_folder, data.get("folder", "/dev/shm/go1_front")); dpg.set_value(self.input_duration, data.get("dur", 10.0))
 
 class MultiSenderNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Server Sender", "MULTI_SENDER"); self.combo_action = None; self.field_url = None; self.out_flow = None
@@ -1071,12 +1047,14 @@ class NodeFactory:
         return None
 
 def toggle_exec(s, a): 
-    global is_running
+    global is_running, go1_camera_started_flag
     is_running = not is_running
     dpg.set_item_label("btn_run", "STOP" if is_running else "RUN SCRIPT")
     
     # ★ [추가된 로직] 스크립트 정지 시 백그라운드 스레드들도 강제 종료
     if not is_running:
+        go1_camera_started_flag = False
+        
         # 1. 카메라 강제 종료
         if camera_state['status'] in ['Running', 'Starting...']:
             camera_command_queue.append(('STOP', ''))
