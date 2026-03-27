@@ -405,43 +405,37 @@ def camera_worker_thread():
                 write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
-               # 1단계: 과거 성공했던 코드의 관리자 권한(sudo) 로직 + 현재의 안정적인 징검다리(Jump) 로직 결합
+               # 1단계: 과거 성공했던 코드의 관리자 권한(sudo) + Popen(명령 던지고 빠지기) 로직 완벽 복구
                 write_log("[Cam START] Step 1: Sending sudo SSH command to Nano...")
                 for nano in nanos:
                     import os
                     key_path = os.path.expanduser("~/.ssh/id_rsa")
                     
-                    # ★ 옛날 코드의 핵심인 'echo 123 | sudo -S' 와 'fuser -k' 부활
                     remote_cmd = (
                         f"echo 123 | sudo -S bash -c '"
                         f"fuser -k /dev/video0 /dev/video1 2>/dev/null ; "
                         f"cd /home/unitree ; "
+                        f"./kill_camera.sh || true ; "
                         f"pkill -f go1_send_both || true ; "
                         f"pkill -f gst-launch-1.0 || true ; "
-                        f"nohup ./go1_send_both.sh {pc_ip} > send_both_py.log 2>&1 & "
+                        f"nohup ./go1_send_both.sh {pc_ip} > send_both_py.log 2>&1 < /dev/null & "
                         f"sleep 1'"
                     )
                     
+                    # 징검다리(-J) 제거, 기존처럼 accept-new 사용
                     ssh_cmd = [
                         "ssh",
                         "-i", key_path,
-                        "-o", "StrictHostKeyChecking=no", 
-                        "-o", "BatchMode=yes", 
+                        "-o", "StrictHostKeyChecking=accept-new", 
                         "-o", "ConnectTimeout=5",
-                        "-J", "pi@192.168.50.41",          
                         nano,
                         remote_cmd
                     ]
                     
                     try:
-                        # 통신 지연이나 nohup 대기로 인해 파이썬이 멈추지 않도록 timeout 설정
-                        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
-                        
-                        if result.returncode == 0:
-                            write_log(f"[Cam START] Sudo SSH command sent successfully to {nano}")
-                        else:
-                            err_msg = (result.stderr or "").strip()
-                            write_log(f"[Cam START ERROR] SSH failed for {nano}: rc={result.returncode}, stderr='{err_msg}'")
+                        # 기다리지 않고(run) 툭 던지고 빠지는(Popen) 과거 방식 적용!
+                        subprocess.Popen(ssh_cmd)
+                        write_log(f"[Cam START] Sudo SSH command sent successfully to {nano}")
                     except Exception as e:
                         write_log(f"[Cam START ERROR] SSH execution failed: {e}")
                 
