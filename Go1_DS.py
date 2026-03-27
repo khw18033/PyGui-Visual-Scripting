@@ -405,15 +405,17 @@ def camera_worker_thread():
                 write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
-               # 1단계: go1_master_all.sh 의 원본 로직 완벽 복구
-                write_log("[Cam START] Step 1: Sending robust SSH command to Nano...")
+               # 1단계: 과거 성공했던 코드의 관리자 권한(sudo) 로직 + 현재의 안정적인 징검다리(Jump) 로직 결합
+                write_log("[Cam START] Step 1: Sending sudo SSH command to Nano...")
                 for nano in nanos:
                     import os
-                    # 가상환경이더라도 사용자의 진짜 홈 디렉토리 경로를 강제로 찾아냅니다.
                     key_path = os.path.expanduser("~/.ssh/id_rsa")
                     
+                    # ★ 옛날 코드의 핵심인 'echo 123 | sudo -S' 와 'fuser -k' 부활
                     remote_cmd = (
-                        f"bash -lc 'cd /home/unitree ; "
+                        f"echo 123 | sudo -S bash -c '"
+                        f"fuser -k /dev/video0 /dev/video1 2>/dev/null ; "
+                        f"cd /home/unitree ; "
                         f"pkill -f go1_send_both || true ; "
                         f"pkill -f gst-launch-1.0 || true ; "
                         f"nohup ./go1_send_both.sh {pc_ip} > send_both_py.log 2>&1 & "
@@ -422,9 +424,9 @@ def camera_worker_thread():
                     
                     ssh_cmd = [
                         "ssh",
-                        "-i", key_path,                    # ★ 내가 가진 보안 키를 무조건 사용하도록 강제 지시
+                        "-i", key_path,
                         "-o", "StrictHostKeyChecking=no", 
-                        "-o", "BatchMode=yes",             # ★ 터미널이 없는 백그라운드 환경이므로 무조건 묻지마 접속 모드 켜기
+                        "-o", "BatchMode=yes", 
                         "-o", "ConnectTimeout=5",
                         "-J", "pi@192.168.50.41",          
                         nano,
@@ -432,10 +434,11 @@ def camera_worker_thread():
                     ]
                     
                     try:
+                        # 통신 지연이나 nohup 대기로 인해 파이썬이 멈추지 않도록 timeout 설정
                         result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
                         
                         if result.returncode == 0:
-                            write_log(f"[Cam START] SSH command sent successfully to {nano}")
+                            write_log(f"[Cam START] Sudo SSH command sent successfully to {nano}")
                         else:
                             err_msg = (result.stderr or "").strip()
                             write_log(f"[Cam START ERROR] SSH failed for {nano}: rc={result.returncode}, stderr='{err_msg}'")
