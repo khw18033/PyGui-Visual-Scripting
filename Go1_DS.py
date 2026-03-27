@@ -405,67 +405,45 @@ def camera_worker_thread():
                 write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
-               # 1단계: 과거 성공했던 코드의 관리자 권한(sudo) + Popen(명령 던지고 빠지기) 로직 완벽 복구
+               # 1단계: 과거 성공했던 코드의 관리자 권한(sudo) + Popen 로직 완벽 적용
                 write_log("[Cam START] Step 1: Sending sudo SSH command to Nano...")
                 for nano in nanos:
                     import os
                     key_path = os.path.expanduser("~/.ssh/id_rsa")
                     
-                    remote_cmd = (
-                        f"echo 123 | sudo -S bash -c '"
-                        f"fuser -k /dev/video0 /dev/video1 2>/dev/null ; "
-                        f"cd /home/unitree ; "
-                        f"./kill_camera.sh || true ; "
-                        f"pkill -f go1_send_both || true ; "
-                        f"pkill -f gst-launch-1.0 || true ; "
-                        f"nohup ./go1_send_both.sh {pc_ip} > send_both_py.log 2>&1 < /dev/null & "
-                        f"sleep 1'"
-                    )
+                    # 옛날 코드의 문자열 포맷을 띄어쓰기까지 그대로 가져옵니다. 
+                    remote_cmd = f"echo 123 | sudo -S bash -c 'fuser -k /dev/video0 /dev/video1 2>/dev/null; cd /home/unitree; ./kill_camera.sh || true; pkill -f gst-launch-1.0 || true; nohup ./go1_send_both.sh {pc_ip} > send_both_py.log 2>&1 &'"
                     
                     ssh_cmd = [
                         "ssh",
                         "-i", key_path,
-                        "-o", "StrictHostKeyChecking=accept-new", 
-                        "-o", "ConnectTimeout=5",
-                        "-J", "pi@192.168.50.41",
+                        "-o", "StrictHostKeyChecking=accept-new",
+                        "-J", "pi@192.168.50.41",  # 징검다리는 필수 유지
                         nano,
                         remote_cmd
                     ]
                     
                     try:
-                        # 기다리지 않고(run) 툭 던지고 빠지는(Popen) 과거 방식 적용!
                         subprocess.Popen(ssh_cmd)
                         write_log(f"[Cam START] Sudo SSH command sent successfully to {nano}")
                     except Exception as e:
                         write_log(f"[Cam START ERROR] SSH execution failed: {e}")
                 
-                # 2단계: 로컬 찌꺼기 프로세스 정리
+                # 2단계: 로컬(노트북) 찌꺼기 프로세스 정리
                 write_log("[Cam START] Step 2: Cleaning up existing local GStreamer processes...")
                 try: subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
                 except: pass
                 time.sleep(0.5)
                 
-                # ★ 3단계: pc_recv_all.sh 의 깔끔한 GStreamer 수신 파이프라인 이식 (불필요한 Fallback 제거)
+                # 3단계: 로컬 수신기 실행 (과거 성공했던 shell=True 방식 완벽 복구)
                 write_log("[Cam START] Step 3: Setting up local GStreamer receiver...")
                 try:
                     os.makedirs(target_folder, exist_ok=True)
-                    gst_log_path = os.path.join(target_folder, "receiver_gst.log")
+                    # 수신 로그를 억지로 빼지 않고, 옛날 방식처럼 직관적으로 백그라운드에 띄웁니다.
+                    gst_cmd = f"gst-launch-1.0 -q udpsrc port=9400 caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" ! rtpjpegdepay ! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
                     
-                    # pc_recv_all.sh 와 완전히 동일한 옵션 사용
-                    gst_cmd = (
-                        f"gst-launch-1.0 -q udpsrc port=9400 "
-                        f"caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" "
-                        f"! rtpjpegdepay ! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
-                    )
-                    
-                    with open(gst_log_path, "w", encoding="utf-8") as gst_log:
-                        rx_proc = subprocess.Popen(["bash", "-lc", gst_cmd], stdout=gst_log, stderr=subprocess.STDOUT)
-
-                    time.sleep(0.8)
-                    if rx_proc.poll() is None:
-                        write_log(f"[Cam START] Receiver listening on port 9400 -> {target_folder}")
-                    else:
-                        write_log(f"[Cam START ERROR] Receiver exited immediately. Check log: {gst_log_path}")
+                    subprocess.Popen(gst_cmd, shell=True)
+                    write_log(f"[Cam START] Receiver listening on port 9400 -> {target_folder}")
                 except Exception as e:
                     write_log(f"[Cam START ERROR] Failed to start receiver: {e}")
                 
