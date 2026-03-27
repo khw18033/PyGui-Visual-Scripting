@@ -465,6 +465,7 @@ def camera_worker_thread():
                 write_log("[Cam START] Step 3: Setting up local GStreamer receiver (10 fps)...")
                 try:
                     os.makedirs(target_folder, exist_ok=True)
+                    gst_log_path = os.path.join(target_folder, "receiver_gst.log")
                     # 송신 포맷이 Nano 설정에 따라 JPEG/H264로 달라질 수 있어 자동 폴백으로 수신
                     jpeg_rx = (
                         f"gst-launch-1.0 -q udpsrc port=9400 "
@@ -480,9 +481,25 @@ def camera_worker_thread():
                         f"! video/x-raw,framerate=10/1 ! jpegenc "
                         f"! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
                     )
-                    gst_cmd = f"bash -lc '{jpeg_rx} || {h264_rx}'"
-                    subprocess.Popen(gst_cmd, shell=True)
-                    write_log(f"[Cam START] Receiver listening on port 9400 -> {target_folder} (JPEG->H264 fallback)")
+                    gst_cmd = f"{jpeg_rx} || {h264_rx}"
+                    with open(gst_log_path, "w", encoding="utf-8") as gst_log:
+                        rx_proc = subprocess.Popen(["bash", "-lc", gst_cmd], stdout=gst_log, stderr=subprocess.STDOUT)
+
+                    time.sleep(0.8)
+                    rc = rx_proc.poll()
+                    if rc is None:
+                        write_log(f"[Cam START] Receiver listening on port 9400 -> {target_folder} (JPEG->H264 fallback)")
+                    else:
+                        tail_msg = ""
+                        try:
+                            with open(gst_log_path, "r", encoding="utf-8", errors="ignore") as f:
+                                tail_lines = f.readlines()[-8:]
+                                tail_msg = " | ".join([ln.strip() for ln in tail_lines if ln.strip()])
+                        except Exception:
+                            pass
+                        write_log(f"[Cam START ERROR] Receiver exited immediately (rc={rc}). Log: {gst_log_path}")
+                        if tail_msg:
+                            write_log(f"[Cam START ERROR] gst tail: {tail_msg}")
                 except Exception as e:
                     write_log(f"[Cam START ERROR] Failed to start receiver: {e}")
                 
