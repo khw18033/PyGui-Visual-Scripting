@@ -139,7 +139,7 @@ def get_save_files():
     return [f for f in os.listdir(SAVE_DIR) if f.endswith(".json")]
 
 # ================= [Go1 State & Config] =================
-HIGHLEVEL = 0xee; LOCAL_PORT = 8090; ROBOT_IP = resolve_hostname("raspberrypi.local") or "192.168.50.159"; ROBOT_PORT = 8082
+HIGHLEVEL = 0xee; LOCAL_PORT = 8090; ROBOT_IP = resolve_hostname("raspberrypi.local") or "192.168.50.41"; ROBOT_PORT = 8082
 GO1_UNITY_IP = "192.168.50.246"; UNITY_STATE_PORT = 15101; UNITY_CMD_PORT = 15102; UNITY_RX_PORT = 15100
 dt = 0.002; V_MAX, S_MAX, W_MAX = 0.4, 0.4, 2.0; VX_CMD, VY_CMD, WZ_CMD = 0.20, 0.20, 1.00
 hold_timeout_sec = 0.1; repeat_grace_sec = 0.4; min_move_sec = 0.4; stop_brake_sec = 0.0
@@ -412,7 +412,7 @@ def camera_worker_thread():
                     # 핵심: < /dev/null 을 추가하여 SSH가 뻗지 않도록 방지
                     ssh_cmd_str = (
                         f"ssh -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5 "
-                        f"-i ~/.ssh/id_rsa -J pi@192.168.50.159 {nano} "
+                        f"-i ~/.ssh/id_rsa -J pi@192.168.50.41 {nano} "
                         f"\"bash -lc 'cd /home/unitree && pkill -f go1_send_both ; nohup ./go1_send_both.sh {pc_ip} > send_both_{ts}.log 2>&1 < /dev/null &'\""
                     )
                     
