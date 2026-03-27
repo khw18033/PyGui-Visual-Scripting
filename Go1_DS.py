@@ -477,7 +477,7 @@ def camera_worker_thread():
                     h264_rx = (
                         f"gst-launch-1.0 -q udpsrc port=9400 "
                         f"caps=\"application/x-rtp,media=video,encoding-name=H264\" "
-                        f"! rtph264depay ! avdec_h264 ! videorate drop-only=true "
+                        f"! rtph264depay ! h264parse ! decodebin ! videoconvert ! videorate drop-only=true "
                         f"! video/x-raw,framerate=10/1 ! jpegenc "
                         f"! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
                     )
