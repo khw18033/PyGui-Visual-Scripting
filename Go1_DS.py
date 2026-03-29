@@ -77,7 +77,7 @@ except ImportError as e:
 node_registry = {}
 link_registry = {}
 is_running = False
-go1_camera_started_flag = False # 한번만 시작되도록 추적하는 플래그
+go1_camera_started_flag = False # RUN 1회 동안 카메라 자동 시작 1회만 허용
 SAVE_DIR = "Node_File_Integrated"
 if not os.path.exists(SAVE_DIR): os.makedirs(SAVE_DIR)
 system_log_buffer = deque(maxlen=50)
@@ -159,7 +159,7 @@ sender_state = {'status': 'Stopped'}; sender_command_queue = deque(); multi_send
 TARGET_FPS = 10; INTERVAL = 1.0 / TARGET_FPS; KEEP_COUNT = -1 # 사진 삭제하지 않음
 GO1_CAMERA_NANOS = ["unitree@192.168.123.13"]
 CAMERA_CONFIG = [
-    {"folder": "/dev/shm/go1_front", "id": "go1_front"}
+    {"folder": "Go1_Images/test1", "id": "go1_front"}
 ]
 
 def clamp(x, lo, hi): return lo if x < lo else hi if x > hi else x
@@ -742,7 +742,7 @@ class CameraControlNode(BaseNode):
                 self.combo_action = dpg.add_combo(["Start Stream", "Stop Stream"], default_value="Start Stream", width=140)
                 dpg.add_spacer(height=3)
                 with dpg.group(horizontal=True):
-                    dpg.add_text("Folder:"); self.input_folder = dpg.add_input_text(width=110, default_value="/dev/shm/go1_front")
+                    dpg.add_text("Folder:"); self.input_folder = dpg.add_input_text(width=180, default_value="Captured_Images/go1_front")
                 with dpg.group(horizontal=True):
                     dpg.add_text("Timer(s):"); self.input_duration = dpg.add_input_float(width=70, default_value=10.0, step=1.0)
                 dpg.add_spacer(height=3)
@@ -760,27 +760,23 @@ class CameraControlNode(BaseNode):
         calib_settings['enabled'] = dpg.get_value(self.chk_calib) # ★ 상태 저장
         
         action = dpg.get_value(self.combo_action); ext_ip = self.fetch_input_data(self.in_ip); target_ip = ext_ip if ext_ip else get_local_ip()
-        
-        # go1 로봇 연결 상태 확인
-        hw_link = go1_dashboard.get('hw_link', 'Offline')
-        is_connected = "Online" in hw_link or "Simulation" in hw_link
 
-        if is_connected and not go1_camera_started_flag:
-            if action == "Start Stream":
-                if camera_state['status'] in ['Stopped', 'Stopping...']:
-                    folder = dpg.get_value(self.input_folder)
-                    dur = dpg.get_value(self.input_duration)
-                    camera_command_queue.append(('START_CMD', target_ip, folder, dur))
+        # RUN/STOP 버튼을 기준으로만 카메라를 제어하고, 연결 깜빡임으로 재시작되지 않게 막습니다.
+        if is_running and action == "Start Stream" and not go1_camera_started_flag:
+            if camera_state['status'] in ['Stopped', 'Stopping...']:
+                folder = dpg.get_value(self.input_folder)
+                dur = dpg.get_value(self.input_duration)
+                camera_command_queue.append(('START_CMD', target_ip, folder, dur))
                 go1_camera_started_flag = True
-        elif not is_connected:
-            go1_camera_started_flag = False
 
         if action == "Stop Stream" and camera_state['status'] in ['Running', 'Starting...']:
             camera_command_queue.append(('STOP', target_ip))
+            # 수동 정지 후에도 같은 RUN 사이클에서는 자동 재시작되지 않도록 유지
+            go1_camera_started_flag = True
             
         return self.out_flow
     def get_settings(self): return {"act": dpg.get_value(self.combo_action), "aruco": dpg.get_value(self.chk_aruco), "size": dpg.get_value(self.input_size), "calib": dpg.get_value(self.chk_calib), "folder": dpg.get_value(self.input_folder), "dur": dpg.get_value(self.input_duration)}
-    def load_settings(self, data): dpg.set_value(self.combo_action, data.get("act", "Start Stream")); dpg.set_value(self.chk_aruco, data.get("aruco", False)); dpg.set_value(self.input_size, data.get("size", 0.03)); dpg.set_value(self.chk_calib, data.get("calib", True)); dpg.set_value(self.input_folder, data.get("folder", "/dev/shm/go1_front")); dpg.set_value(self.input_duration, data.get("dur", 10.0))
+    def load_settings(self, data): dpg.set_value(self.combo_action, data.get("act", "Start Stream")); dpg.set_value(self.chk_aruco, data.get("aruco", False)); dpg.set_value(self.input_size, data.get("size", 0.03)); dpg.set_value(self.chk_calib, data.get("calib", True)); dpg.set_value(self.input_folder, data.get("folder", "Captured_Images/go1_front")); dpg.set_value(self.input_duration, data.get("dur", 10.0))
 
 class MultiSenderNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Server Sender", "MULTI_SENDER"); self.combo_action = None; self.field_url = None; self.out_flow = None
@@ -1105,6 +1101,10 @@ def toggle_exec(s, a):
     global is_running, go1_camera_started_flag
     is_running = not is_running
     dpg.set_item_label("btn_run", "STOP" if is_running else "RUN SCRIPT")
+
+    # 새 RUN 사이클 시작 시 카메라 자동 시작 권한을 1회 부여
+    if is_running:
+        go1_camera_started_flag = False
     
     # ★ [추가된 로직] 스크립트 정지 시 백그라운드 스레드들도 강제 종료
     if not is_running:
@@ -1226,15 +1226,9 @@ def setup_go1_routing():
 setup_go1_routing() # 스크립트 실행 시 즉시 호출
 
 def force_cleanup_cameras():
-    write_log("System: Cleaning up ghost camera processes...")
+    write_log("System: Cleaning up ghost camera receiver processes only...")
     subprocess.call("pkill -f 'gst-launch-1.0'", shell=True)
     time.sleep(0.5)
-    for config in CAMERA_CONFIG:
-        folder = config["folder"]
-        if os.path.exists(folder):
-            try:
-                for f in glob.glob(os.path.join(folder, "*.jpg")): os.remove(f)
-            except: pass
 
 force_cleanup_cameras()
 atexit.register(force_cleanup_cameras)
