@@ -432,15 +432,18 @@ def camera_worker_thread():
                     base_ssh = [
                         "ssh", "-i", key_path,
                         "-o", "StrictHostKeyChecking=accept-new",
-                        "-J", "pi@192.168.50 ", nano
+                        "-o", "ConnectTimeout=5",
+                        "-J", "pi@192.168.50.42", nano
                     ]
                     
                     try:
                         # 킬 명령어 먼저 실행 (깔끔하게 죽일 때까지 잠시 대기)
-                        subprocess.run(base_ssh + [kill_cmd], capture_output=True, text=True, timeout=10)
+                        write_log(f"[Cam START] Executing kill command on {nano}...")
+                        subprocess.run(base_ssh + [kill_cmd], capture_output=True, text=True, timeout=30)  # ★ 타임아웃 연장 (10 → 30초)
                         
                         # 송출 명령어 이어서 실행 (백그라운드로 던짐)
-                        subprocess.run(base_ssh + [start_cmd], capture_output=True, text=True, timeout=10)
+                        write_log(f"[Cam START] Executing start command on {nano}...")
+                        subprocess.run(base_ssh + [start_cmd], capture_output=True, text=True, timeout=30)  # ★ 타임아웃 연장
                         
                         write_log(f"[Cam START] SSH commands sent successfully to {nano}")
                     except Exception as e:
