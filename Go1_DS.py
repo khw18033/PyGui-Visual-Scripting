@@ -138,6 +138,32 @@ def get_save_files():
     if not os.path.exists(SAVE_DIR): return []
     return [f for f in os.listdir(SAVE_DIR) if f.endswith(".json")]
 
+def prompt_go1_ip(default_ip):
+    print("\n" + "=" * 60)
+    print("[System] Go1 본체/릴레이 IP 확인")
+    print("[System] 엔터 입력 시 기본값을 사용합니다.")
+    print("=" * 60)
+    current_default = default_ip
+    while True:
+        try:
+            entered = input(f"Go1 IP 입력 [{current_default}]: ").strip()
+        except EOFError:
+            print(f"[System] 콘솔 입력 불가 환경입니다. 기본값({current_default})으로 진행합니다.")
+            return current_default
+
+        candidate = entered if entered else current_default
+        try:
+            socket.inet_aton(candidate)
+        except OSError:
+            print("[System] 잘못된 IP 형식입니다. 예: 192.168.50.42")
+            continue
+
+        confirm = input(f"현재 Go1 본체 IP가 {candidate}가 맞습니까? (y/n): ").strip().lower()
+        if confirm in ['y', 'yes', '']:
+            return candidate
+        print("[System] 다시 입력해주세요.")
+        current_default = candidate
+
 # ================= [Go1 State & Config] =================
 HIGHLEVEL = 0xee; LOCAL_PORT = 8090; ROBOT_IP = "192.168.50.42"; ROBOT_PORT = 8082
 GO1_UNITY_IP = "192.168.50.246"; UNITY_STATE_PORT = 15101; UNITY_CMD_PORT = 15102; UNITY_RX_PORT = 15100
@@ -433,7 +459,7 @@ def camera_worker_thread():
                         "ssh", "-i", key_path,
                         "-o", "StrictHostKeyChecking=accept-new",
                         "-o", "ConnectTimeout=5",
-                        "-J", "pi@192.168.50.42", nano
+                        "-J", f"pi@{ROBOT_IP}", nano
                     ]
                     
                     try:
@@ -1204,8 +1230,7 @@ import atexit
 # ★ [추가된 부분] 프로그램 시작 시 자동 네트워크 길뚫기 (라우팅)
 def setup_go1_routing():
     try:
-        # raspberrypi.local의 실제 IP를 실시간으로 확인
-        target_gw = "192.168.50.42" # resolve_hostname("raspberrypi.local")
+        target_gw = ROBOT_IP
         if not target_gw:
             write_log("System: Cannot find raspberrypi.local for routing.")
             return
@@ -1226,6 +1251,9 @@ def setup_go1_routing():
             write_log("System: Go1 Network Routing Already Exists.")
     except Exception as e:
         write_log(f"System: Routing setup error: {e}")
+
+ROBOT_IP = prompt_go1_ip(ROBOT_IP)
+write_log(f"System: Go1 IP set to {ROBOT_IP}")
 
 setup_go1_routing() # 스크립트 실행 시 즉시 호출
 
