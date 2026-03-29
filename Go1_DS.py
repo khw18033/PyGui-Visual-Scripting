@@ -432,7 +432,7 @@ def camera_worker_thread():
                     base_ssh = [
                         "ssh", "-i", key_path, 
                         "-o", "StrictHostKeyChecking=accept-new",
-                        "-J", "pi@192.168.50.42", nano
+                        "-J", "pi@192.168.50 ", nano
                     ]
                     
                     try:
