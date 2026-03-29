@@ -18,7 +18,7 @@ from collections import deque
 from abc import ABC, abstractmethod
 from datetime import datetime
 
-latest_processed_frames = {} # ★ 각 카메라의 완성된 이미지를 메모리에 임시 보관할 딕셔너리
+latest_processed_frames = {}
 
 # ================= [OpenCV & Flask Import (V4/V5 ArUco)] =================
 try:
@@ -29,12 +29,10 @@ try:
     
     HAS_CV2_FLASK = True
     
-    # ArUco 최신 문법 세팅
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     parameters = cv2.aruco.DetectorParameters()
     aruco_detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
     
-    # ★ [수정됨] 'calib_data' 폴더 안에 있는 캘리브레이션 파일 불러오기
     calib_dir = "Calib_data"
     try:
         orig_camera_matrix = np.load(os.path.join(calib_dir, "K1.npy"))
@@ -47,7 +45,6 @@ try:
         HAS_CALIB_FILES = False
         print(f"[System] Calibration files not found in '{calib_dir}'. Using defaults. ({e})")
     
-    # 이미지를 반듯하게 편 이후에 사용할 '왜곡 0' 매트릭스
     zero_dist_coeffs = np.zeros((4, 1))
     
     app = Flask(__name__)
@@ -77,7 +74,7 @@ except ImportError as e:
 node_registry = {}
 link_registry = {}
 is_running = False
-go1_camera_started_flag = False # RUN 1회 동안 카메라 자동 시작 1회만 허용
+go1_camera_started_flag = False
 SAVE_DIR = "Node_File_Integrated"
 if not os.path.exists(SAVE_DIR): os.makedirs(SAVE_DIR)
 system_log_buffer = deque(maxlen=50)
@@ -112,7 +109,6 @@ def extract_ip_from_target(target):
         return target.split("@", 1)[1]
     return target
 
-# 백그라운드에서 모든 네트워크를 실시간 감지
 sys_net_str = "Loading Network..."
 def network_monitor_thread():
     global sys_net_str
@@ -121,18 +117,18 @@ def network_monitor_thread():
             out = subprocess.check_output("ip -o -4 addr show", shell=True).decode('utf-8')
             info = []
             for line in out.strip().split('\n'):
-                if ' lo ' in line: continue # 로컬 루프백 제외
+                if ' lo ' in line: continue
                 p = line.split()
                 if len(p) >= 4:
                     dev, ip = p[1], p[3].split('/')[0]
                     ssid = ""
-                    if dev.startswith('wl'): # Wi-Fi인 경우 SSID 탐색
+                    if dev.startswith('wl'):
                         try: ssid = subprocess.check_output(['iwgetid', dev, '-r']).decode('utf-8').strip()
                         except: pass
                     info.append(f"[{dev}] {ip} ({ssid})" if ssid else f"[{dev}] {ip}")
             sys_net_str = "\n".join(info) if info else "Offline"
         except: pass
-        time.sleep(2) # 2초마다 갱신
+        time.sleep(2)
 
 def get_save_files():
     if not os.path.exists(SAVE_DIR): return []
@@ -176,13 +172,13 @@ go1_unity_data = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'estop': 0, 'active': False}
 go1_dashboard = {"status": "Idle", "hw_link": "Offline", "unity_link": "Waiting"}
 
 aruco_settings = {'enabled': False, 'marker_size': 0.03}
-calib_settings = {'enabled': True} # ★ 추가된 부분 (보정 활성화 설정)
+calib_settings = {'enabled': True}
 latest_display_frame = None
 
 # V4 File-based Camera
 camera_state = {'status': 'Stopped', 'target_ip': ''}; camera_command_queue = deque()
 sender_state = {'status': 'Stopped'}; sender_command_queue = deque(); multi_sender_active = False
-TARGET_FPS = 10; INTERVAL = 1.0 / TARGET_FPS; KEEP_COUNT = -1 # 사진 삭제하지 않음
+TARGET_FPS = 10; INTERVAL = 1.0 / TARGET_FPS; KEEP_COUNT = -1
 GO1_CAMERA_NANOS = ["unitree@192.168.123.13"]
 CAMERA_CONFIG = [
     {"folder": "Go1_Images/test1", "id": "go1_front"}
@@ -211,13 +207,11 @@ class BaseRobotDriver(ABC):
 class Go1RobotDriver(BaseRobotDriver):
     def get_ui_schema(self): return {'vx': ("Vx In", 0.0), 'vy': ("Vy In", 0.0), 'wz': ("Wz In", 0.0)}
     
-    # ★ 설정 스키마를 다시 비워줍니다. (UI에서 Speed 입력창이 사라짐)
     def get_settings_schema(self): return {}
     
     def execute_command(self, inputs, settings):
         global go1_node_intent
         if inputs.get('vx') is not None or inputs.get('vy') is not None or inputs.get('wz') is not None:
-            # ★ 배율 계산을 없애고 앞선 노드에서 들어온 값을 100% 그대로 로봇에 전달합니다.
             go1_node_intent['vx'] = float(inputs.get('vx') or 0)
             go1_node_intent['vy'] = float(inputs.get('vy') or 0)
             go1_node_intent['wz'] = float(inputs.get('wz') or 0)
@@ -293,12 +287,10 @@ def go1_vision_worker_thread():
     global latest_display_frame
     sock_aruco = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     
-    # 각 카메라별로 마지막 처리한 파일을 기억하기 위한 딕셔너리
     last_processed_files = {cfg["id"]: None for cfg in CAMERA_CONFIG}
     
     while True:
         if camera_state['status'] == 'Running':
-            # ★ 5개의 모든 카메라 폴더를 순회하며 처리합니다.
             for config in CAMERA_CONFIG:
                 folder = config["folder"]
                 camera_id = config["id"]
@@ -309,19 +301,17 @@ def go1_vision_worker_thread():
                     files = glob.glob(os.path.join(folder, "*.jpg"))
                     if len(files) >= 2:
                         files.sort(key=os.path.getctime)
-                        target_file = files[-2] # 안전하게 완전히 저장된 직전 파일 읽기
+                        target_file = files[-2]
                         
                         if target_file != last_processed_files[camera_id]:
                             last_processed_files[camera_id] = target_file
                             frame = cv2.imread(target_file)
                             
                             if frame is not None:
-                                # ★ 1단계: 보정 옵션이 켜져 있는지 확인
                                 is_calibrated = HAS_CALIB_FILES and calib_settings['enabled']
                                 if is_calibrated:
                                     frame = cv2.fisheye.undistortImage(frame, orig_camera_matrix, orig_dist_coeffs, Knew=orig_camera_matrix)
                                 
-                                # ★ 2단계: ArUco 마커 인식 및 축 그리기
                                 if aruco_settings['enabled'] and HAS_CV2_FLASK:
                                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                                     corners, ids, rejected = aruco_detector.detectMarkers(gray)
@@ -332,7 +322,6 @@ def go1_vision_worker_thread():
                                             [msize / 2, -msize / 2, 0], [-msize / 2, -msize / 2, 0]
                                         ], dtype=np.float32)
                                         
-                                        # ★ 이번 프레임에서 인식된 마커들을 담을 빈 리스트
                                         detected_markers = []
                                         
                                         for i in range(len(ids)):
@@ -345,7 +334,6 @@ def go1_vision_worker_thread():
                                                 marker_id = int(ids[i][0])
                                                 tx, ty, tz = float(tvec[0][0]), float(tvec[1][0]), float(tvec[2][0])
                                                 
-                                                # 개별 마커 데이터를 딕셔너리로 만들어 리스트에 추가
                                                 data = {"id": marker_id, "x": round(tx, 4), "y": round(ty, 4), "z": round(tz, 4), "cam": camera_id}
                                                 detected_markers.append(data)
                                                 
@@ -353,9 +341,7 @@ def go1_vision_worker_thread():
                                                 cx, cy = int(corners[i][0][0][0]), int(corners[i][0][0][1])
                                                 cv2.putText(frame, text, (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                                                 
-                                        # ★ Unity 노드의 체크박스가 켜져 있다면, 마커 리스트를 JSON 형태로 변환
                                         if go1_node_intent.get('send_aruco', False) and len(detected_markers) > 0:
-                                            # 유니티에서 파싱하기 쉽게 'markers' 배열과 타임스탬프를 포함
                                             payload_dict = {
                                                 "camera": camera_id,
                                                 "timestamp": round(time.time(), 3),
@@ -364,30 +350,25 @@ def go1_vision_worker_thread():
                                             payload_json = json.dumps(payload_dict)
                                             
                                             try:
-                                                # 1. 기존처럼 5008 포트로 UDP 실시간 전송 (Unity 수신용)
                                                 sock_aruco.sendto(payload_json.encode(), (GO1_UNITY_IP, 5008))
                                                 
-                                                # 2. 로컬 디렉토리에 'aruco_data.json' 파일로 계속 덮어쓰기 (파일 갱신용)
                                                 with open("aruco_data.json", "w", encoding="utf-8") as f:
                                                     f.write(payload_json)
                                             except Exception as e: 
                                                 pass
                                 
-                                # ★ 3단계: 화면 자르기 (보정 옵션을 켰을 때만 오른쪽 이상한 부분을 반으로 자릅니다)
                                 if is_calibrated:
                                     height, width = frame.shape[:2]
                                     cropped_frame = frame[:, :width//2]
                                 else:
                                     cropped_frame = frame
 
-                                # 최종 인코딩 및 메모리 저장
                                 ret_enc, buffer = cv2.imencode('.jpg', cropped_frame)
                                 if ret_enc:
                                     processed_bytes = buffer.tobytes()
                                     global latest_processed_frames
                                     latest_processed_frames[camera_id] = processed_bytes
                                     
-                                    # Flask 웹 브라우저에도 잘린 화면을 띄웁니다.
                                     if camera_id == 'go1_front':
                                         latest_display_frame = processed_bytes
                 except Exception as e: pass
@@ -411,7 +392,6 @@ def start_flask_app():
 # ================= [Go1 Background Threads] =================
 def camera_worker_thread():
     global camera_state, CAMERA_CONFIG
-    # 정면 카메라 1개만 사용
     nanos = GO1_CAMERA_NANOS
     
     while True:
@@ -422,7 +402,6 @@ def camera_worker_thread():
             if cmd == 'START_CMD':
                 _, pc_ip, target_folder, duration = cmd_data
                 camera_state['status'] = 'Starting...'
-                # ★ [수정됨] start_time은 아직 설정하지 않음 - Running 상태 후에 설정할 예정
                 camera_state['duration'] = duration
                 
                 CAMERA_CONFIG.clear()
@@ -431,13 +410,11 @@ def camera_worker_thread():
                 write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
-               # 1단계: 카메라 강제 종료(sudo)와 송출 시작(일반) 로직 완벽 분리.
                 write_log("[Cam START] Step 1: Sending kill & start SSH commands to Nano...")
                 for nano in nanos:
                     import os
                     key_path = os.path.expanduser("~/.ssh/id_rsa")
                     
-                    # 1-1. 카메라 강제 해제 (관리자 권한으로 찌꺼기 완벽 제거)
                     kill_cmd = (
                         "bash -lc '"
                         "echo 123 | sudo -S fuser -k /dev/video0 /dev/video1 2>/dev/null ; "
@@ -447,7 +424,6 @@ def camera_worker_thread():
                         "pkill -f gst-launch-1.0 || true'"
                     )
                     
-                    # 1-2. 송출 스크립트 실행 (일반 권한으로 실행해야 GStreamer가 정상 작동함!)
                     start_cmd = (
                         f"bash -lc '"
                         f"cd /home/unitree ; "
@@ -463,11 +439,9 @@ def camera_worker_thread():
                     ]
                     
                     try:
-                        # 킬 명령어 먼저 실행 (깔끔하게 죽일 때까지 잠시 대기)
                         write_log(f"[Cam START] Executing kill command on {nano}...")
                         subprocess.run(base_ssh + [kill_cmd], capture_output=True, text=True, timeout=30)  # ★ 타임아웃 연장 (10 → 30초)
                         
-                        # 송출 명령어 이어서 실행 (백그라운드로 던짐)
                         write_log(f"[Cam START] Executing start command on {nano}...")
                         subprocess.run(base_ssh + [start_cmd], capture_output=True, text=True, timeout=30)  # ★ 타임아웃 연장
                         
@@ -475,17 +449,14 @@ def camera_worker_thread():
                     except Exception as e:
                         write_log(f"[Cam START ERROR] SSH execution failed: {e}")
                 
-                # 2단계: 로컬(노트북) 찌꺼기 프로세스 정리
                 write_log("[Cam START] Step 2: Cleaning up existing local GStreamer processes...")
                 try: subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
                 except: pass
                 time.sleep(0.5)
                 
-                # 3단계: 로컬 수신기 실행 (과거 성공했던 shell=True 방식 완벽 복구)
                 write_log("[Cam START] Step 3: Setting up local GStreamer receiver...")
                 try:
                     os.makedirs(target_folder, exist_ok=True)
-                    # 수신 로그를 억지로 빼지 않고, 옛날 방식처럼 직관적으로 백그라운드에 띄웁니다.
                     gst_cmd = f"gst-launch-1.0 -q udpsrc port=9400 caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" ! rtpjpegdepay ! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
                     
                     subprocess.Popen(gst_cmd, shell=True)
@@ -495,13 +466,12 @@ def camera_worker_thread():
                 
                 time.sleep(2)
                 camera_state['status'] = 'Running'
-                camera_state['start_time'] = time.time()  # ★ [수정됨] 실제 Running 상태가 된 직후에 타이머 시작
+                camera_state['start_time'] = time.time()
                 camera_state['timer_started_logged'] = False
                 camera_state['last_interval_count'] = 0
                 write_log("[Cam START] Front camera stream is now Running.")
                 
             elif cmd == 'STOP':
-                # ★ STOP 커맨드로 인한 종료 상황 로그
                 if camera_state['status'] == 'Running':
                     write_log("[Cam Timer] 카메라 타이머 종료")
                 camera_state['status'] = 'Stopping...'
@@ -509,7 +479,6 @@ def camera_worker_thread():
                 write_log("[Cam STOP] Initiating stream shutdown...")
 
                 
-                # 2단계: 로컬(노트북)의 수신 프로세스 종료
                 write_log("[Cam STOP] Step 2: Terminating local GStreamer receivers...")
                 try: subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
                 except: pass
@@ -518,22 +487,18 @@ def camera_worker_thread():
                 camera_state['status'] = 'Stopped'
                 write_log("[Cam STOP] Stream completely stopped.")
                 
-        # 타이머 체크 로직
         if camera_state['status'] == 'Running' and camera_state.get('duration', 0) > 0:
             elapsed = time.time() - camera_state.get('start_time', 0)
             
-            # ★ 타이머 시작 로그 (1회만)
             if not camera_state.get('timer_started_logged', False):
                 write_log("[Cam Timer] 카메라 타이머 시작")
                 camera_state['timer_started_logged'] = True
             
-            # ★ 10초 간격 로그
             interval_count = int(elapsed // 10)
             if interval_count > camera_state.get('last_interval_count', 0) and interval_count > 0:
                 write_log(f"[Cam Timer] {interval_count * 10}초 경과")
                 camera_state['last_interval_count'] = interval_count
             
-            # ★ 타이머 만료 시
             if elapsed >= camera_state['duration']:
                 write_log("[Cam Timer] 카메라 타이머 종료")
                 camera_state['status'] = 'Stopping...'
@@ -544,23 +509,19 @@ def camera_worker_thread():
 
 def global_image_cleanup_thread():
     while True:
-        # 파일이 삭제되는 기능 제거됨 -> 무한 대기
         time.sleep(2)
 
 async def send_image_async(session, filepath, camera_id, server_url):
     try:
         global latest_processed_frames
-        # ★ 폴더 뒤지지 않고, 비전 스레드가 완성해둔 메모리 속 이미지를 즉시 가져옴!
         file_data = latest_processed_frames.get(camera_id)
         
-        # 만약 아직 비전 처리가 한 번도 안 끝난 초기 상태라면 기존 방식대로 폴더에서 원본 읽기
         if file_data is None:
             if not os.path.exists(filepath): return
             with open(filepath, 'rb') as f: file_data = f.read()
 
         form = aiohttp.FormData()
         form.add_field('camera_id', camera_id)
-        # 서버에서 받을 때 헷갈리지 않게 파일명 고정
         form.add_field('file', file_data, filename=f"{camera_id}_calib.jpg", content_type='image/jpeg')
         async with session.post(server_url, data=form, timeout=2.0) as response: pass
     except: pass
@@ -607,7 +568,7 @@ def go1_v4_comm_thread():
     if HAS_UNITREE_SDK:
         udp = sdk.UDP(HIGHLEVEL, LOCAL_PORT, ROBOT_IP, ROBOT_PORT)
         cmd = sdk.HighCmd(); state = sdk.HighState()
-        udp.InitCmdData(cmd); go1_dashboard["hw_link"] = "Connecting..." # ★ 처음엔 무조건 Online이 아니라 연결 중으로 표시
+        udp.InitCmdData(cmd); go1_dashboard["hw_link"] = "Connecting..."
     else: 
         udp = cmd = state = None; go1_dashboard["hw_link"] = "Simulation"
         
@@ -622,7 +583,6 @@ def go1_v4_comm_thread():
     world_x = world_z = 0.0; last_dr_time = now; seq = 0
     yaw_align_active = False; yaw_align_target_rel = 0.0; yaw_align_kp = 2.0; yaw_align_tol_rad = 2.0 * math.pi / 180.0
 
-    # ★ [추가된 부분] 로봇 연결 상태 감지용 변수
     last_go1_recv_time = now
     last_go1_tick = 0
     last_imu_val = 0.0
@@ -644,7 +604,6 @@ def go1_v4_comm_thread():
             udp.GetRecv(state)
             raw_yaw = float(state.imu.rpy[2])
             
-            # ★ [핵심 추가] 데이터가 진짜로 갱신되고 있는지 (Heartbeat) 검사
             current_tick = getattr(state, 'tick', 0)
             current_imu = float(state.imu.rpy[0]) + float(state.imu.rpy[1]) + float(state.imu.rpy[2])
             
@@ -653,11 +612,8 @@ def go1_v4_comm_thread():
                 last_go1_tick = current_tick
                 last_imu_val = current_imu
                 
-            # 최근 1초 이내에 데이터가 살아서 움직였다면 Online, 아니면 Offline
             if (tnow - last_go1_recv_time) < 1.0:
-                # ★ [핵심] 화면에 Go1 노드가 있고 스크립트가 RUN 중인지 확인
                 go1_in_use = is_running and any(n.type_str.startswith("GO1_") for n in node_registry.values())
-                # 상태 텍스트 분리 (조종 중 / 관전 중)
                 go1_dashboard["hw_link"] = "Online (Active)" if go1_in_use else "Online (Listen)"
 
                 try:
@@ -681,16 +637,14 @@ def go1_v4_comm_thread():
             if abs(go1_node_intent['vx']) > 0 or abs(go1_node_intent['vy']) > 0 or abs(go1_node_intent['wz']) > 0: last_move_cmd_time = tnow
 
         got = None
-        # ★ [핵심 패치 1] 버퍼에 밀린 패킷을 싹 다 읽어서 가장 최신의 명령만 가져옵니다 (C++ 로직 동일)
         while True:
             try:
                 data, _ = sock_rx_unity.recvfrom(256)
                 s = data.decode("utf-8", errors="ignore").strip().split()
                 if len(s) >= 4: got = (float(s[0]), float(s[1]), float(s[2]), int(s[3]))
             except: 
-                break # 더 이상 읽을 패킷이 없으면 빠져나옴
+                break
         
-        # ★ [핵심 패치 2] 명령이 오지 않은 찰나의 순간에도 기존 명령(go1_unity_data)을 0으로 덮어쓰지 않고 유지합니다
         if got: 
             last_unity_cmd_time = tnow; go1_dashboard['unity_link'] = "Active"
             go1_unity_data['vx'], go1_unity_data['vy'], go1_unity_data['wz'], go1_unity_data['estop'] = got
@@ -710,7 +664,6 @@ def go1_v4_comm_thread():
             else: target_mode = 2; out_wz = clamp(-yaw_align_kp * err, -W_MAX, W_MAX)
             if target_mode == 2 and cmd: cmd.gaitType = 1
         elif unity_active:
-            # ★ [핵심 패치 3] 허공에 사라지는 임시 변수(uvx) 대신 기억해둔 유니티 값을 모터에 꽂아줍니다
             target_mode = 2 if not go1_unity_data['estop'] else 1
             if cmd: cmd.gaitType = 1
             out_vx = clamp(go1_unity_data['vx'], -V_MAX, V_MAX)
@@ -728,7 +681,6 @@ def go1_v4_comm_thread():
                 if cmd: cmd.gaitType = 1
             else: target_mode = 1; use_grace = True; go1_state['reason'] = "STAND"
 
-        # ★ [핵심 2] 송신 전에도 똑같이 안전하게 확인 후, 제어권이 있을 때만 로봇에게 패킷을 발송합니다.
         try:
             go1_in_use = is_running and any(n.type_str.startswith("GO1_") for n in list(node_registry.values()))
         except:
@@ -762,7 +714,6 @@ class TargetIpNode(BaseNode):
     def get_settings(self): return {"ip": dpg.get_value(self.field_ip)}
     def load_settings(self, data): dpg.set_value(self.field_ip, data.get("ip", get_local_ip()))
     
-# (기존 V4 카메라 노드 유지)
 class CameraControlNode(BaseNode):
     def __init__(self, node_id): super().__init__(node_id, "Camera Control", "CAM_CTRL"); self.combo_action = None; self.in_ip = None; self.out_flow = None; self.chk_aruco = None; self.input_size = None; self.chk_calib = None; self.input_folder = None; self.input_duration = None
     def build_ui(self):
@@ -776,7 +727,7 @@ class CameraControlNode(BaseNode):
                 with dpg.group(horizontal=True):
                     dpg.add_text("Timer(s):"); self.input_duration = dpg.add_input_float(width=70, default_value=10.0, step=1.0)
                 dpg.add_spacer(height=3)
-                self.chk_calib = dpg.add_checkbox(label="Enable Calibration", default_value=True) # ★ 보정 체크박스 추가
+                self.chk_calib = dpg.add_checkbox(label="Enable Calibration", default_value=True)
                 self.chk_aruco = dpg.add_checkbox(label="Enable ArUco Tracking", default_value=False)
                 with dpg.group(horizontal=True):
                     dpg.add_text("Size(m):")
@@ -787,11 +738,10 @@ class CameraControlNode(BaseNode):
         global aruco_settings, calib_settings, go1_camera_started_flag
         aruco_settings['enabled'] = dpg.get_value(self.chk_aruco)
         aruco_settings['marker_size'] = dpg.get_value(self.input_size)
-        calib_settings['enabled'] = dpg.get_value(self.chk_calib) # ★ 상태 저장
+        calib_settings['enabled'] = dpg.get_value(self.chk_calib)
         
         action = dpg.get_value(self.combo_action); ext_ip = self.fetch_input_data(self.in_ip); target_ip = ext_ip if ext_ip else get_local_ip()
 
-        # RUN/STOP 버튼을 기준으로만 카메라를 제어하고, 연결 깜빡임으로 재시작되지 않게 막습니다.
         if is_running and action == "Start Stream" and not go1_camera_started_flag:
             if camera_state['status'] in ['Stopped', 'Stopping...']:
                 folder = dpg.get_value(self.input_folder)
@@ -801,7 +751,6 @@ class CameraControlNode(BaseNode):
 
         if action == "Stop Stream" and camera_state['status'] in ['Running', 'Starting...']:
             camera_command_queue.append(('STOP', target_ip))
-            # 수동 정지 후에도 같은 RUN 사이클에서는 자동 재시작되지 않도록 유지
             go1_camera_started_flag = True
             
         return self.out_flow
@@ -816,10 +765,9 @@ class MultiSenderNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): self.combo_action = dpg.add_combo(["Start Sender", "Stop Sender"], default_value="Start Sender", width=140); dpg.add_spacer(height=3); dpg.add_text("Server URL:"); self.field_url = dpg.add_input_text(width=160, default_value="http://210.110.250.33:5001/upload")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
     def execute(self):
-        global sender_state # ★ sender_state 전역 변수 선언 추가
+        global sender_state
         action = dpg.get_value(self.combo_action); url = dpg.get_value(self.field_url)
         
-        # ★ [핵심 패치] 중복 실행 차단!
         if action == "Start Sender" and sender_state['status'] == 'Stopped': 
             sender_state['status'] = 'Starting...'
             sender_command_queue.append(('START', url))
@@ -844,7 +792,6 @@ class Go1UnityNode(BaseNode):
                 self.field_ip = dpg.add_input_text(width=120, default_value=GO1_UNITY_IP)
                 dpg.add_spacer(height=3)
                 self.chk_enable = dpg.add_checkbox(label="Enable Teleop Rx", default_value=True)
-                # ★ ArUco 데이터 전송 체크박스 추가
                 self.chk_aruco = dpg.add_checkbox(label="Send ArUco Data (JSON)", default_value=False) 
                 
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as vx: dpg.add_text("Teleop Vx"); self.outputs[vx] = "Data"; self.out_vx = vx
@@ -856,7 +803,7 @@ class Go1UnityNode(BaseNode):
         global GO1_UNITY_IP, go1_node_intent
         GO1_UNITY_IP = dpg.get_value(self.field_ip)
         go1_node_intent['use_unity_cmd'] = dpg.get_value(self.chk_enable)
-        go1_node_intent['send_aruco'] = dpg.get_value(self.chk_aruco) # ★ 체크박스 상태를 전역 변수에 반영
+        go1_node_intent['send_aruco'] = dpg.get_value(self.chk_aruco)
         
         self.output_data[self.out_vx] = go1_unity_data['vx']; self.output_data[self.out_vy] = go1_unity_data['vy']; self.output_data[self.out_wz] = go1_unity_data['wz']; self.output_data[self.out_active] = go1_unity_data['active']
         return None
@@ -899,7 +846,6 @@ class Go1TimedActionNode(BaseNode):
                 with dpg.group(horizontal=True): dpg.add_text("Spd:"); self.field_spd = dpg.add_input_float(width=60, default_value=0.4, step=0.1)
                 with dpg.group(horizontal=True): dpg.add_text("Sec:"); self.field_time = dpg.add_input_float(width=60, default_value=2.0, step=0.5)
                 dpg.add_spacer(height=5)
-                # ★ 노드 자체에 독립적인 실행 버튼을 달아줍니다.
                 dpg.add_button(label="[ ▶ TEST TRIGGER ]", width=130, callback=self.start_timer)
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
 
@@ -909,7 +855,6 @@ class Go1TimedActionNode(BaseNode):
 
     def execute(self):
         global go1_node_intent
-        # 버튼이 눌렸을 때만 백그라운드에서 N초간 실행됩니다.
         if self.is_running:
             if time.time() - self.start_time <= dpg.get_value(self.field_time):
                 mode = dpg.get_value(self.combo_id); spd = dpg.get_value(self.field_spd)
@@ -922,7 +867,6 @@ class Go1TimedActionNode(BaseNode):
                 go1_node_intent['vx'] = vx; go1_node_intent['vy'] = vy; go1_node_intent['wz'] = wz
                 go1_node_intent['trigger_time'] = time.monotonic()
             else: 
-                # 시간이 다 되면 자동으로 멈춤(브레이크) 신호를 보냅니다.
                 self.is_running = False; go1_node_intent['stop'] = True
                 write_log("Timed Action: Finished")
         return self.out_flow
@@ -952,7 +896,6 @@ class Go1KeyboardNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as wz: dpg.add_text("Target Wz"); self.outputs[wz] = "Data"; self.out_wz = wz
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("Flow Out"); self.outputs[f] = "Flow"
     def execute(self):
-        # ★ [추가된 부분] 파일 이름 입력창에 커서가 깜빡일 때는 키 입력을 무시하고 흐름만 통과시킵니다.
         if dpg.is_item_focused("file_name_input") or (dpg.does_item_exist("path_name_input") and dpg.is_item_focused("path_name_input")):
             for k, v in self.outputs.items():
                 if v == "Flow": return k
@@ -1113,7 +1056,6 @@ class NodeFactory:
         elif node_type == "CONSTANT": node = ConstantNode(node_id)
         elif node_type == "PRINT": node = PrintNode(node_id)
         elif node_type == "LOGGER": node = LoggerNode(node_id)
-        elif node_type == "UDP_RECV": node = UDPReceiverNode(node_id)
         elif node_type == "GO1_DRIVER": node = UniversalRobotNode(node_id, Go1RobotDriver())
         elif node_type == "GO1_ACTION": node = Go1CommandActionNode(node_id)
         elif node_type == "GO1_TIMED": node = Go1TimedActionNode(node_id)
@@ -1132,23 +1074,18 @@ def toggle_exec(s, a):
     is_running = not is_running
     dpg.set_item_label("btn_run", "STOP" if is_running else "RUN SCRIPT")
 
-    # 새 RUN 사이클 시작 시 카메라 자동 시작 권한을 1회 부여
     if is_running:
         go1_camera_started_flag = False
     
-    # ★ [추가된 로직] 스크립트 정지 시 백그라운드 스레드들도 강제 종료
     if not is_running:
         go1_camera_started_flag = False
         
-        # 1. 카메라 강제 종료
         if camera_state['status'] in ['Running', 'Starting...']:
             camera_command_queue.append(('STOP', ''))
             
-        # 2. 센더 강제 종료
         if sender_state['status'] in ['Running']:
             sender_command_queue.append(('STOP', ''))
             
-        # 3. (안전장치) 로봇의 움직임도 즉시 정지
         global go1_node_intent
         go1_node_intent['stop'] = True
         go1_node_intent['vx'] = 0.0
@@ -1227,24 +1164,20 @@ def delete_selection(sender, app_data):
 # ================= [Main Setup & Cleanup] =================
 import atexit
 
-# ★ [추가된 부분] 프로그램 시작 시 자동 네트워크 길뚫기 (라우팅)
 def setup_go1_routing():
     try:
         target_gw = ROBOT_IP
         if not target_gw:
             write_log("System: Cannot find raspberrypi.local for routing.")
             return
-        # 현재 우분투의 라우팅 테이블을 읽어옵니다.
         routes = subprocess.check_output(['ip', 'route']).decode()
         
-        # 길이 안 뚫려 있다면 자동으로 뚫어줍니다.
         if f"192.168.123.0/24 via {target_gw}" not in routes:
             print("\n" + "="*60)
             print("[System] Go1 카메라망(123.x) 접속을 위한 자동 길뚫기를 시작합니다.")
             print("[System] 🚨 아래에 우분투 노트북의 '로그인 비밀번호'를 입력하고 엔터를 치세요!")
             print("="*60 + "\n")
             
-            # sudo 권한으로 명령어 실행 (터미널에서 비밀번호를 물어봄)
             subprocess.call(['sudo', 'ip', 'route', 'add', '192.168.123.0/24', 'via', target_gw])
             write_log("System: Go1 Network Routing Configured.")
         else:
@@ -1255,7 +1188,7 @@ def setup_go1_routing():
 ROBOT_IP = prompt_go1_ip(ROBOT_IP)
 write_log(f"System: Go1 IP set to {ROBOT_IP}")
 
-setup_go1_routing() # 스크립트 실행 시 즉시 호출
+setup_go1_routing()
 
 def force_cleanup_cameras():
     write_log("System: Cleaning up ghost camera receiver processes only...")
@@ -1307,7 +1240,6 @@ with dpg.window(tag="PrimaryWindow"):
                     dpg.add_text("Vx Cmd: 0.00", tag="go1_dash_vx_2")
                     dpg.add_text("Vy Cmd: 0.00", tag="go1_dash_vy_2")
                     dpg.add_text("Wz Cmd: 0.00", tag="go1_dash_wz_2")
-                # ★ [새로 추가할 부분: 세 번째 박스 Network Info] ★
                 with dpg.child_window(width=260, height=150, border=True):
                     dpg.add_text("Network Info", color=(100,200,255))
                     dpg.add_text("Host IP: Loading...", tag="dash_host_ip", color=(200,200,200))
@@ -1327,7 +1259,7 @@ with dpg.window(tag="PrimaryWindow"):
                         dpg.add_text("Load:"); dpg.add_combo(items=get_save_files(), tag="file_list_combo", width=120); dpg.add_button(label="LOAD", callback=load_cb, width=60); dpg.add_button(label="Refresh", callback=update_file_list, width=60)
                 with dpg.child_window(width=400, height=100, border=False):
                     dpg.add_spacer(height=20)
-                    dpg.add_text("Loading...", tag="sys_tab_net", color=(180,180,180)) # ★ 태그 달기
+                    dpg.add_text("Loading...", tag="sys_tab_net", color=(180,180,180))
 
     dpg.add_separator()
     
@@ -1368,7 +1300,6 @@ while dpg.is_dearpygui_running():
     hw_link_str = go1_dashboard.get('hw_link', 'Offline')
     dpg.set_value("go1_dash_link", f"HW: {hw_link_str}")
     
-    # ★ "Online"이라는 단어가 포함되어 있으면(Active, Listen 둘 다) 모두 초록색으로 렌더링
     if "Online" in hw_link_str: dpg.configure_item("go1_dash_link", color=(0,255,0))
     elif hw_link_str == "Simulation" or hw_link_str == "Connecting...": dpg.configure_item("go1_dash_link", color=(255,200,0))
     else: dpg.configure_item("go1_dash_link", color=(255,0,0))
