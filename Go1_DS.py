@@ -396,7 +396,7 @@ def camera_worker_thread():
             if cmd == 'START_CMD':
                 _, pc_ip, target_folder, duration = cmd_data
                 camera_state['status'] = 'Starting...'
-                camera_state['start_time'] = time.time()
+                # ★ [수정됨] start_time은 아직 설정하지 않음 - Running 상태 후에 설정할 예정
                 camera_state['duration'] = duration
                 
                 CAMERA_CONFIG.clear()
@@ -466,6 +466,7 @@ def camera_worker_thread():
                 
                 time.sleep(2)
                 camera_state['status'] = 'Running'
+                camera_state['start_time'] = time.time()  # ★ [수정됨] 실제 Running 상태가 된 직후에 타이머 시작
                 camera_state['timer_started_logged'] = False
                 camera_state['last_interval_count'] = 0
                 write_log("[Cam START] Front camera stream is now Running.")
