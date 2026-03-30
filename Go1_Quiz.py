@@ -161,13 +161,16 @@ def prompt_go1_ip(default_ip):
         current_default = candidate
 
 # ================= [Go1 State & Config] =================
+
+# ------------------------ 수정해야 할 부분 (포트, IP 값 제외) ---------------------------
 HIGHLEVEL = 0xee; LOCAL_PORT = 8090; ROBOT_IP = "192.168.50.42"; ROBOT_PORT = 8082
 GO1_UNITY_IP = "192.168.50.246"; UNITY_STATE_PORT = 15101; UNITY_CMD_PORT = 15102; UNITY_RX_PORT = 15100
 dt = 0.002; V_MAX, S_MAX, W_MAX = 0.4, 0.4, 2.0; VX_CMD, VY_CMD, WZ_CMD = 0.20, 0.20, 1.00
 hold_timeout_sec = 0.1; repeat_grace_sec = 0.4; min_move_sec = 0.4; stop_brake_sec = 0.0
 BODY_HEIGHT_MIN = -0.12; BODY_HEIGHT_MAX = 0.12; BODY_HEIGHT_KEY_STEP = 0.005
 CONTROL_INPUT_DELAY_SEC = 1.2
-CAMERA_SAVE_DELAY_USEC = 200000
+CAMERA_SAVE_DELAY_USEC = 700000
+# ----------------------------------------------------------------------
 
 go1_node_intent = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'body_height': 0.0, 'yaw_align': False, 'reset_yaw': False, 'stop': False, 'use_unity_cmd': True, 'send_aruco': False, 'trigger_time': time.monotonic()}
 go1_state = {'world_x': 0.0, 'world_z': 0.0, 'yaw_unity': 0.0, 'vx_cmd': 0.0, 'vy_cmd': 0.0, 'wz_cmd': 0.0, 'body_height_cmd': 0.0, 'mode': 1, 'reason': "NONE", 'battery': -1, 'control_latency_ms': 0.0}
@@ -457,23 +460,25 @@ def camera_worker_thread():
                 except: pass
                 time.sleep(0.5)
                 
+                # ------------------------ 수정해야 할 부분 ---------------------------
                 write_log("[Cam START] Step 3: Setting up local GStreamer receiver...")
                 try:
                     os.makedirs(target_folder, exist_ok=True)
                     gst_cmd = f"gst-launch-1.0 -q udpsrc port=9400 caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" ! rtpjpegdepay ! identity sleep-time={CAMERA_SAVE_DELAY_USEC} ! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
                     
+                    
                     subprocess.Popen(gst_cmd, shell=True)
                     write_log(f"[Cam START] Receiver listening on port 9400 -> {target_folder}")
                 except Exception as e:
                     write_log(f"[Cam START ERROR] Failed to start receiver: {e}")
-                
                 time.sleep(2)
                 camera_state['status'] = 'Running'
                 camera_state['start_time'] = time.time()
                 camera_state['timer_started_logged'] = False
                 camera_state['last_interval_count'] = 0
                 write_log("[Cam START] Front camera stream is now Running.")
-                
+                # ----------------------------------------------------------------------
+
             elif cmd == 'STOP':
                 if camera_state['status'] == 'Running':
                     write_log("[Cam Timer] 카메라 타이머 종료")
@@ -659,6 +664,7 @@ def go1_v4_comm_thread():
         go1_unity_data['active'] = unity_active
         if not unity_active: go1_dashboard['unity_link'] = "Waiting"
 
+        # ------------------------ 수정해야 할 부분 ---------------------------
         control_delay_buffer.append((tnow, go1_node_intent['vx'], go1_node_intent['vy'], go1_node_intent['wz'], go1_node_intent['trigger_time']))
         latest_ready = None
         while control_delay_buffer and (tnow - control_delay_buffer[0][0]) >= CONTROL_INPUT_DELAY_SEC:
@@ -668,7 +674,7 @@ def go1_v4_comm_thread():
             delayed_trigger_time = latest_ready[4]
             if abs(delayed_vx) > 1e-4 or abs(delayed_vy) > 1e-4 or abs(delayed_wz) > 1e-4:
                 go1_state['control_latency_ms'] = max(0.0, (tnow - delayed_trigger_time) * 1000.0)
-
+        # ----------------------------------------------------------------------
         since_key = tnow - last_key_time; since_move = tnow - last_move_cmd_time
         active_walk = ((not stand_only) and (since_key <= hold_timeout_sec)) or ((not stand_only) and use_grace and (tnow <= grace_deadline)) or ((not stand_only) and (since_move <= min_move_sec))
 
