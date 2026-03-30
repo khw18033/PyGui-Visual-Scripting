@@ -167,7 +167,7 @@ dt = 0.002; V_MAX, S_MAX, W_MAX = 0.4, 0.4, 2.0; VX_CMD, VY_CMD, WZ_CMD = 0.20, 
 hold_timeout_sec = 0.1; repeat_grace_sec = 0.4; min_move_sec = 0.4; stop_brake_sec = 0.0
 
 go1_node_intent = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'yaw_align': False, 'reset_yaw': False, 'stop': False, 'use_unity_cmd': True, 'send_aruco': False, 'trigger_time': time.monotonic()}
-go1_state = {'world_x': 0.0, 'world_z': 0.0, 'yaw_unity': 0.0, 'vx_cmd': 0.0, 'vy_cmd': 0.0, 'wz_cmd': 0.0, 'mode': 1, 'reason': "NONE", 'battery': -1}
+go1_state = {'world_x': 0.0, 'world_z': 0.0, 'yaw_unity': 0.0, 'vx_cmd': 0.0, 'vy_cmd': 0.0, 'wz_cmd': 0.0, 'mode': 1, 'reason': "NONE", 'battery': -1, 'control_latency_ms': 0.0}
 go1_unity_data = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'estop': 0, 'active': False} 
 go1_dashboard = {"status": "Idle", "hw_link": "Offline", "unity_link": "Waiting"}
 
@@ -690,6 +690,14 @@ def go1_v4_comm_thread():
             cmd.mode = target_mode; cmd.velocity = [out_vx, out_vy]; cmd.yawSpeed = out_wz
             if go1_in_use: 
                 udp.SetSend(cmd); udp.Send()
+
+        # 지연 결함 없이, 최근 입력 기준 제어 반영 시간을 표시
+        if unity_active and (abs(out_vx) > 1e-4 or abs(out_vy) > 1e-4 or abs(out_wz) > 1e-4):
+            go1_state['control_latency_ms'] = max(0.0, (tnow - last_unity_cmd_time) * 1000.0)
+        elif target_mode == 2 and (abs(out_vx) > 1e-4 or abs(out_vy) > 1e-4 or abs(out_wz) > 1e-4):
+            go1_state['control_latency_ms'] = max(0.0, (tnow - go1_node_intent.get('trigger_time', tnow)) * 1000.0)
+        else:
+            go1_state['control_latency_ms'] = 0.0
             
         go1_state['vx_cmd'] = out_vx; go1_state['vy_cmd'] = out_vy; go1_state['wz_cmd'] = out_wz; go1_state['mode'] = target_mode
         dts = tnow - last_dr_time; last_dr_time = tnow
@@ -1240,6 +1248,7 @@ with dpg.window(tag="PrimaryWindow"):
                     dpg.add_text("Vx Cmd: 0.00", tag="go1_dash_vx_2")
                     dpg.add_text("Vy Cmd: 0.00", tag="go1_dash_vy_2")
                     dpg.add_text("Wz Cmd: 0.00", tag="go1_dash_wz_2")
+                    dpg.add_text("Latency: 0.0 ms", tag="go1_dash_latency")
                 with dpg.child_window(width=260, height=150, border=True):
                     dpg.add_text("Network Info", color=(100,200,255))
                     dpg.add_text("Host IP: Loading...", tag="dash_host_ip", color=(200,200,200))
@@ -1312,6 +1321,7 @@ while dpg.is_dearpygui_running():
     dpg.set_value("go1_dash_vx_2", f"Vx Cmd: {go1_state['vx_cmd']:.2f}")
     dpg.set_value("go1_dash_vy_2", f"Vy Cmd: {go1_state['vy_cmd']:.2f}")
     dpg.set_value("go1_dash_wz_2", f"Wz Cmd: {go1_state['wz_cmd']:.2f}")
+    dpg.set_value("go1_dash_latency", f"Latency: {go1_state.get('control_latency_ms', 0.0):.1f} ms")
     
     bat_val = go1_state.get('battery', -1)
     if bat_val >= 0: dpg.set_value("go1_dash_battery", f"Battery: {bat_val}%")
