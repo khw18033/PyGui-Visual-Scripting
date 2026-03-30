@@ -165,9 +165,11 @@ HIGHLEVEL = 0xee; LOCAL_PORT = 8090; ROBOT_IP = "192.168.50.42"; ROBOT_PORT = 80
 GO1_UNITY_IP = "192.168.50.246"; UNITY_STATE_PORT = 15101; UNITY_CMD_PORT = 15102; UNITY_RX_PORT = 15100
 dt = 0.002; V_MAX, S_MAX, W_MAX = 0.4, 0.4, 2.0; VX_CMD, VY_CMD, WZ_CMD = 0.20, 0.20, 1.00
 hold_timeout_sec = 0.1; repeat_grace_sec = 0.4; min_move_sec = 0.4; stop_brake_sec = 0.0
+BODY_HEIGHT_MIN = -0.12; BODY_HEIGHT_MAX = 0.12
+BODY_HEIGHT_KEY_STEP = 0.005
 
-go1_node_intent = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'yaw_align': False, 'reset_yaw': False, 'stop': False, 'use_unity_cmd': True, 'send_aruco': False, 'trigger_time': time.monotonic()}
-go1_state = {'world_x': 0.0, 'world_z': 0.0, 'yaw_unity': 0.0, 'vx_cmd': 0.0, 'vy_cmd': 0.0, 'wz_cmd': 0.0, 'mode': 1, 'reason': "NONE", 'battery': -1, 'control_latency_ms': 0.0}
+go1_node_intent = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'body_height': 0.0, 'yaw_align': False, 'reset_yaw': False, 'stop': False, 'use_unity_cmd': True, 'send_aruco': False, 'trigger_time': time.monotonic()}
+go1_state = {'world_x': 0.0, 'world_z': 0.0, 'yaw_unity': 0.0, 'vx_cmd': 0.0, 'vy_cmd': 0.0, 'wz_cmd': 0.0, 'body_height_cmd': 0.0, 'mode': 1, 'reason': "NONE", 'battery': -1, 'control_latency_ms': 0.0}
 go1_unity_data = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'estop': 0, 'active': False} 
 go1_dashboard = {"status": "Idle", "hw_link": "Offline", "unity_link": "Waiting"}
 
@@ -591,6 +593,7 @@ def go1_v4_comm_thread():
         if not cmd: return
         cmd.mode = 0; cmd.gaitType = 0; cmd.speedLevel = 0; cmd.footRaiseHeight = 0.08; cmd.bodyHeight = 0.0
         cmd.euler = [0.0, 0.0, 0.0]; cmd.velocity = [0.0, 0.0]; cmd.yawSpeed = 0.0; cmd.reserve = 0
+        cmd.bodyHeight = clamp(go1_node_intent.get('body_height', 0.0), BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
 
     next_t = time.monotonic()
     while True:
@@ -700,6 +703,7 @@ def go1_v4_comm_thread():
             go1_state['control_latency_ms'] = 0.0
             
         go1_state['vx_cmd'] = out_vx; go1_state['vy_cmd'] = out_vy; go1_state['wz_cmd'] = out_wz; go1_state['mode'] = target_mode
+        go1_state['body_height_cmd'] = clamp(go1_node_intent.get('body_height', 0.0), BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
         dts = tnow - last_dr_time; last_dr_time = tnow
         cy = math.cos(yaw_unity); sy = math.sin(yaw_unity)
         world_x += (out_vx * cy - out_vy * sy) * dts; world_z += (out_vx * sy + out_vy * cy) * dts
@@ -827,13 +831,16 @@ class Go1CommandActionNode(BaseNode):
     def build_ui(self):
         with dpg.node(tag=self.node_id, parent="node_editor", label="Go1 Action"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): self.combo_id = dpg.add_combo(items=["Stand", "Reset Yaw0", "Walk Fwd/Back", "Walk Strafe", "Turn"], default_value="Stand", width=130)
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): self.combo_id = dpg.add_combo(items=["Stand", "Reset Yaw0", "Walk Fwd/Back", "Walk Strafe", "Turn", "Sit Down", "Stand Tall", "Set Body Height"], default_value="Stand", width=150)
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as v1: dpg.add_text("Speed/Val"); self.field_v1 = dpg.add_input_float(width=60, default_value=0.2); self.inputs[v1] = "Data"; self.in_val1 = v1
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
     def execute(self):
         global go1_node_intent; mode = dpg.get_value(self.combo_id); v1 = self.fetch_input_data(self.in_val1); v1 = float(v1) if v1 is not None else dpg.get_value(self.field_v1)
         if mode == "Stand": go1_node_intent['stop'] = True
         elif mode == "Reset Yaw0": go1_node_intent['reset_yaw'] = True
+        elif mode == "Sit Down": go1_node_intent['body_height'] = BODY_HEIGHT_MIN
+        elif mode == "Stand Tall": go1_node_intent['body_height'] = BODY_HEIGHT_MAX
+        elif mode == "Set Body Height": go1_node_intent['body_height'] = clamp(v1, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
         else: go1_node_intent['vx'] = v1 if mode == "Walk Fwd/Back" else 0.0; go1_node_intent['vy'] = v1 if mode == "Walk Strafe" else 0.0; go1_node_intent['wz'] = v1 if mode == "Turn" else 0.0; go1_node_intent['trigger_time'] = time.monotonic()
         return self.out_flow
     def get_settings(self): return {"mode": dpg.get_value(self.combo_id), "v1": dpg.get_value(self.field_v1)}
@@ -898,7 +905,7 @@ class Go1KeyboardNode(BaseNode):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 self.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
-                dpg.add_text("Move / QE: Turn\nSpace: Stop / R: Yaw Align", color=(255,150,150))
+                dpg.add_text("Move / QE: Turn\nZ/X: Body Height +/-\nSpace: Stop / R: Yaw Align / C: Reset Yaw", color=(255,150,150))
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as vx: dpg.add_text("Target Vx"); self.outputs[vx] = "Data"; self.out_vx = vx
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as vy: dpg.add_text("Target Vy"); self.outputs[vy] = "Data"; self.out_vy = vy
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as wz: dpg.add_text("Target Wz"); self.outputs[wz] = "Data"; self.out_wz = wz
@@ -925,9 +932,13 @@ class Go1KeyboardNode(BaseNode):
 
         if dpg.is_key_down(dpg.mvKey_Q): wz = WZ_CMD
         if dpg.is_key_down(dpg.mvKey_E): wz = -WZ_CMD
+        if dpg.is_key_down(dpg.mvKey_Z):
+            go1_node_intent['body_height'] = clamp(go1_node_intent.get('body_height', 0.0) + BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+        if dpg.is_key_down(dpg.mvKey_X):
+            go1_node_intent['body_height'] = clamp(go1_node_intent.get('body_height', 0.0) - BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
         if dpg.is_key_down(dpg.mvKey_Spacebar): go1_node_intent['stop'] = True
         if dpg.is_key_pressed(dpg.mvKey_R): go1_node_intent['yaw_align'] = True
-        if dpg.is_key_pressed(dpg.mvKey_Z): go1_node_intent['reset_yaw'] = True
+        if dpg.is_key_pressed(dpg.mvKey_C): go1_node_intent['reset_yaw'] = True
         
         if vx or vy or wz: go1_node_intent['vx'] = vx; go1_node_intent['vy'] = vy; go1_node_intent['wz'] = wz; go1_node_intent['trigger_time'] = time.monotonic()
         self.output_data[self.out_vx]=vx; self.output_data[self.out_vy]=vy; self.output_data[self.out_wz]=wz
@@ -1099,6 +1110,7 @@ def toggle_exec(s, a):
         go1_node_intent['vx'] = 0.0
         go1_node_intent['vy'] = 0.0
         go1_node_intent['wz'] = 0.0
+        go1_node_intent['body_height'] = 0.0
         write_log("System: Script Stopped. Halting all background tasks.")
         
 def link_cb(s, a): src, dst = a[0], a[1] if len(a)==2 else a[1]; lid = dpg.add_node_link(src, dst, parent=s); link_registry[lid] = {'source': src, 'target': dst}
@@ -1248,6 +1260,7 @@ with dpg.window(tag="PrimaryWindow"):
                     dpg.add_text("Vx Cmd: 0.00", tag="go1_dash_vx_2")
                     dpg.add_text("Vy Cmd: 0.00", tag="go1_dash_vy_2")
                     dpg.add_text("Wz Cmd: 0.00", tag="go1_dash_wz_2")
+                    dpg.add_text("Body H: 0.00", tag="go1_dash_body_h")
                     dpg.add_text("Latency: 0.0 ms", tag="go1_dash_latency")
                 with dpg.child_window(width=260, height=150, border=True):
                     dpg.add_text("Network Info", color=(100,200,255))
@@ -1321,6 +1334,7 @@ while dpg.is_dearpygui_running():
     dpg.set_value("go1_dash_vx_2", f"Vx Cmd: {go1_state['vx_cmd']:.2f}")
     dpg.set_value("go1_dash_vy_2", f"Vy Cmd: {go1_state['vy_cmd']:.2f}")
     dpg.set_value("go1_dash_wz_2", f"Wz Cmd: {go1_state['wz_cmd']:.2f}")
+    dpg.set_value("go1_dash_body_h", f"Body H: {go1_state.get('body_height_cmd', 0.0):.2f}")
     dpg.set_value("go1_dash_latency", f"Latency: {go1_state.get('control_latency_ms', 0.0):.1f} ms")
     
     bat_val = go1_state.get('battery', -1)
