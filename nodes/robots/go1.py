@@ -162,7 +162,7 @@ _CAMERA_WORKER_STARTED = False
 
 camera_save_state = {
     'status': 'Stopped',
-    'folder': 'Captured_Images/go1_front',
+    'folder': 'Captured_Images/go1_saved',
     'duration': 0.0,
     'start_time': None,
     'frame_count': 0,
@@ -1073,23 +1073,27 @@ class VideoFrameSaveNode(BaseNode):
         self.out_flow = generate_uuid()
         self.outputs[self.out_flow] = PortType.FLOW
 
-        self.state['folder'] = 'Captured_Images/go1_front'
+        self.state['folder'] = 'Captured_Images/go1_saved'
         self.state['duration'] = 10.0
         self.state['use_timer'] = True
         self.state['max_frames'] = 100
         
         self._save_start_time = None
         self._frame_count = 0
+        self._timer_completed_this_run = False
 
     def execute(self):
         global camera_save_state
         
         frame = self.fetch_input_data(self.in_frame)
-        folder = str(self.state.get('folder', 'Captured_Images/go1_front'))
+        folder = str(self.state.get('folder', 'Captured_Images/go1_saved'))
         is_saving = bool(engine_module.is_running)
         duration = float(self.state.get('duration', 10.0))
         use_timer = bool(self.state.get('use_timer', True))
         max_frames = max(1, int(self.state.get('max_frames', 100)))
+
+        if not is_saving:
+            self._timer_completed_this_run = False
 
         # 저장 상태 업데이트
         camera_save_state['folder'] = folder
@@ -1105,7 +1109,7 @@ class VideoFrameSaveNode(BaseNode):
             self.output_data[self.out_frame] = frame
             return self.out_flow
 
-        if is_saving and not self._save_start_time:
+        if is_saving and not self._save_start_time and not self._timer_completed_this_run:
             # 저장 시작
             self._save_start_time = time.time()
             self._frame_count = 0
@@ -1123,6 +1127,7 @@ class VideoFrameSaveNode(BaseNode):
             if elapsed > duration:
                 write_log("[VIS_SAVE] 타이머 완료")
                 self._save_start_time = None
+                self._timer_completed_this_run = True
                 camera_save_state['status'] = 'Stopped'
                 camera_save_state['start_time'] = None
                 camera_save_state['frame_count'] = 0
@@ -1147,14 +1152,17 @@ class VideoFrameSaveNode(BaseNode):
 
                     # 타이머 OFF인 경우 폴더 파일 개수를 max_frames로 제한
                     if not use_timer:
-                        files = glob.glob(os.path.join(folder, "*.jpg"))
+                        files = glob.glob(os.path.join(folder, "frame_*.jpg"))
                         if len(files) > max_frames:
                             files.sort(key=os.path.getctime)
+                            delete_fail_count = 0
                             for old_file in files[:len(files) - max_frames]:
                                 try:
                                     os.remove(old_file)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    delete_fail_count += 1
+                                    if delete_fail_count == 1:
+                                        write_log(f"[VIS_SAVE] MaxFrames 삭제 실패(예시): {old_file} ({e})")
             except Exception as e:
                 write_log(f"[VIS_SAVE] 저장 오류: {e}")
         

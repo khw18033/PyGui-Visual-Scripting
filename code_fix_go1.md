@@ -317,3 +317,36 @@
   - `nodes/robots/go1.py`
   - `ui/dpg_manager.py`
 
+### [2026-03-31 22:26:08] VIS_SAVE 타이머 반복 재시작 방지 + MaxFrames 삭제 안정화
+- 문제 분석:
+  - Timer ON에서 `[VIS_SAVE] 타이머 완료` 후 `_save_start_time`만 초기화되고 `Run Script`는 계속 ON 상태라, 같은 실행 세션에서 즉시 다시 `저장 시작`으로 재진입하는 반복 로그가 발생함.
+  - Timer OFF에서 MaxFrames가 기대대로 줄지 않던 원인은 저장 폴더가 소스 수신 폴더(`go1_front`)와 동일했고, 삭제 대상이 `*.jpg` 전체여서 GStreamer가 쓰는 파일과 섞이며 삭제 실패가 묻혔을 가능성이 큼.
+
+- 조치 방안:
+  - `nodes/robots/go1.py`
+    - `VideoFrameSaveNode`에 `_timer_completed_this_run` 플래그 추가.
+      - Timer 완료 시 `True`로 설정해 동일 Run 세션에서 재시작 차단.
+      - `Stop` 후 재실행 시(`engine_module.is_running=False -> True`) 자동 리셋.
+    - MaxFrames 삭제 대상을 `*.jpg`에서 `frame_*.jpg`로 한정해 VIS_SAVE가 생성한 파일만 관리.
+    - 삭제 실패 예외를 완전 무시하지 않고, 첫 실패 케이스를 로그로 출력하도록 추가:
+      - `[VIS_SAVE] MaxFrames 삭제 실패(예시): <file> (<error>)`
+    - 기본 저장 폴더를 `Captured_Images/go1_saved`로 변경해 소스 수신 파일(`front_*.jpg`)과 저장 파일(`frame_*.jpg`)을 분리.
+      - `camera_save_state['folder']` 기본값도 동일하게 정합화.
+
+  - `ui/dpg_manager.py`
+    - `VIS_SAVE` 폴더 UI 기본값을 `Captured_Images/go1_saved`로 변경.
+    - `sync_state_to_ui()`의 `VIS_SAVE` 폴더 기본 fallback도 `go1_saved`로 통일.
+
+- 권한(삭제 Permission) 탐구 결과:
+  - 코드상 삭제 로직은 `os.remove()`로 정상 구현되어 있으며, 권한 자체가 없어 항상 실패하는 구조는 아님.
+  - 다만 Windows에서 파일이 타 프로세스에 의해 사용 중일 때(예: GStreamer가 쓰는 파일) `PermissionError`가 발생할 수 있음.
+  - 이번 수정으로 삭제 대상을 VIS_SAVE 산출물(`frame_*.jpg`)만으로 분리했기 때문에, 파일 잠금/권한 충돌 가능성을 크게 줄였고, 실패 시 로그로 원인 확인 가능.
+
+- 기대 효과:
+  1. Timer ON에서 "타이머 완료 ↔ 저장 시작" 반복 로그 현상 제거.
+  2. Timer OFF에서 MaxFrames가 VIS_SAVE 저장 파일 기준으로 안정적으로 동작.
+  3. 권한/잠금 문제가 실제로 있을 경우 로그로 즉시 원인 파악 가능.
+
+- 수정 파일:
+  - `nodes/robots/go1.py`
+  - `ui/dpg_manager.py`

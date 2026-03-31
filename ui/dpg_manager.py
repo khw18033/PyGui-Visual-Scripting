@@ -228,7 +228,7 @@ class NodeUIRenderer:
             dpg.set_value(node.ui_port, node.state.get('port', 5000))
             dpg.set_value(node.ui_run, node.state.get('is_running', False))
         elif t == "VIS_SAVE" and hasattr(node, 'ui_folder'):
-            dpg.set_value(node.ui_folder, node.state.get('folder', 'Captured_Images/go1_front'))
+            dpg.set_value(node.ui_folder, node.state.get('folder', 'Captured_Images/go1_saved'))
             dpg.set_value(node.ui_duration, node.state.get('duration', 10.0))
             dpg.set_value(node.ui_use_timer, node.state.get('use_timer', True))
             dpg.set_value(node.ui_max_frames, node.state.get('max_frames', 100))
@@ -516,7 +516,7 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(tag=node.in_frame, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Frame In", color=(255,255,0))
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                dpg.add_text("Folder:"); node.ui_folder = dpg.add_input_text(width=180, default_value="Captured_Images/go1_front")
+                dpg.add_text("Folder:"); node.ui_folder = dpg.add_input_text(width=180, default_value="Captured_Images/go1_saved")
                 dpg.add_text("Duration(s):"); node.ui_duration = dpg.add_input_float(width=80, default_value=10.0, step=1.0)
                 node.ui_use_timer = dpg.add_checkbox(label="Use Timer", default_value=True)
                 dpg.add_text("Max Frames:"); node.ui_max_frames = dpg.add_input_int(width=80, default_value=100, step=10)
