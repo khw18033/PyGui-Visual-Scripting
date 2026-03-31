@@ -146,7 +146,19 @@ aruco_settings = {
 
 camera_state = {
     'status': 'Stopped',
+    'target_ip': '',
+    'duration': 0.0,
+    'start_time': 0.0,
+    'timer_started_logged': False,
+    'last_interval_count': 0,
 }
+
+camera_command_queue = deque()
+GO1_CAMERA_NANOS = ["unitree@192.168.123.13"]
+CAMERA_CONFIG = [
+    {"folder": "Captured_Images/go1_front", "id": "go1_front"}
+]
+_CAMERA_WORKER_STARTED = False
 
 camera_save_state = {
     'status': 'Stopped',
@@ -176,6 +188,17 @@ def _has_go1_nodes():
 
 def get_go1_rtsp_url():
     return f"rtsp://{GO1_IP}:8554/live"
+
+
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 
 def go1_estop_callback():
@@ -215,7 +238,7 @@ def _prompt_go1_ip(default_ip):
 
 
 def init_go1_connection():
-    global GO1_IP, _GO1_IP_INITIALIZED
+    global GO1_IP, _GO1_IP_INITIALIZED, _CAMERA_WORKER_STARTED
     if _GO1_IP_INITIALIZED:
         return
     _GO1_IP_INITIALIZED = True
@@ -226,6 +249,110 @@ def init_go1_connection():
         write_log(f"Go1 SDK Ready: {sdk_path}")
     else:
         write_log(f"Go1 SDK Missing: {sdk_path} ({SDK_IMPORT_ERROR})")
+
+    if not _CAMERA_WORKER_STARTED:
+        _CAMERA_WORKER_STARTED = True
+        threading.Thread(target=camera_worker_thread, daemon=True).start()
+
+
+def camera_worker_thread():
+    global camera_state, CAMERA_CONFIG
+    nanos = GO1_CAMERA_NANOS
+
+    while True:
+        if camera_command_queue:
+            cmd_data = camera_command_queue.popleft()
+            cmd = cmd_data[0]
+
+            if cmd == 'START_CMD':
+                _, pc_ip, target_folder, duration = cmd_data
+                camera_state['status'] = 'Starting...'
+                camera_state['target_ip'] = pc_ip
+                camera_state['duration'] = float(duration)
+
+                CAMERA_CONFIG.clear()
+                CAMERA_CONFIG.append({"folder": target_folder, "id": "go1_front"})
+
+                write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
+
+                for nano in nanos:
+                    key_path = os.path.expanduser("~/.ssh/id_rsa")
+
+                    kill_cmd = (
+                        "bash -lc '"
+                        "echo 123 | sudo -S fuser -k /dev/video0 /dev/video1 2>/dev/null ; "
+                        "cd /home/unitree ; "
+                        "./kill_camera.sh || true ; "
+                        "pkill -f go1_send_both || true ; "
+                        "pkill -f gst-launch-1.0 || true'"
+                    )
+
+                    start_cmd = (
+                        f"bash -lc '"
+                        f"cd /home/unitree ; "
+                        f"nohup ./go1_send_both.sh {pc_ip} > send_both_py.log 2>&1 < /dev/null & "
+                        f"sleep 1'"
+                    )
+
+                    base_ssh = [
+                        "ssh", "-i", key_path,
+                        "-o", "StrictHostKeyChecking=accept-new",
+                        "-o", "ConnectTimeout=5",
+                        "-J", f"pi@{GO1_IP}", nano
+                    ]
+
+                    try:
+                        subprocess.run(base_ssh + [kill_cmd], capture_output=True, text=True, timeout=30)
+                        subprocess.run(base_ssh + [start_cmd], capture_output=True, text=True, timeout=30)
+                        write_log(f"[Cam START] SSH commands sent to {nano}")
+                    except Exception as e:
+                        write_log(f"[Cam START ERROR] SSH execution failed: {e}")
+
+                try:
+                    subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+                try:
+                    os.makedirs(target_folder, exist_ok=True)
+                    gst_cmd = (
+                        f"gst-launch-1.0 -q udpsrc port=9400 "
+                        f"caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" "
+                        f"! rtpjpegdepay ! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
+                    )
+                    subprocess.Popen(gst_cmd, shell=True)
+                    write_log(f"[Cam START] Receiver listening on port 9400 -> {target_folder}")
+                except Exception as e:
+                    write_log(f"[Cam START ERROR] Failed to start receiver: {e}")
+
+                time.sleep(1.0)
+                camera_state['status'] = 'Running'
+                camera_state['start_time'] = time.time()
+                camera_state['timer_started_logged'] = False
+                camera_state['last_interval_count'] = 0
+
+            elif cmd == 'STOP':
+                camera_state['status'] = 'Stopping...'
+                camera_state['duration'] = 0.0
+                try:
+                    subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
+                except Exception:
+                    pass
+                time.sleep(0.5)
+                camera_state['status'] = 'Stopped'
+
+        if camera_state['status'] == 'Running' and camera_state.get('duration', 0) > 0:
+            elapsed = time.time() - float(camera_state.get('start_time', 0.0))
+            interval_count = int(elapsed // 10)
+            if interval_count > camera_state.get('last_interval_count', 0) and interval_count > 0:
+                write_log(f"[Cam Timer] {interval_count * 10}초 경과")
+                camera_state['last_interval_count'] = interval_count
+            if elapsed >= camera_state['duration']:
+                write_log("[Cam Timer] 카메라 타이머 종료")
+                camera_command_queue.append(('STOP', ''))
+
+        time.sleep(0.1)
 
 
 def go1_keepalive_thread():
@@ -738,60 +865,12 @@ class VideoSourceNode(BaseNode):
         super().__init__(node_id, "Video Source", "VIDEO_SRC")
         self.out_frame = generate_uuid()
         self.outputs[self.out_frame] = PortType.DATA
-        self.state['url'] = get_go1_rtsp_url()
+        self.state['target_ip'] = get_local_ip()
+        self.state['folder'] = 'Captured_Images/go1_front'
+        self.state['duration'] = 10.0
         self.state['is_running'] = False
-
-        self._cap = None
-        self._thread = None
-        self._lock = threading.Lock()
-        self._latest_frame = None
-        self._running = False
-        self._opened_url = ""
-
-    def _reader_loop(self):
-        camera_state['status'] = 'Starting...'
-        while self._running:
-            if not self._cap:
-                time.sleep(0.05)
-                continue
-            ok, frame = self._cap.read()
-            if ok:
-                with self._lock:
-                    self._latest_frame = frame
-                camera_state['status'] = 'Running'
-            else:
-                camera_state['status'] = 'Starting...'
-                time.sleep(0.05)
-
-    def _start_capture(self, url):
-        if not HAS_CV2:
-            return
-        if self._cap is not None:
-            try:
-                self._cap.release()
-            except Exception:
-                pass
-
-        if str(url).isdigit():
-            self._cap = cv2.VideoCapture(int(url))
-        else:
-            self._cap = cv2.VideoCapture(url)
-        self._opened_url = str(url)
-
-        if self._thread is None or not self._thread.is_alive():
-            self._running = True
-            self._thread = threading.Thread(target=self._reader_loop, daemon=True)
-            self._thread.start()
-
-    def _stop_capture(self):
-        self._running = False
-        camera_state['status'] = 'Stopped'
-        if self._cap is not None:
-            try:
-                self._cap.release()
-            except Exception:
-                pass
-            self._cap = None
+        self._started = False
+        self._last_file = None
 
     def execute(self):
         if not HAS_CV2:
@@ -799,18 +878,33 @@ class VideoSourceNode(BaseNode):
             return None
 
         run_flag = bool(self.state.get('is_running', False))
-        url = str(self.state.get('url', get_go1_rtsp_url()))
+        target_ip = str(self.state.get('target_ip', get_local_ip())).strip() or get_local_ip()
+        folder = str(self.state.get('folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
+        duration = float(self.state.get('duration', 10.0))
 
         if run_flag:
-            if self._cap is None or self._opened_url != url:
-                self._start_capture(url)
+            if not self._started and camera_state['status'] in ['Stopped', 'Stopping...']:
+                camera_command_queue.append(('START_CMD', target_ip, folder, duration))
+                self._started = True
         else:
-            self._stop_capture()
+            if self._started and camera_state['status'] in ['Running', 'Starting...']:
+                camera_command_queue.append(('STOP', target_ip))
+            self._started = False
+            self._last_file = None
             self.output_data[self.out_frame] = None
             return None
 
-        with self._lock:
-            frame = self._latest_frame.copy() if self._latest_frame is not None else None
+        frame = None
+        try:
+            files = glob.glob(os.path.join(folder, "*.jpg"))
+            if len(files) >= 2:
+                files.sort(key=os.path.getctime)
+                target_file = files[-2]
+                if target_file != self._last_file:
+                    self._last_file = target_file
+                    frame = cv2.imread(target_file)
+        except Exception:
+            frame = None
 
         self.output_data[self.out_frame] = frame
         return None

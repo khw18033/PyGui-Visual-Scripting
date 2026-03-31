@@ -99,6 +99,27 @@
   - Go1 IP 확인을 DS와 동일하게 항상 수행하고, 콘솔 미지원 시 `EOF` 처리로 기본값 사용.
   - 초기화 단계에서 `Go1 SDK Ready/Missing` 로그를 출력해 Simulation fallback 원인을 즉시 확인 가능하게 개선.
 
+### [2026-03-31 15:05:00] Go1 카메라 로직을 Go1_DS.py 방식으로 전환
+- 문제 분석:
+  - 기존 `VIDEO_SRC`는 RTSP 직접 연결(`cv2.VideoCapture`) 방식이라, `Go1_DS.py`의 카메라 제어 흐름(나노 SSH 제어 + GStreamer 수신 + JPG 파일 기반 처리)과 달랐음.
+- 조치 방안:
+  - `nodes/robots/go1.py`
+    - `camera_command_queue`, `GO1_CAMERA_NANOS`, `CAMERA_CONFIG`, `camera_worker_thread()` 추가.
+    - `init_go1_connection()`에서 카메라 워커 스레드를 1회 자동 시작하도록 변경.
+    - `VideoSourceNode`를 DS 방식으로 변경:
+      - Start 시 `START_CMD(target_ip, folder, duration)` 큐에 등록
+      - Stop 시 `STOP` 큐에 등록
+      - 출력 프레임은 폴더의 최신 JPG 파일(안정성을 위해 최근 2번째 파일)에서 읽어 Data 출력
+  - `ui/dpg_manager.py`
+    - `VIDEO_SRC` UI를 `Target IP`, `Folder`, `Timer(s)`, `Start Stream`으로 변경.
+    - `sync_ui_to_state`, `sync_state_to_ui`를 신규 필드(`target_ip`, `folder`, `duration`)에 맞게 수정.
+  - `core/engine.py`
+    - `VIS_SAVE`를 flowless 실행 목록에 추가하여 데이터 노드로 주기 실행되도록 보완.
+- 수정 파일:
+  - `nodes/robots/go1.py`
+  - `ui/dpg_manager.py`
+  - `core/engine.py`
+
 ### [2026-03-31 14:30:00] 카메라 프레임 저장 노드 구현 (Go1_DS.py 저장 로직 이식)
 - 문제 분석:
   - `VideoSourceNode`, `FisheyeUndistortNode`, `ArUcoDetectNode`, `FlaskStreamNode`는 존재했으나, **프레임을 지정된 폴더에 저장하는 노드가 없음**.

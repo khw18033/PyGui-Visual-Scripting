@@ -180,8 +180,10 @@ class NodeUIRenderer:
                 node.state['send_aruco'] = dpg.get_value(node.chk_aruco)
             elif t == "EP_ACTION" and hasattr(node, 'combo_act'):
                 node.state['action'] = dpg.get_value(node.combo_act)
-            elif t == "VIDEO_SRC" and hasattr(node, 'ui_url'):
-                node.state['url'] = dpg.get_value(node.ui_url)
+            elif t == "VIDEO_SRC" and hasattr(node, 'ui_target_ip'):
+                node.state['target_ip'] = dpg.get_value(node.ui_target_ip)
+                node.state['folder'] = dpg.get_value(node.ui_folder)
+                node.state['duration'] = dpg.get_value(node.ui_duration)
                 node.state['is_running'] = dpg.get_value(node.ui_run)
             elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
                 node.state['port'] = dpg.get_value(node.ui_port)
@@ -217,11 +219,13 @@ class NodeUIRenderer:
             dpg.set_value(node.field_ip, node.state.get('unity_ip', getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246')))
             dpg.set_value(node.chk_enable, node.state.get('enable_teleop_rx', True))
             dpg.set_value(node.chk_aruco, node.state.get('send_aruco', False))
-        elif t == "VIDEO_SRC" and hasattr(node, 'ui_url'):
-            default_url = 'rtsp://192.168.12.1:8554/live'
-            if HAS_GO1 and hasattr(go1_module, 'get_go1_rtsp_url'):
-                default_url = go1_module.get_go1_rtsp_url()
-            dpg.set_value(node.ui_url, node.state.get('url', default_url))
+        elif t == "VIDEO_SRC" and hasattr(node, 'ui_target_ip'):
+            default_target_ip = '127.0.0.1'
+            if HAS_GO1 and hasattr(go1_module, 'get_local_ip'):
+                default_target_ip = go1_module.get_local_ip()
+            dpg.set_value(node.ui_target_ip, node.state.get('target_ip', default_target_ip))
+            dpg.set_value(node.ui_folder, node.state.get('folder', 'Captured_Images/go1_front'))
+            dpg.set_value(node.ui_duration, node.state.get('duration', 10.0))
             dpg.set_value(node.ui_run, node.state.get('is_running', False))
         elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
             dpg.set_value(node.ui_port, node.state.get('port', 5000))
@@ -481,13 +485,15 @@ class NodeUIRenderer:
 
     @staticmethod
     def _render_video_src(node):
-        default_url = "rtsp://192.168.12.1:8554/live"
-        if HAS_GO1 and hasattr(go1_module, 'get_go1_rtsp_url'):
-            default_url = go1_module.get_go1_rtsp_url()
+        default_target_ip = "127.0.0.1"
+        if HAS_GO1 and hasattr(go1_module, 'get_local_ip'):
+            default_target_ip = go1_module.get_local_ip()
         with dpg.node(tag=node.node_id, parent="node_editor", label="Video Source"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                node.ui_url = dpg.add_input_text(label="RTSP/Cam", width=150, default_value=default_url)
-                node.ui_run = dpg.add_checkbox(label="Run Stream")
+                node.ui_target_ip = dpg.add_input_text(label="Target IP", width=150, default_value=default_target_ip)
+                node.ui_folder = dpg.add_input_text(label="Folder", width=180, default_value="Captured_Images/go1_front")
+                node.ui_duration = dpg.add_input_float(label="Timer(s)", width=90, default_value=10.0, step=1.0)
+                node.ui_run = dpg.add_checkbox(label="Start Stream")
             with dpg.node_attribute(tag=node.out_frame, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Frame Data", color=(255,255,0))
 
     @staticmethod
