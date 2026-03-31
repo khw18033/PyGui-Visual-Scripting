@@ -16,25 +16,50 @@ go1_sock = None
 GO1_HOSTNAME = "raspberrypi.local"
 GO1_IP = "192.168.12.1" # Fallback IP
 GO1_PORT = 8080
+GO1_RTSP_PORT = 8554
+GO1_RTSP_PATH = "live"
 
-go1_target_vel = {'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0}
+BODY_HEIGHT_MIN = -0.12
+BODY_HEIGHT_MAX = 0.12
+BODY_HEIGHT_KEY_STEP = 0.005
+
+go1_target_vel = {'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0, 'body_height': 0.0}
 go1_dashboard = {"status": "Idle", "hw_link": HwStatus.OFFLINE}
 go1_manual_override_until = 0.0 # 수동 제어 우선권 변수
 
-def init_go1_network():
-    global go1_sock, GO1_IP
-    
-    # 1. Hostname으로 동적 IP 탐색 시도
+
+def clamp(value, min_value, max_value):
+    return max(min_value, min(max_value, value))
+
+
+def resolve_go1_ip():
+    global GO1_IP
     try:
         resolved_ip = socket.gethostbyname(GO1_HOSTNAME)
+        if resolved_ip and resolved_ip != GO1_IP:
+            write_log(f"Go1: Resolved '{GO1_HOSTNAME}' to {resolved_ip}")
         GO1_IP = resolved_ip
-        write_log(f"Go1: Resolved '{GO1_HOSTNAME}' to {GO1_IP}")
-    except Exception as e:
+    except Exception:
         write_log(f"Go1: Hostname resolve failed, using fallback IP {GO1_IP}")
+    return GO1_IP
 
-    # 2. 소켓 생성
+
+def get_go1_rtsp_url():
+    return f"rtsp://{GO1_IP}:{GO1_RTSP_PORT}/{GO1_RTSP_PATH}"
+
+def init_go1_network():
+    global go1_sock, GO1_IP
+
+    resolve_go1_ip()
+
     try:
+        if go1_sock:
+            try:
+                go1_sock.close()
+            except Exception:
+                pass
         go1_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        go1_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         go1_sock.settimeout(0.5)
         go1_dashboard["hw_link"] = HwStatus.ONLINE
         write_log(f"Go1: Network UDP Initialized on {GO1_IP}:{GO1_PORT}")
@@ -44,11 +69,16 @@ def init_go1_network():
 
 def go1_keepalive_thread():
     while True:
+        if go1_sock is None or go1_dashboard["hw_link"] != HwStatus.ONLINE:
+            init_go1_network()
+
         if go1_sock:
             try:
                 # Go1 SDK requires constant heartbeat to keep connection alive
                 go1_sock.sendto(b'ping', (GO1_IP, GO1_PORT))
-            except: pass
+                go1_dashboard["hw_link"] = HwStatus.ONLINE
+            except Exception:
+                go1_dashboard["hw_link"] = HwStatus.OFFLINE
         time.sleep(2.0)
 
 # ================= [Go1 Hardware Nodes] =================
@@ -59,7 +89,12 @@ class Go1RobotDriver(BaseRobotDriver):
         self.write_interval = 0.05 # 20Hz 제한
 
     def get_ui_schema(self): 
-        return [('vx', "Vx (F/B)", 0.0), ('vy', "Vy (L/R)", 0.0), ('vyaw', "Yaw (Turn)", 0.0)]
+        return [
+            ('vx', "Vx (F/B)", 0.0),
+            ('vy', "Vy (L/R)", 0.0),
+            ('vyaw', "Yaw (Turn)", 0.0),
+            ('body_height', "Body Height", 0.0),
+        ]
         
     def get_settings_schema(self): 
         return [('speed_scale', "Speed", 1.0)]
@@ -67,12 +102,15 @@ class Go1RobotDriver(BaseRobotDriver):
     def execute_command(self, inputs, settings):
         global go1_target_vel, go1_sock
         
-        inputs_changed = False
         for key, _, _ in self.get_ui_schema():
             val = inputs.get(key)
-            if val is not None and abs(float(val) - go1_target_vel.get(key, 0.0)) > 0.001:
-                inputs_changed = True
-                go1_target_vel[key] = float(val)
+            if val is None:
+                continue
+            parsed = float(val)
+            if key == 'body_height':
+                parsed = clamp(parsed, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+            if abs(parsed - go1_target_vel.get(key, 0.0)) > 0.001:
+                go1_target_vel[key] = parsed
 
         scale = max(0.1, min(float(settings.get('speed_scale', 1.0)), 2.0))
         
@@ -83,7 +121,8 @@ class Go1RobotDriver(BaseRobotDriver):
                         "type": "cmd",
                         "vx": go1_target_vel['vx'] * scale,
                         "vy": go1_target_vel['vy'] * scale,
-                        "vyaw": go1_target_vel['vyaw'] * scale
+                        "vyaw": go1_target_vel['vyaw'] * scale,
+                        "body_height": clamp(go1_target_vel.get('body_height', 0.0), BODY_HEIGHT_MIN, BODY_HEIGHT_MAX),
                     }
                     go1_sock.sendto(json.dumps(payload).encode(), (GO1_IP, GO1_PORT))
                     self.last_write_time = time.time()
@@ -124,36 +163,96 @@ class VideoSourceNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Video Source (RTSP/Webcam)", "VIDEO_SRC")
         self.out_frame = generate_uuid(); self.outputs[self.out_frame] = PortType.DATA
-        self.state['url'] = "rtsp://192.168.12.1:8554/live"
+        self.state['url'] = get_go1_rtsp_url()
         self.state['is_running'] = False
+        self.state['auto_go1_url'] = True
         
         self.cap = None
         self.latest_frame = None
         self.thread = None
+        self.active_source = None
+
+    def _open_capture(self):
+        raw_url = str(self.state.get('url', '')).strip()
+        auto_mode = bool(self.state.get('auto_go1_url', True))
+
+        candidates = []
+        if raw_url:
+            candidates.append(raw_url)
+        if auto_mode:
+            candidates.extend([
+                get_go1_rtsp_url(),
+                f"rtsp://{GO1_IP}:{GO1_RTSP_PORT}/stream",
+                "rtsp://192.168.12.1:8554/live",
+            ])
+
+        # 중복 제거
+        seen = set()
+        deduped_candidates = []
+        for item in candidates:
+            if item not in seen:
+                seen.add(item)
+                deduped_candidates.append(item)
+
+        for src in deduped_candidates:
+            cap = cv2.VideoCapture(src)
+            if cap and cap.isOpened():
+                self.cap = cap
+                self.active_source = src
+                write_log(f"Video Source Connected: {src}")
+                return True
+            if cap:
+                cap.release()
+
+        self.cap = None
+        self.active_source = None
+        return False
         
     def _read_frames(self):
+        fail_count = 0
         while self.state.get('is_running', False):
             if self.cap and self.cap.isOpened():
                 ret, frame = self.cap.read()
-                if ret: self.latest_frame = frame
-                else: time.sleep(0.1)
-            else: time.sleep(0.5)
+                if ret:
+                    self.latest_frame = frame
+                    fail_count = 0
+                else:
+                    fail_count += 1
+                    time.sleep(0.1)
+            else:
+                fail_count += 1
+                time.sleep(0.2)
+
+            if fail_count >= 5 and self.state.get('is_running', False):
+                if self.cap:
+                    self.cap.release()
+                self.cap = None
+                if not self._open_capture():
+                    time.sleep(0.5)
+                fail_count = 0
             
     def execute(self):
         current_url = self.state.get('url', "")
         should_run = self.state.get('is_running', False)
+
+        if self.state.get('auto_go1_url', True) and (not current_url or current_url.startswith('rtsp://')):
+            self.state['url'] = get_go1_rtsp_url()
+            current_url = self.state['url']
         
         # Thread Management
         if should_run and (self.thread is None or not self.thread.is_alive()):
-            self.cap = cv2.VideoCapture(current_url)
+            self._open_capture()
             self.thread = threading.Thread(target=self._read_frames, daemon=True)
             self.thread.start()
             write_log(f"Video Source Started: {current_url}")
             
         elif not should_run and self.thread is not None:
-            if self.cap: self.cap.release()
+            if self.cap:
+                self.cap.release()
+            self.cap = None
             self.thread = None
             self.latest_frame = None
+            self.active_source = None
             write_log("Video Source Stopped")
             
         # Push numpy array to Data Pin
@@ -285,8 +384,9 @@ class Go1KeyboardNode(BaseNode):
         self.out_vx = generate_uuid(); self.outputs[self.out_vx] = PortType.DATA
         self.out_vy = generate_uuid(); self.outputs[self.out_vy] = PortType.DATA
         self.out_vyaw = generate_uuid(); self.outputs[self.out_vyaw] = PortType.DATA
+        self.out_body_height = generate_uuid(); self.outputs[self.out_body_height] = PortType.DATA
         self.out_flow = generate_uuid(); self.outputs[self.out_flow] = PortType.FLOW
-        self.state.update({'keys': 'WASD', 'W':False, 'A':False, 'S':False, 'D':False, 'Q':False, 'E':False, 'is_focused':False})
+        self.state.update({'keys': 'WASD', 'W':False, 'A':False, 'S':False, 'D':False, 'Q':False, 'E':False, 'Z':False, 'X':False, 'is_focused':False})
 
     def execute(self):
         if self.state.get('is_focused', False): return self.out_flow
@@ -294,6 +394,7 @@ class Go1KeyboardNode(BaseNode):
         speed = 0.2
         yaw_speed = 0.5
         vx = 0.0; vy = 0.0; vyaw = 0.0
+        body_height = go1_target_vel.get('body_height', 0.0)
         
         keys = self.state.get('keys', 'WASD')
         if keys == "WASD":
@@ -309,9 +410,17 @@ class Go1KeyboardNode(BaseNode):
             if self.state.get('LEFT', False): vy = speed
             if self.state.get('RIGHT', False): vy = -speed
 
+        if self.state.get('Z', False):
+            body_height = clamp(body_height + BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+        if self.state.get('X', False):
+            body_height = clamp(body_height - BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+
+        go1_target_vel['body_height'] = body_height
+
         self.output_data[self.out_vx] = vx
         self.output_data[self.out_vy] = vy
         self.output_data[self.out_vyaw] = vyaw
+        self.output_data[self.out_body_height] = body_height
         return self.out_flow
 
 class Go1UnityNode(BaseNode):
@@ -322,8 +431,9 @@ class Go1UnityNode(BaseNode):
         self.out_vx = generate_uuid(); self.outputs[self.out_vx] = PortType.DATA
         self.out_vy = generate_uuid(); self.outputs[self.out_vy] = PortType.DATA
         self.out_vyaw = generate_uuid(); self.outputs[self.out_vyaw] = PortType.DATA
+        self.out_body_height = generate_uuid(); self.outputs[self.out_body_height] = PortType.DATA
         self.out_flow = generate_uuid(); self.outputs[self.out_flow] = PortType.FLOW
-        self.vx = 0.0; self.vy = 0.0; self.vyaw = 0.0
+        self.vx = 0.0; self.vy = 0.0; self.vyaw = 0.0; self.body_height = 0.0
 
     def execute(self):
         import json
@@ -337,6 +447,7 @@ class Go1UnityNode(BaseNode):
                     self.vx = float(parsed.get("vx", 0.0))
                     self.vy = float(parsed.get("vy", 0.0))
                     self.vyaw = float(parsed.get("vyaw", 0.0))
+                    self.body_height = clamp(float(parsed.get("body_height", self.body_height)), BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
             except: pass
 
         # 대시보드 버튼을 통한 수동 조작 우선권 부여
@@ -345,9 +456,11 @@ class Go1UnityNode(BaseNode):
             self.output_data[self.out_vx] = self.vx
             self.output_data[self.out_vy] = self.vy
             self.output_data[self.out_vyaw] = self.vyaw
+            self.output_data[self.out_body_height] = self.body_height
         else:
             self.output_data[self.out_vx] = None
             self.output_data[self.out_vy] = None
             self.output_data[self.out_vyaw] = None
+            self.output_data[self.out_body_height] = None
 
         return self.out_flow

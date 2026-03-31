@@ -21,7 +21,7 @@ import nodes.robots.mt4 as mt4_module
 
 # --- [추가] Go1 연동 ---
 try:
-    from nodes.robots.go1 import go1_dashboard, go1_target_vel, GO1_IP, GO1_PORT
+    from nodes.robots.go1 import go1_dashboard, go1_target_vel
     import nodes.robots.go1 as go1_module
     HAS_GO1 = True
 except ImportError:
@@ -83,7 +83,7 @@ def go1_action_callback(sender, app_data, user_data):
     if not HAS_GO1: return
     cmd_str = user_data
     if go1_module.go1_sock:
-        try: go1_module.go1_sock.sendto(cmd_str.encode(), (GO1_IP, GO1_PORT))
+        try: go1_module.go1_sock.sendto(cmd_str.encode(), (go1_module.GO1_IP, go1_module.GO1_PORT))
         except: pass
 
 def ep_manual_control_callback(sender, app_data, user_data):
@@ -140,7 +140,8 @@ class NodeUIRenderer:
                 node.state['A'] = dpg.is_key_down(dpg.mvKey_A); node.state['D'] = dpg.is_key_down(dpg.mvKey_D)
                 node.state['UP'] = dpg.is_key_down(dpg.mvKey_Up); node.state['DOWN'] = dpg.is_key_down(dpg.mvKey_Down)
                 node.state['LEFT'] = dpg.is_key_down(dpg.mvKey_Left); node.state['RIGHT'] = dpg.is_key_down(dpg.mvKey_Right)
-                node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)            
+                node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)
+                node.state['Z'] = dpg.is_key_down(dpg.mvKey_Z); node.state['X'] = dpg.is_key_down(dpg.mvKey_X)
             elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER"]:
                 for k, fid in getattr(node, 'ui_fields', {}).items():
                     pin_id = node.in_pins[k]
@@ -197,7 +198,10 @@ class NodeUIRenderer:
         elif t == "GO1_ACTION" and hasattr(node, 'combo_act'):
             dpg.set_value(node.combo_act, node.state.get('action', 'Stand Up'))
         elif t == "VIDEO_SRC" and hasattr(node, 'ui_url'):
-            dpg.set_value(node.ui_url, node.state.get('url', 'rtsp://192.168.12.1:8554/live'))
+            default_url = 'rtsp://192.168.12.1:8554/live'
+            if HAS_GO1 and hasattr(go1_module, 'get_go1_rtsp_url'):
+                default_url = go1_module.get_go1_rtsp_url()
+            dpg.set_value(node.ui_url, node.state.get('url', default_url))
             dpg.set_value(node.ui_run, node.state.get('is_running', False))
         elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
             dpg.set_value(node.ui_port, node.state.get('port', 5000))
@@ -409,10 +413,11 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
-                dpg.add_text("WASD: Move / QE: Yaw", color=(255,150,150))
+                dpg.add_text("WASD: Move / QE: Yaw / ZX: Height", color=(255,150,150))
             with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vx")
             with dpg.node_attribute(tag=node.out_vy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vy")
             with dpg.node_attribute(tag=node.out_vyaw, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Yaw")
+            with dpg.node_attribute(tag=node.out_body_height, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Body Height")
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
@@ -424,6 +429,7 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vx")
             with dpg.node_attribute(tag=node.out_vy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vy")
             with dpg.node_attribute(tag=node.out_vyaw, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Yaw")
+            with dpg.node_attribute(tag=node.out_body_height, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Body Height")
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
@@ -437,9 +443,12 @@ class NodeUIRenderer:
 
     @staticmethod
     def _render_video_src(node):
+        default_url = "rtsp://192.168.12.1:8554/live"
+        if HAS_GO1 and hasattr(go1_module, 'get_go1_rtsp_url'):
+            default_url = go1_module.get_go1_rtsp_url()
         with dpg.node(tag=node.node_id, parent="node_editor", label="Video Source"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                node.ui_url = dpg.add_input_text(label="RTSP/Cam", width=150, default_value="rtsp://192.168.12.1:8554/live")
+                node.ui_url = dpg.add_input_text(label="RTSP/Cam", width=150, default_value=default_url)
                 node.ui_run = dpg.add_checkbox(label="Run Stream")
             with dpg.node_attribute(tag=node.out_frame, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Frame Data", color=(255,255,0))
 
