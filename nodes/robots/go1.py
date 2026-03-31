@@ -14,7 +14,7 @@ from core.engine import generate_uuid, PortType, write_log, HwStatus, node_regis
 # ================= [Go1 Globals & Network] =================
 go1_sock = None
 GO1_HOSTNAME = "raspberrypi.local"
-GO1_IP = "192.168.12.1" # Fallback IP
+GO1_IP = "192.168.50.159" # Fallback IP
 GO1_PORT = 8080
 GO1_RTSP_PORT = 8554
 GO1_RTSP_PATH = "live"
