@@ -30,6 +30,7 @@ except ImportError:
 
 # ================= [Unitree SDK Import (Optional)] =================
 current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '..', '..'))
 arch = platform.machine().lower()
 if arch in ['aarch64', 'arm64']:
     sdk_arch = 'arm64'
@@ -38,16 +39,18 @@ elif arch in ['x86_64', 'amd64']:
 else:
     sdk_arch = 'amd64'
 
-sdk_path = os.path.join(current_dir, 'unitree_legged_sdk', 'lib', 'python', sdk_arch)
+sdk_path = os.path.join(project_root, 'unitree_legged_sdk', 'lib', 'python', sdk_arch)
 if os.path.isdir(sdk_path) and sdk_path not in sys.path:
     sys.path.append(sdk_path)
 
 try:
     import robot_interface as sdk
     HAS_UNITREE_SDK = True
+    SDK_IMPORT_ERROR = ""
 except Exception:
     sdk = None
     HAS_UNITREE_SDK = False
+    SDK_IMPORT_ERROR = "robot_interface import failed"
 
 
 # ================= [Go1 Globals] =================
@@ -204,9 +207,12 @@ def init_go1_connection():
         return
     _GO1_IP_INITIALIZED = True
 
-    if sys.stdin and sys.stdin.isatty():
-        GO1_IP = _prompt_go1_ip(GO1_IP)
+    GO1_IP = _prompt_go1_ip(GO1_IP)
     write_log(f"Go1 Target IP: {GO1_IP}")
+    if HAS_UNITREE_SDK:
+        write_log(f"Go1 SDK Ready: {sdk_path}")
+    else:
+        write_log(f"Go1 SDK Missing: {sdk_path} ({SDK_IMPORT_ERROR})")
 
 
 def go1_keepalive_thread():

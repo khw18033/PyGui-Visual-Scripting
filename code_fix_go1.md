@@ -89,3 +89,14 @@
   - `nodes/robots/go1.py` (재구성)
   - `ui/dpg_manager.py` (Go1 UI/동기화 보강)
   - `main.py` (Go1 연결 초기화 단계 추가)
+
+### [2026-03-31 00:00:02] 접속 불가 원인 대응 (SDK 경로/초기 연결 절차 정합)
+- 문제 분석:
+  - `Go1_DS.py`와 달리 SDK 경로 기준점이 `nodes/robots`로 계산되어, `robot_interface` 탐색 경로가 달라질 수 있었음.
+  - Go1 IP 입력 절차가 터미널 상태에 따라 생략되어 실제 장비 IP 대신 기본값으로 고정될 수 있었음.
+- 조치 방안:
+  - Unitree SDK 경로를 프로젝트 루트 기준(`.../unitree_legged_sdk/lib/python/<arch>`)으로 수정.
+  - Go1 IP 확인을 DS와 동일하게 항상 수행하고, 콘솔 미지원 시 `EOF` 처리로 기본값 사용.
+  - 초기화 단계에서 `Go1 SDK Ready/Missing` 로그를 출력해 Simulation fallback 원인을 즉시 확인 가능하게 개선.
+- 수정 파일:
+  - `nodes/robots/go1.py`
