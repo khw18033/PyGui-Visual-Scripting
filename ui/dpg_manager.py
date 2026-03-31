@@ -21,7 +21,10 @@ import nodes.robots.mt4 as mt4_module
 
 # --- [추가] Go1 연동 ---
 try:
-    from nodes.robots.go1 import go1_dashboard, go1_target_vel
+    from nodes.robots.go1 import (
+        go1_dashboard, go1_target_vel, go1_state, go1_node_intent,
+        camera_state, aruco_settings, go1_estop_callback
+    )
     import nodes.robots.go1 as go1_module
     HAS_GO1 = True
 except ImportError:
@@ -142,6 +145,9 @@ class NodeUIRenderer:
                 node.state['LEFT'] = dpg.is_key_down(dpg.mvKey_Left); node.state['RIGHT'] = dpg.is_key_down(dpg.mvKey_Right)
                 node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)
                 node.state['Z'] = dpg.is_key_down(dpg.mvKey_Z); node.state['X'] = dpg.is_key_down(dpg.mvKey_X)
+                node.state['SPACE'] = dpg.is_key_down(dpg.mvKey_Spacebar)
+                node.state['R_pressed'] = dpg.is_key_pressed(dpg.mvKey_R)
+                node.state['C_pressed'] = dpg.is_key_pressed(dpg.mvKey_C)
             elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER"]:
                 for k, fid in getattr(node, 'ui_fields', {}).items():
                     pin_id = node.in_pins[k]
@@ -165,8 +171,13 @@ class NodeUIRenderer:
                 node.state['decel_dist'] = dpg.get_value(node.ui_dist); node.state['stop_delay'] = dpg.get_value(node.ui_dly)
             
             # --- [Vision & Go1] UI -> State ---
-            elif t == "GO1_ACTION" and hasattr(node, 'combo_act'):
-                node.state['action'] = dpg.get_value(node.combo_act)
+            elif t == "GO1_ACTION" and hasattr(node, 'combo_id'):
+                node.state['mode'] = dpg.get_value(node.combo_id)
+                node.state['v1'] = dpg.get_value(node.field_v1)
+            elif t == "GO1_UNITY" and hasattr(node, 'field_ip'):
+                node.state['unity_ip'] = dpg.get_value(node.field_ip)
+                node.state['enable_teleop_rx'] = dpg.get_value(node.chk_enable)
+                node.state['send_aruco'] = dpg.get_value(node.chk_aruco)
             elif t == "EP_ACTION" and hasattr(node, 'combo_act'):
                 node.state['action'] = dpg.get_value(node.combo_act)
             elif t == "VIDEO_SRC" and hasattr(node, 'ui_url'):
@@ -195,8 +206,13 @@ class NodeUIRenderer:
         # --- [Vision & Go1] State -> UI ---
         elif t == "GO1_KEYBOARD" and hasattr(node, 'combo_keys'): 
             dpg.set_value(node.combo_keys, node.state.get('keys', 'WASD'))
-        elif t == "GO1_ACTION" and hasattr(node, 'combo_act'):
-            dpg.set_value(node.combo_act, node.state.get('action', 'Stand Up'))
+        elif t == "GO1_ACTION" and hasattr(node, 'combo_id'):
+            dpg.set_value(node.combo_id, node.state.get('mode', 'Stand'))
+            dpg.set_value(node.field_v1, node.state.get('v1', 0.2))
+        elif t == "GO1_UNITY" and hasattr(node, 'field_ip'):
+            dpg.set_value(node.field_ip, node.state.get('unity_ip', getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246')))
+            dpg.set_value(node.chk_enable, node.state.get('enable_teleop_rx', True))
+            dpg.set_value(node.chk_aruco, node.state.get('send_aruco', False))
         elif t == "VIDEO_SRC" and hasattr(node, 'ui_url'):
             default_url = 'rtsp://192.168.12.1:8554/live'
             if HAS_GO1 and hasattr(go1_module, 'get_go1_rtsp_url'):
@@ -413,7 +429,7 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
-                dpg.add_text("WASD: Move / QE: Yaw / ZX: Height", color=(255,150,150))
+                dpg.add_text("Move / QE: Turn\nZ/X: Body Height +/-\nSpace: Stop / R: Yaw Align / C: Reset Yaw", color=(255,150,150))
             with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vx")
             with dpg.node_attribute(tag=node.out_vy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vy")
             with dpg.node_attribute(tag=node.out_vyaw, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Yaw")
@@ -425,11 +441,17 @@ class NodeUIRenderer:
         with dpg.node(tag=node.node_id, parent="node_editor", label="Unity Logic (Go1)"):
             _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
             with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_text("Unity PC IP", color=(100,255,100))
+                node.field_ip = dpg.add_input_text(width=140, default_value=getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246'))
+                node.chk_enable = dpg.add_checkbox(label="Enable Teleop Rx", default_value=True)
+                node.chk_aruco = dpg.add_checkbox(label="Send ArUco Data (JSON)", default_value=False)
             with dpg.node_attribute(tag=node.data_in_id, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("JSON")
             with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vx")
             with dpg.node_attribute(tag=node.out_vy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vy")
             with dpg.node_attribute(tag=node.out_vyaw, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Yaw")
             with dpg.node_attribute(tag=node.out_body_height, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Body Height")
+            with dpg.node_attribute(tag=node.out_active, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Is Active?")
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
@@ -438,7 +460,14 @@ class NodeUIRenderer:
             _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
             with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                node.combo_act = dpg.add_combo(["Stand Up", "Lie Down", "Walk Mode", "Dance"], default_value="Stand Up", width=120)
+                node.combo_id = dpg.add_combo(
+                    ["Stand", "Reset Yaw0", "Walk Fwd/Back", "Walk Strafe", "Turn", "Sit Down", "Stand Tall", "Set Body Height"],
+                    default_value="Stand",
+                    width=150
+                )
+            with dpg.node_attribute(tag=node.in_val1, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Speed/Val")
+                node.field_v1 = dpg.add_input_float(width=60, default_value=0.2)
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
@@ -491,6 +520,7 @@ def toggle_exec(s, a):
         go1_dashboard['hw_link'] = 'Offline'
         go1_dashboard['unity_link'] = 'Waiting'
         go1_target_vel.update({'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0, 'body_height': 0.0})
+        go1_node_intent.update({'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'stop': True})
 
 def link_cb(s, a): 
     p1_raw, p2_raw = a[0], a[1]
@@ -628,13 +658,40 @@ def __init_ui__():
             # ================= [Go1 Dashboard Tab] =================
             with dpg.tab(label="Go1 Dashboard"):
                 with dpg.group(horizontal=True):
-                    with dpg.child_window(width=250, height=140, border=True):
+                    with dpg.child_window(width=250, height=160, border=True):
                         dpg.add_text("Go1 Status", color=(150,150,150))
                         dpg.add_text("Status: Idle", tag="go1_dash_status", color=(0,255,0))
                         dpg.add_text("HW: Offline", tag="go1_dash_link", color=(255,0,0))
                         dpg.add_text("Unity: Waiting", tag="go1_dash_unity", color=(255,255,0))
                         dpg.add_text("File Cam: Stopped", tag="go1_dash_cam", color=(200,200,200))
+                        dpg.add_text("ArUco: OFF", tag="go1_dash_aruco", color=(200,200,200))
+                        dpg.add_text("Battery: -%", tag="go1_dash_battery", color=(100,255,100))
+                        dpg.add_button(label="[ EMERGENCY STOP ]", width=-1, callback=lambda s,a,u: go1_estop_callback() if HAS_GO1 else None)
                     
+                    with dpg.child_window(width=280, height=160, border=True):
+                        dpg.add_text("Odometry", color=(0,255,255))
+                        dpg.add_text("World X: 0.000", tag="go1_dash_wx")
+                        dpg.add_text("World Z: 0.000", tag="go1_dash_wz")
+                        dpg.add_text("Yaw: 0.000 rad", tag="go1_dash_yaw")
+                        dpg.add_text("Mode: 1 | NONE", tag="go1_dash_reason", color=(200,200,200))
+
+                    with dpg.child_window(width=280, height=160, border=True):
+                        dpg.add_text("Commands", color=(255,200,0))
+                        dpg.add_text("Vx Cmd: 0.00", tag="go1_dash_vx_2")
+                        dpg.add_text("Vy Cmd: 0.00", tag="go1_dash_vy_2")
+                        dpg.add_text("Wz Cmd: 0.00", tag="go1_dash_wz_2")
+                        dpg.add_text("Body H: 0.00", tag="go1_dash_body_h")
+                        dpg.add_text("Latency: 0.0 ms", tag="go1_dash_latency")
+
+                    with dpg.child_window(width=280, height=160, border=True):
+                        dpg.add_text("Network Info", color=(100,200,255))
+                        dpg.add_text("Host IP: Loading...", tag="dash_host_ip", color=(200,200,200))
+                        dpg.add_text("Go1 Target: Loading...", tag="dash_relay_ip", color=(200,200,200))
+                        dpg.add_text("Unity Target: Loading...", tag="dash_unity_ip", color=(200,200,200))
+                        dpg.add_separator()
+                        dpg.add_text("Interfaces: Loading...", tag="dash_net_if", color=(170,170,170))
+
+                with dpg.group(horizontal=True):
                     with dpg.child_window(width=300, height=140, border=True):
                         dpg.add_text("Manual Control", color=(255,200,0))
                         with dpg.group(horizontal=True):
@@ -806,16 +863,43 @@ def start_gui():
 
             dpg.set_value("go1_dash_unity", f"Unity: {go1_dashboard.get('unity_link', 'Waiting')}")
 
-            cam_running = any(
-                n.type_str == "VIDEO_SRC" and bool(n.state.get('is_running', False))
-                for n in node_registry.values()
-            )
-            cam_state = "Running" if cam_running else "Stopped"
+            cam_state = camera_state.get('status', 'Stopped')
             dpg.set_value("go1_dash_cam", f"File Cam: {cam_state}")
             if cam_state == "Running":
                 dpg.configure_item("go1_dash_cam", color=(0,255,0))
             else:
                 dpg.configure_item("go1_dash_cam", color=(200,200,200))
+
+            is_aruco_on = bool(aruco_settings.get('enabled', False)) and cam_state == "Running"
+            if is_aruco_on:
+                dpg.configure_item("go1_dash_aruco", default_value="ArUco: ON (Port 5000)", color=(0,255,255))
+            else:
+                dpg.configure_item("go1_dash_aruco", default_value="ArUco: OFF", color=(200,200,200))
+
+            bat_val = go1_state.get('battery', -1)
+            if bat_val >= 0:
+                dpg.set_value("go1_dash_battery", f"Battery: {bat_val}%")
+            else:
+                dpg.set_value("go1_dash_battery", "Battery: 100% (Sim)")
+
+            dpg.set_value("go1_dash_wx", f"World X: {go1_state.get('world_x', 0.0):.3f}")
+            dpg.set_value("go1_dash_wz", f"World Z: {go1_state.get('world_z', 0.0):.3f}")
+            dpg.set_value("go1_dash_yaw", f"Yaw: {go1_state.get('yaw_unity', 0.0):.3f} rad")
+            dpg.set_value("go1_dash_reason", f"Mode: {go1_state.get('mode', 1)} | {go1_state.get('reason', 'NONE')}")
+            dpg.set_value("go1_dash_vx_2", f"Vx Cmd: {go1_state.get('vx_cmd', 0.0):.2f}")
+            dpg.set_value("go1_dash_vy_2", f"Vy Cmd: {go1_state.get('vy_cmd', 0.0):.2f}")
+            dpg.set_value("go1_dash_wz_2", f"Wz Cmd: {go1_state.get('wz_cmd', 0.0):.2f}")
+            dpg.set_value("go1_dash_body_h", f"Body H: {go1_state.get('body_height_cmd', 0.0):.2f}")
+            dpg.set_value("go1_dash_latency", f"Latency: {go1_state.get('control_latency_ms', 0.0):.1f} ms")
+
+            if dpg.does_item_exist("dash_host_ip"):
+                dpg.set_value("dash_host_ip", f"Host IP: {socket.gethostbyname(socket.gethostname())}")
+            if dpg.does_item_exist("dash_relay_ip"):
+                dpg.set_value("dash_relay_ip", f"Go1 Target: {getattr(go1_module, 'GO1_IP', 'Unknown')}")
+            if dpg.does_item_exist("dash_unity_ip"):
+                dpg.set_value("dash_unity_ip", f"Unity Target: {getattr(go1_module, 'GO1_UNITY_IP', 'Unknown')}")
+            if dpg.does_item_exist("dash_net_if"):
+                dpg.set_value("dash_net_if", f"Interfaces: {sys_net_str.replace(chr(10), ' | ')}")
             
             dpg.set_value("go1_dash_vx", f"Vx: {go1_target_vel['vx']:.2f}")
             dpg.set_value("go1_dash_vy", f"Vy: {go1_target_vel['vy']:.2f}")

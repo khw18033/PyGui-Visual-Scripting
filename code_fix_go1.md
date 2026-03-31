@@ -65,3 +65,27 @@
 - 수정 파일:
   - `nodes/robots/go1.py` (신규 구현)
   - `core/engine.py` (flowless 실행 목록 보완)
+
+### [2026-03-31 00:00:01] Go1_DS.py 수준 완전 이식 보강 (대시보드/연결/UI 동작 동등화)
+- 문제 분석:
+  - 1차 이식 이후 Go1 기능은 동작했지만, `Go1_DS.py` 대비 다음이 부족했음:
+    - Unity IP/Teleop 사용/ArUco 송신 토글 UI 및 상태 반영
+    - 대시보드의 Odometry/Reason/Latency/Battery/ArUco/Network 표시
+    - 키보드 원샷 제어(Stop, Yaw Align, Yaw Reset) 반영
+    - 시작 시 Go1 대상 IP 확인 기반 연결 절차
+- 조치 방안:
+  - `nodes/robots/go1.py`를 DS 제어 흐름 기준으로 재정비:
+    - `go1_node_intent`, `go1_state`, `go1_unity_data`, `aruco_settings`, `camera_state` 추가
+    - `go1_keepalive_thread()`를 Unity timeout/우선순위 제어/이유(reason)/지연(ms) 계산 로직으로 확장
+    - `init_go1_connection()` + 콘솔 IP 확인 절차 추가(비대화형 환경은 기본값 자동 사용)
+    - `go1_estop_callback()` 및 Go1 Action/Keyboard/Unity 노드를 DS 동작 의미와 동일하게 조정
+    - ArUco 감지 데이터 UDP(JSON, port 5008) 송신 연동
+  - `ui/dpg_manager.py` Go1 전용 UI를 DS 형태로 확장:
+    - Go1 Dashboard 패널 확장(상태, 오도메트리, 명령, 네트워크, 배터리, ArUco, E-Stop)
+    - Go1 노드 렌더러 및 상태동기화 확장(`GO1_ACTION`, `GO1_UNITY`, `GO1_KEYBOARD`)
+    - Go1 실행 중지 시 intent/velocity 안전 초기화
+  - `main.py`에 Go1 초기 연결 절차 호출 추가 후 백그라운드 스레드 시작
+- 수정 파일:
+  - `nodes/robots/go1.py` (재구성)
+  - `ui/dpg_manager.py` (Go1 UI/동기화 보강)
+  - `main.py` (Go1 연결 초기화 단계 추가)

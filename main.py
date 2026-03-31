@@ -6,7 +6,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from nodes.robots.mt4 import init_mt4_serial, auto_reconnect_mt4_thread, mt4_background_logger_thread
-from nodes.robots.go1 import go1_keepalive_thread
+from nodes.robots.go1 import go1_keepalive_thread, init_go1_connection
 from nodes.robots.ep01 import init_ep_network, ep_status_thread
 from ui.dpg_manager import start_gui
 
@@ -18,6 +18,7 @@ def main():
     threading.Thread(target=auto_reconnect_mt4_thread, daemon=True).start()
     threading.Thread(target=mt4_background_logger_thread, daemon=True).start()
 
+    init_go1_connection()
     threading.Thread(target=go1_keepalive_thread, daemon=True).start()
 
     init_ep_network()
