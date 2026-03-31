@@ -870,6 +870,7 @@ class VideoSourceNode(BaseNode):
         self.state['folder'] = 'Captured_Images/go1_front'
         self._started = False
         self._last_file = None
+        self._last_frame = None
         self._auto_stopped_by_timer = False
 
     def execute(self):
@@ -893,10 +894,11 @@ class VideoSourceNode(BaseNode):
                 camera_command_queue.append(('STOP', target_ip))
             self._started = False
             self._last_file = None
+            self._last_frame = None
             self.output_data[self.out_frame] = None
             return None
 
-        frame = None
+        frame = self._last_frame
         try:
             files = glob.glob(os.path.join(folder, "*.jpg"))
 
@@ -905,9 +907,12 @@ class VideoSourceNode(BaseNode):
                 target_file = files[-2]
                 if target_file != self._last_file:
                     self._last_file = target_file
-                    frame = cv2.imread(target_file)
+                    loaded = cv2.imread(target_file)
+                    if loaded is not None:
+                        self._last_frame = loaded
+                        frame = loaded
         except Exception:
-            frame = None
+            frame = self._last_frame
 
         self.output_data[self.out_frame] = frame
         return None
@@ -1082,6 +1087,20 @@ class VideoFrameSaveNode(BaseNode):
         self._frame_count = 0
         self._timer_completed_this_run = False
 
+    def _prune_saved_frames(self, folder, max_frames):
+        files = glob.glob(os.path.join(folder, "frame_*.jpg"))
+        if len(files) <= max_frames:
+            return
+        files.sort(key=os.path.getctime)
+        delete_fail_count = 0
+        for old_file in files[:len(files) - max_frames]:
+            try:
+                os.remove(old_file)
+            except Exception as e:
+                delete_fail_count += 1
+                if delete_fail_count == 1:
+                    write_log(f"[VIS_SAVE] MaxFrames 삭제 실패(예시): {old_file} ({e})")
+
     def execute(self):
         global camera_save_state
         
@@ -1122,6 +1141,9 @@ class VideoFrameSaveNode(BaseNode):
                 write_log(f"[VIS_SAVE] 폴더 생성 실패: {e}")
                 return self.out_flow
 
+        if self._save_start_time is not None and not use_timer:
+            self._prune_saved_frames(folder, max_frames)
+
         if self._save_start_time and use_timer and duration > 0:
             elapsed = time.time() - self._save_start_time
             if elapsed > duration:
@@ -1152,17 +1174,7 @@ class VideoFrameSaveNode(BaseNode):
 
                     # 타이머 OFF인 경우 폴더 파일 개수를 max_frames로 제한
                     if not use_timer:
-                        files = glob.glob(os.path.join(folder, "frame_*.jpg"))
-                        if len(files) > max_frames:
-                            files.sort(key=os.path.getctime)
-                            delete_fail_count = 0
-                            for old_file in files[:len(files) - max_frames]:
-                                try:
-                                    os.remove(old_file)
-                                except Exception as e:
-                                    delete_fail_count += 1
-                                    if delete_fail_count == 1:
-                                        write_log(f"[VIS_SAVE] MaxFrames 삭제 실패(예시): {old_file} ({e})")
+                        self._prune_saved_frames(folder, max_frames)
             except Exception as e:
                 write_log(f"[VIS_SAVE] 저장 오류: {e}")
         

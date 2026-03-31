@@ -350,3 +350,27 @@
 - 수정 파일:
   - `nodes/robots/go1.py`
   - `ui/dpg_manager.py`
+
+### [2026-03-31 22:38:37] 최하단 재기록: VIS_SAVE 타이머/강제 STOP 재시작 불능 수정
+- 정정 사유:
+  - 직전 변경 이력이 파일 최하단이 아닌 위치에 기록되어, 문서 누적 규칙(항상 맨 아래 append)을 위반함.
+
+- 핵심 수정 요약:
+  - `core/engine.py`
+    - flowless 자동 실행 목록에서 `VIS_SAVE` 제거 (중복 실행 경로 차단)
+  - `nodes/robots/go1.py`
+    - `VideoSourceNode`에 `_last_frame` 캐시 추가 (프레임 공백 구간에서도 저장 지속)
+    - `VideoFrameSaveNode`에 `_prune_saved_frames()` 추가
+    - Timer OFF에서도 주기적으로 MaxFrames 정리 수행
+  - `ui/dpg_manager.py`
+    - `toggle_exec()`에서 RUN/STOP 전환 시 `VIDEO_SRC`/`VIS_SAVE` 런타임 상태 강제 초기화
+
+- 기대 효과:
+  1. Timer ON에서 저장 시작/완료 반복 로그 및 저장 미진행 현상 완화
+  2. Timer OFF에서 MaxFrames 정리 안정성 향상
+  3. 타이머 중 STOP 후 다음 RUN에서 시작 불가 현상 완화
+
+- 수정 파일:
+  - `core/engine.py`
+  - `nodes/robots/go1.py`
+  - `ui/dpg_manager.py`

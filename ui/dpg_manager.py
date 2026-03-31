@@ -539,11 +539,40 @@ def toggle_exec(s, a):
         for node in node_registry.values():
             if node.type_str == 'VIDEO_SRC' and hasattr(node, '_auto_stopped_by_timer'):
                 node._auto_stopped_by_timer = False
+            if node.type_str == 'VIS_SAVE':
+                if hasattr(node, '_timer_completed_this_run'):
+                    node._timer_completed_this_run = False
+                if hasattr(node, '_save_start_time'):
+                    node._save_start_time = None
+                if hasattr(node, '_frame_count'):
+                    node._frame_count = 0
     if HAS_GO1 and not engine_module.is_running and hasattr(go1_module, 'camera_command_queue'):
         try:
             go1_module.camera_command_queue.append(('STOP', ''))
         except Exception:
             pass
+    if HAS_GO1 and not engine_module.is_running:
+        for node in node_registry.values():
+            if node.type_str == 'VIDEO_SRC':
+                if hasattr(node, '_started'):
+                    node._started = False
+                if hasattr(node, '_last_file'):
+                    node._last_file = None
+                if hasattr(node, '_last_frame'):
+                    node._last_frame = None
+                if hasattr(node, '_auto_stopped_by_timer'):
+                    node._auto_stopped_by_timer = False
+            if node.type_str == 'VIS_SAVE':
+                if hasattr(node, '_save_start_time'):
+                    node._save_start_time = None
+                if hasattr(node, '_frame_count'):
+                    node._frame_count = 0
+                if hasattr(node, '_timer_completed_this_run'):
+                    node._timer_completed_this_run = False
+        if hasattr(go1_module, 'camera_save_state'):
+            go1_module.camera_save_state['status'] = 'Stopped'
+            go1_module.camera_save_state['start_time'] = None
+            go1_module.camera_save_state['frame_count'] = 0
     if HAS_GO1 and not engine_module.is_running:
         go1_dashboard['status'] = 'Idle'
         go1_dashboard['hw_link'] = 'Offline'
