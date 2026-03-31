@@ -183,16 +183,15 @@ class NodeUIRenderer:
             elif t == "VIDEO_SRC" and hasattr(node, 'ui_target_ip'):
                 node.state['target_ip'] = dpg.get_value(node.ui_target_ip)
                 node.state['folder'] = dpg.get_value(node.ui_folder)
-                node.state['duration'] = dpg.get_value(node.ui_duration)
                 node.state['is_running'] = dpg.get_value(node.ui_run)
-                node.state['use_timer'] = dpg.get_value(node.ui_use_timer)
-                node.state['max_frames'] = dpg.get_value(node.ui_max_frames)
             elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
                 node.state['port'] = dpg.get_value(node.ui_port)
                 node.state['is_running'] = dpg.get_value(node.ui_run)
             elif t == "VIS_SAVE" and hasattr(node, 'ui_folder'):
                 node.state['folder'] = dpg.get_value(node.ui_folder)
                 node.state['duration'] = dpg.get_value(node.ui_duration)
+                node.state['use_timer'] = dpg.get_value(node.ui_use_timer)
+                node.state['max_frames'] = dpg.get_value(node.ui_max_frames)
                 node.state['is_saving'] = dpg.get_value(node.ui_is_saving)
 
     @staticmethod
@@ -227,16 +226,15 @@ class NodeUIRenderer:
                 default_target_ip = go1_module.get_local_ip()
             dpg.set_value(node.ui_target_ip, node.state.get('target_ip', default_target_ip))
             dpg.set_value(node.ui_folder, node.state.get('folder', 'Captured_Images/go1_front'))
-            dpg.set_value(node.ui_duration, node.state.get('duration', 10.0))
             dpg.set_value(node.ui_run, node.state.get('is_running', False))
-            dpg.set_value(node.ui_use_timer, node.state.get('use_timer', True))
-            dpg.set_value(node.ui_max_frames, node.state.get('max_frames', 100))
         elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
             dpg.set_value(node.ui_port, node.state.get('port', 5000))
             dpg.set_value(node.ui_run, node.state.get('is_running', False))
         elif t == "VIS_SAVE" and hasattr(node, 'ui_folder'):
             dpg.set_value(node.ui_folder, node.state.get('folder', 'Captured_Images/go1_front'))
             dpg.set_value(node.ui_duration, node.state.get('duration', 10.0))
+            dpg.set_value(node.ui_use_timer, node.state.get('use_timer', True))
+            dpg.set_value(node.ui_max_frames, node.state.get('max_frames', 100))
             dpg.set_value(node.ui_is_saving, node.state.get('is_saving', False))
 
         elif t == "EP_ACTION" and hasattr(node, 'combo_act'): 
@@ -493,9 +491,6 @@ class NodeUIRenderer:
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.ui_target_ip = dpg.add_input_text(label="Target IP", width=150, default_value=default_target_ip)
                 node.ui_folder = dpg.add_input_text(label="Folder", width=180, default_value="Captured_Images/go1_front")
-                node.ui_duration = dpg.add_input_float(label="Duration(s)", width=90, default_value=10.0, step=1.0)
-                node.ui_use_timer = dpg.add_checkbox(label="Use Timer")
-                node.ui_max_frames = dpg.add_input_int(label="Max Frames", width=80, default_value=100, step=10)
                 node.ui_run = dpg.add_checkbox(label="Start Stream")
             with dpg.node_attribute(tag=node.out_frame, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Frame Data", color=(255,255,0))
 
@@ -528,6 +523,8 @@ class NodeUIRenderer:
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_text("Folder:"); node.ui_folder = dpg.add_input_text(width=180, default_value="Captured_Images/go1_front")
                 dpg.add_text("Duration(s):"); node.ui_duration = dpg.add_input_float(width=80, default_value=10.0, step=1.0)
+                node.ui_use_timer = dpg.add_checkbox(label="Use Timer", default_value=True)
+                dpg.add_text("Max Frames:"); node.ui_max_frames = dpg.add_input_int(width=80, default_value=100, step=10)
                 node.ui_is_saving = dpg.add_checkbox(label="Start Saving")
             with dpg.node_attribute(tag=node.out_frame, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Frame Out", color=(255,255,0))
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")

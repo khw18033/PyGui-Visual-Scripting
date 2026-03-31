@@ -274,8 +274,8 @@ class MT4RobotDriver(BaseRobotDriver):
 
 
 class UniversalRobotNode(BaseNode):
-    def __init__(self, node_id, driver): 
-        super().__init__(node_id, "MT4 Driver", "MT4_DRIVER")
+    def __init__(self, node_id, driver, node_label="MT4 Driver", node_type="MT4_DRIVER"):
+        super().__init__(node_id, node_label, node_type)
         self.driver = driver
         self.in_pins = {}; self.setting_pins = {}
 

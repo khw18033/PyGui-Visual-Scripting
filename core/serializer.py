@@ -60,12 +60,19 @@ def load_graph(filename):
             
         id_map = {}
         for n_data in data["nodes"]:
-            node = NodeFactory.create_node(n_data["type"], n_data.get("id"))
+            node_type = n_data["type"]
+            settings = n_data.get("settings", {})
+
+            # 과거 버그로 GO1_DRIVER가 MT4_DRIVER로 저장된 파일을 자동 보정한다.
+            if node_type == "MT4_DRIVER" and any(k in settings for k in ["vx", "vy", "vyaw", "body_height"]):
+                node_type = "GO1_DRIVER"
+
+            node = NodeFactory.create_node(node_type, n_data.get("id"))
             if node:
                 id_map[n_data["id"]] = node.node_id
                 NodeUIRenderer.render(node)
                 set_item_pos_safe(node.node_id, n_data["pos"] if n_data["pos"] else [0,0])
-                node.load_settings(n_data.get("settings", {}))
+                node.load_settings(settings)
                 NodeUIRenderer.sync_state_to_ui(node)
                 
         for l_data in data["links"]:

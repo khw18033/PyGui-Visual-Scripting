@@ -233,3 +233,52 @@
   - `nodes/robots/go1.py` (VideoSourceNode 옵션, camera_worker_thread 자동 종료, VideoFrameSaveNode Flow in)
   - `ui/dpg_manager.py` (_render_video_src UI 개선, sync 메서드 추가)
 
+### [2026-03-31 22:04:37] VideoSave 중심 기능 재배치 + GO1_DRIVER 타입 복구
+- 문제 분석:
+  - 직전 수정에서 타이머/Max Frames 기능이 `Video Source`로 들어가 있었고, 요구사항상 해당 기능은 `Video Save`에 있어야 했음.
+  - `GO1_DRIVER` 노드를 생성해도 내부 클래스(`UniversalRobotNode`)가 타입을 `MT4_DRIVER`로 고정 저장해, 저장/불러오기 후 MT4 Driver로 바뀌는 오류가 발생했음.
+
+- 조치 방안:
+  - `nodes/robots/go1.py`
+    - `VideoSourceNode`에서 다음 항목 제거:
+      - `duration`, `use_timer`, `max_frames`
+      - 타이머 기반 자동 종료/파일 삭제 로직
+    - `VideoSourceNode`는 스트리밍 시작/중지 및 프레임 출력만 담당하도록 단순화.
+    - `VideoFrameSaveNode`에 기능 이관:
+      - `use_timer`(ON/OFF), `max_frames` 상태값 추가
+      - Timer ON: `duration` 경과 시 저장 자동 종료 + `VIDEO_SRC` 자동 정지
+      - Timer OFF: 저장 파일 개수가 `max_frames` 초과 시 오래된 파일부터 삭제
+    - 저장 상태 전환 로직을 정리해 반복 "저장 시작/완료" 로그가 발생하지 않도록 보완.
+    - `camera_worker_thread()`는 스트림 제어 전담으로 복귀(타이머 판단 제거).
+
+  - `ui/dpg_manager.py`
+    - `VIDEO_SRC` UI/동기화에서 `Duration`, `Use Timer`, `Max Frames` 제거.
+    - `VIS_SAVE` UI/동기화에 `Duration`, `Use Timer`, `Max Frames` 추가.
+
+  - `nodes/robots/mt4.py`
+    - `UniversalRobotNode` 생성자에 `node_label`, `node_type` 인자를 추가해 타입 하드코딩(`MT4_DRIVER`) 제거.
+
+  - `core/factory.py`
+    - 드라이버 생성 시 타입 명시:
+      - MT4: `MT4_DRIVER`
+      - Go1: `GO1_DRIVER`
+      - EP: `EP_DRIVER`
+
+  - `core/serializer.py`
+    - 로드 호환성 마이그레이션 추가:
+      - 저장 파일의 타입이 `MT4_DRIVER`여도, 설정 키에 `vx/vy/vyaw/body_height`가 있으면 `GO1_DRIVER`로 자동 보정 후 생성.
+      - 기존에 잘못 저장된 파일도 불러오기 시 자동 복구 가능.
+
+- 기대 효과:
+  1. 타이머/Max Frames 관리 책임이 `Video Save`로 일원화되어 노드 역할이 명확해짐.
+  2. 저장 타이머 완료 시 스트리밍까지 함께 정지되어 실제 운용 흐름과 일치.
+  3. 신규 저장 파일에서 `GO1_DRIVER` 타입이 올바르게 유지됨.
+  4. 과거 잘못 저장된 파일도 로드 시 자동으로 `GO1_DRIVER`로 복원됨.
+
+- 수정 파일:
+  - `nodes/robots/go1.py`
+  - `ui/dpg_manager.py`
+  - `nodes/robots/mt4.py`
+  - `core/factory.py`
+  - `core/serializer.py`
+
