@@ -10,6 +10,7 @@ import cv2
 
 from nodes.base import BaseNode, BaseRobotDriver
 from core.engine import generate_uuid, PortType, write_log, HwStatus, node_registry
+import core.engine as engine_module
 
 # ================= [Go1 Globals & Network] =================
 go1_sock = None
@@ -25,10 +26,11 @@ BODY_HEIGHT_MAX = 0.12
 BODY_HEIGHT_KEY_STEP = 0.005
 
 go1_target_vel = {'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0, 'body_height': 0.0}
-go1_dashboard = {"status": "Idle", "hw_link": HwStatus.OFFLINE}
+go1_dashboard = {"status": "Idle", "hw_link": "Offline", "unity_link": "Waiting"}
 go1_manual_override_until = 0.0 # 수동 제어 우선권 변수
 go1_ip_prompt_done = False
 go1_ip_locked_by_user = False
+go1_unity_last_rx_time = 0.0
 
 
 def clamp(value, min_value, max_value):
@@ -79,8 +81,23 @@ def prompt_go1_ip(default_ip):
         print("[System] 다시 입력해주세요.")
         current_default = candidate
 
+
+def _is_go1_node_active():
+    if not engine_module.is_running:
+        return False
+    try:
+        return any(str(n.type_str).startswith("GO1_") for n in node_registry.values())
+    except Exception:
+        return False
+
+
+def _is_go1_online_link():
+    return "Online" in str(go1_dashboard.get("hw_link", ""))
+
 def init_go1_network():
     global go1_sock, GO1_IP, go1_ip_prompt_done, go1_ip_locked_by_user
+
+    go1_dashboard["hw_link"] = "Connecting..."
 
     if GO1_PROMPT_IP_ON_START and not go1_ip_prompt_done:
         detected_ip = resolve_go1_ip()
@@ -100,24 +117,42 @@ def init_go1_network():
         go1_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         go1_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         go1_sock.settimeout(0.5)
-        go1_dashboard["hw_link"] = HwStatus.ONLINE
+        go1_dashboard["status"] = "Idle"
+        go1_dashboard["hw_link"] = "Online (Listen)"
         write_log(f"Go1: Network UDP Initialized on {GO1_IP}:{GO1_PORT}")
     except Exception as e:
-        go1_dashboard["hw_link"] = HwStatus.OFFLINE
+        go1_dashboard["status"] = "Idle"
+        go1_dashboard["hw_link"] = "Offline"
         write_log(f"Go1 Net Error: {e}")
 
 def go1_keepalive_thread():
+    global go1_sock
     while True:
-        if go1_sock is None or go1_dashboard["hw_link"] != HwStatus.ONLINE:
+        if not engine_module.is_running:
+            go1_dashboard["status"] = "Idle"
+            go1_dashboard["hw_link"] = "Offline"
+            if go1_sock is not None:
+                try:
+                    go1_sock.close()
+                except Exception:
+                    pass
+                go1_sock = None
+            time.sleep(0.5)
+            continue
+
+        if go1_sock is None or not _is_go1_online_link():
             init_go1_network()
 
         if go1_sock:
             try:
                 # Go1 SDK requires constant heartbeat to keep connection alive
                 go1_sock.sendto(b'ping', (GO1_IP, GO1_PORT))
-                go1_dashboard["hw_link"] = HwStatus.ONLINE
+                active = _is_go1_node_active()
+                go1_dashboard["status"] = "Running" if active else "Idle"
+                go1_dashboard["hw_link"] = "Online (Active)" if active else "Online (Listen)"
             except Exception:
-                go1_dashboard["hw_link"] = HwStatus.OFFLINE
+                go1_dashboard["status"] = "Idle"
+                go1_dashboard["hw_link"] = "Offline"
         time.sleep(2.0)
 
 # ================= [Go1 Hardware Nodes] =================
@@ -154,7 +189,7 @@ class Go1RobotDriver(BaseRobotDriver):
         scale = max(0.1, min(float(settings.get('speed_scale', 1.0)), 2.0))
         
         if time.time() - self.last_write_time >= self.write_interval:
-            if go1_sock and go1_dashboard["hw_link"] == HwStatus.ONLINE:
+            if go1_sock and _is_go1_online_link():
                 try:
                     payload = {
                         "type": "cmd",
@@ -166,7 +201,7 @@ class Go1RobotDriver(BaseRobotDriver):
                     go1_sock.sendto(json.dumps(payload).encode(), (GO1_IP, GO1_PORT))
                     self.last_write_time = time.time()
                 except Exception as e:
-                    go1_dashboard["hw_link"] = HwStatus.OFFLINE
+                    go1_dashboard["hw_link"] = "Offline"
         
         return go1_target_vel
 
@@ -476,7 +511,7 @@ class Go1UnityNode(BaseNode):
 
     def execute(self):
         import json
-        global go1_manual_override_until
+        global go1_manual_override_until, go1_unity_last_rx_time
         
         raw_data = self.fetch_input_data(self.data_in_id)
         if raw_data:
@@ -487,7 +522,10 @@ class Go1UnityNode(BaseNode):
                     self.vy = float(parsed.get("vy", 0.0))
                     self.vyaw = float(parsed.get("vyaw", 0.0))
                     self.body_height = clamp(float(parsed.get("body_height", self.body_height)), BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+                    go1_unity_last_rx_time = time.time()
             except: pass
+
+        go1_dashboard["unity_link"] = "Active" if (time.time() - go1_unity_last_rx_time) < 1.0 else "Waiting"
 
         # 대시보드 버튼을 통한 수동 조작 우선권 부여
         is_overridden = time.time() < go1_manual_override_until

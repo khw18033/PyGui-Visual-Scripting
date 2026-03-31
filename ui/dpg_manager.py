@@ -486,6 +486,11 @@ class NodeUIRenderer:
 def toggle_exec(s, a): 
     engine_module.is_running = not engine_module.is_running
     dpg.set_item_label("btn_run", "STOP" if engine_module.is_running else "RUN SCRIPT")
+    if HAS_GO1 and not engine_module.is_running:
+        go1_dashboard['status'] = 'Idle'
+        go1_dashboard['hw_link'] = 'Offline'
+        go1_dashboard['unity_link'] = 'Waiting'
+        go1_target_vel.update({'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0, 'body_height': 0.0})
 
 def link_cb(s, a): 
     p1_raw, p2_raw = a[0], a[1]
@@ -627,7 +632,8 @@ def __init_ui__():
                         dpg.add_text("Go1 Status", color=(150,150,150))
                         dpg.add_text("Status: Idle", tag="go1_dash_status", color=(0,255,0))
                         dpg.add_text("HW: Offline", tag="go1_dash_link", color=(255,0,0))
-                        dpg.add_text("Camera: Node Managed", tag="go1_dash_cam", color=(200,200,200))
+                        dpg.add_text("Unity: Waiting", tag="go1_dash_unity", color=(255,255,0))
+                        dpg.add_text("File Cam: Stopped", tag="go1_dash_cam", color=(200,200,200))
                     
                     with dpg.child_window(width=300, height=140, border=True):
                         dpg.add_text("Manual Control", color=(255,200,0))
@@ -785,13 +791,31 @@ def start_gui():
 
         # --- [추가] Go1 UI Update ---
         if HAS_GO1:
-            go1_link = go1_dashboard.get('hw_link', HwStatus.OFFLINE)
-            if go1_link == HwStatus.ONLINE: 
-                dpg.set_value("go1_dash_link", "HW: Online")
+            go1_status = go1_dashboard.get('status', 'Idle')
+            dpg.set_value("go1_dash_status", f"Status: {go1_status}")
+            dpg.configure_item("go1_dash_status", color=(0,255,0) if go1_status == "Running" else (200,200,200))
+
+            hw_link_str = str(go1_dashboard.get('hw_link', 'Offline'))
+            dpg.set_value("go1_dash_link", f"HW: {hw_link_str}")
+            if "Online" in hw_link_str:
                 dpg.configure_item("go1_dash_link", color=(0,255,0))
-            else: 
-                dpg.set_value("go1_dash_link", "HW: Offline")
+            elif hw_link_str in ["Simulation", "Connecting..."]:
+                dpg.configure_item("go1_dash_link", color=(255,200,0))
+            else:
                 dpg.configure_item("go1_dash_link", color=(255,0,0))
+
+            dpg.set_value("go1_dash_unity", f"Unity: {go1_dashboard.get('unity_link', 'Waiting')}")
+
+            cam_running = any(
+                n.type_str == "VIDEO_SRC" and bool(n.state.get('is_running', False))
+                for n in node_registry.values()
+            )
+            cam_state = "Running" if cam_running else "Stopped"
+            dpg.set_value("go1_dash_cam", f"File Cam: {cam_state}")
+            if cam_state == "Running":
+                dpg.configure_item("go1_dash_cam", color=(0,255,0))
+            else:
+                dpg.configure_item("go1_dash_cam", color=(200,200,200))
             
             dpg.set_value("go1_dash_vx", f"Vx: {go1_target_vel['vx']:.2f}")
             dpg.set_value("go1_dash_vy", f"Vy: {go1_target_vel['vy']:.2f}")
