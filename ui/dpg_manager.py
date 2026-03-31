@@ -183,7 +183,6 @@ class NodeUIRenderer:
             elif t == "VIDEO_SRC" and hasattr(node, 'ui_target_ip'):
                 node.state['target_ip'] = dpg.get_value(node.ui_target_ip)
                 node.state['folder'] = dpg.get_value(node.ui_folder)
-                node.state['is_running'] = dpg.get_value(node.ui_run)
             elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
                 node.state['port'] = dpg.get_value(node.ui_port)
                 node.state['is_running'] = dpg.get_value(node.ui_run)
@@ -192,7 +191,6 @@ class NodeUIRenderer:
                 node.state['duration'] = dpg.get_value(node.ui_duration)
                 node.state['use_timer'] = dpg.get_value(node.ui_use_timer)
                 node.state['max_frames'] = dpg.get_value(node.ui_max_frames)
-                node.state['is_saving'] = dpg.get_value(node.ui_is_saving)
 
     @staticmethod
     def sync_state_to_ui(node):
@@ -226,7 +224,6 @@ class NodeUIRenderer:
                 default_target_ip = go1_module.get_local_ip()
             dpg.set_value(node.ui_target_ip, node.state.get('target_ip', default_target_ip))
             dpg.set_value(node.ui_folder, node.state.get('folder', 'Captured_Images/go1_front'))
-            dpg.set_value(node.ui_run, node.state.get('is_running', False))
         elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
             dpg.set_value(node.ui_port, node.state.get('port', 5000))
             dpg.set_value(node.ui_run, node.state.get('is_running', False))
@@ -235,7 +232,6 @@ class NodeUIRenderer:
             dpg.set_value(node.ui_duration, node.state.get('duration', 10.0))
             dpg.set_value(node.ui_use_timer, node.state.get('use_timer', True))
             dpg.set_value(node.ui_max_frames, node.state.get('max_frames', 100))
-            dpg.set_value(node.ui_is_saving, node.state.get('is_saving', False))
 
         elif t == "EP_ACTION" and hasattr(node, 'combo_act'): 
             dpg.set_value(node.combo_act, node.state.get('action', 'LED Red'))
@@ -491,7 +487,6 @@ class NodeUIRenderer:
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.ui_target_ip = dpg.add_input_text(label="Target IP", width=150, default_value=default_target_ip)
                 node.ui_folder = dpg.add_input_text(label="Folder", width=180, default_value="Captured_Images/go1_front")
-                node.ui_run = dpg.add_checkbox(label="Start Stream")
             with dpg.node_attribute(tag=node.out_frame, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Frame Data", color=(255,255,0))
 
     @staticmethod
@@ -525,7 +520,6 @@ class NodeUIRenderer:
                 dpg.add_text("Duration(s):"); node.ui_duration = dpg.add_input_float(width=80, default_value=10.0, step=1.0)
                 node.ui_use_timer = dpg.add_checkbox(label="Use Timer", default_value=True)
                 dpg.add_text("Max Frames:"); node.ui_max_frames = dpg.add_input_int(width=80, default_value=100, step=10)
-                node.ui_is_saving = dpg.add_checkbox(label="Start Saving")
             with dpg.node_attribute(tag=node.out_frame, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Frame Out", color=(255,255,0))
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
@@ -541,6 +535,15 @@ class NodeUIRenderer:
 def toggle_exec(s, a): 
     engine_module.is_running = not engine_module.is_running
     dpg.set_item_label("btn_run", "STOP" if engine_module.is_running else "RUN SCRIPT")
+    if HAS_GO1 and engine_module.is_running:
+        for node in node_registry.values():
+            if node.type_str == 'VIDEO_SRC' and hasattr(node, '_auto_stopped_by_timer'):
+                node._auto_stopped_by_timer = False
+    if HAS_GO1 and not engine_module.is_running and hasattr(go1_module, 'camera_command_queue'):
+        try:
+            go1_module.camera_command_queue.append(('STOP', ''))
+        except Exception:
+            pass
     if HAS_GO1 and not engine_module.is_running:
         go1_dashboard['status'] = 'Idle'
         go1_dashboard['hw_link'] = 'Offline'

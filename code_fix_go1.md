@@ -282,3 +282,38 @@
   - `core/factory.py`
   - `core/serializer.py`
 
+### [2026-03-31 22:18:18] Run Script/Stop 단일 제어화 + VIS_SAVE 로그 정리
+- 문제 분석:
+  - 타이머 OFF 상태에서 `Max Frames` 정리와 STOP 시 저장 중단이 불안정했던 원인은 `Start Saving` 체크박스 상태(`is_saving`)에 저장 로직이 종속돼 있었기 때문.
+  - `Video Source`도 `Start Stream` 체크박스(`is_running`)를 별도로 사용해, 사용자 의도인 "Run Script/Stop 단일 기준"과 동작이 분리돼 있었음.
+  - `[VIS_SAVE] N개 저장됨` 로그는 실제 파일 개수와 체감 차이가 생겨 오해를 유발함.
+
+- 조치 방안:
+  - `nodes/robots/go1.py`
+    - `VideoSourceNode.execute()` 실행 조건을 `engine_module.is_running`으로 변경.
+    - `VideoFrameSaveNode.execute()` 실행 조건을 `engine_module.is_running`으로 변경.
+    - `VideoFrameSaveNode`에서 `is_saving` 상태 의존 제거.
+    - STOP 전환 시 저장 중단 로그는 유지하되, 프레임 개수 표기는 제거.
+    - 타이머 완료 로그의 프레임 개수 표기 제거.
+    - 10프레임 간격 저장 개수 로그 제거.
+    - 타이머 완료 후 자동 재시작 방지를 위해 `VideoSourceNode._auto_stopped_by_timer` 런타임 플래그 추가.
+      - 타이머 완료 시 `_auto_stopped_by_timer=True`
+      - 다음 `Run Script` 시작 시 플래그 해제하여 재실행 가능
+
+  - `ui/dpg_manager.py`
+    - `VIDEO_SRC`에서 `Start Stream` 체크박스 제거.
+    - `VIS_SAVE`에서 `Start Saving` 체크박스 제거.
+    - `sync_ui_to_state`/`sync_state_to_ui`에서 `VIDEO_SRC.is_running`, `VIS_SAVE.is_saving` 동기화 제거.
+    - `toggle_exec()`에서 STOP 시 카메라 워커에 `('STOP', '')` 명령을 즉시 큐잉해 수신 프로세스가 끊기도록 보강.
+    - `toggle_exec()`에서 RUN 시작 시 타이머 자동정지 플래그를 초기화.
+
+- 기대 효과:
+  1. Start/Stop 기준이 완전히 `Run Script/Stop`으로 통일됨.
+  2. STOP 버튼 즉시 저장/스트리밍 중단 안정성 향상.
+  3. Timer OFF 시 `Max Frames` 정책이 실제 저장 루프에서 일관되게 적용.
+  4. 혼동을 주던 `[VIS_SAVE] 저장 개수` 로그 제거로 로그 가독성 개선.
+
+- 수정 파일:
+  - `nodes/robots/go1.py`
+  - `ui/dpg_manager.py`
+

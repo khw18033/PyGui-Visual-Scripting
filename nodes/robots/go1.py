@@ -868,16 +868,19 @@ class VideoSourceNode(BaseNode):
         self.outputs[self.out_frame] = PortType.DATA
         self.state['target_ip'] = get_local_ip()
         self.state['folder'] = 'Captured_Images/go1_front'
-        self.state['is_running'] = False
         self._started = False
         self._last_file = None
+        self._auto_stopped_by_timer = False
 
     def execute(self):
         if not HAS_CV2:
             camera_state['status'] = 'Stopped'
             return None
 
-        run_flag = bool(self.state.get('is_running', False))
+        if not engine_module.is_running:
+            self._auto_stopped_by_timer = False
+
+        run_flag = bool(engine_module.is_running and not self._auto_stopped_by_timer)
         target_ip = str(self.state.get('target_ip', get_local_ip())).strip() or get_local_ip()
         folder = str(self.state.get('folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
 
@@ -1071,7 +1074,6 @@ class VideoFrameSaveNode(BaseNode):
         self.outputs[self.out_flow] = PortType.FLOW
 
         self.state['folder'] = 'Captured_Images/go1_front'
-        self.state['is_saving'] = False
         self.state['duration'] = 10.0
         self.state['use_timer'] = True
         self.state['max_frames'] = 100
@@ -1084,7 +1086,7 @@ class VideoFrameSaveNode(BaseNode):
         
         frame = self.fetch_input_data(self.in_frame)
         folder = str(self.state.get('folder', 'Captured_Images/go1_front'))
-        is_saving = bool(self.state.get('is_saving', False))
+        is_saving = bool(engine_module.is_running)
         duration = float(self.state.get('duration', 10.0))
         use_timer = bool(self.state.get('use_timer', True))
         max_frames = max(1, int(self.state.get('max_frames', 100)))
@@ -1095,7 +1097,7 @@ class VideoFrameSaveNode(BaseNode):
 
         if not is_saving:
             if self._save_start_time is not None:
-                write_log(f"[VIS_SAVE] 저장 중단: {self._frame_count}개 프레임 저장됨")
+                write_log("[VIS_SAVE] 저장 중단")
                 self._save_start_time = None
                 camera_save_state['status'] = 'Stopped'
                 camera_save_state['start_time'] = None
@@ -1114,14 +1116,12 @@ class VideoFrameSaveNode(BaseNode):
                 write_log(f"[VIS_SAVE] 저장 시작: {folder}")
             except Exception as e:
                 write_log(f"[VIS_SAVE] 폴더 생성 실패: {e}")
-                self.state['is_saving'] = False
                 return self.out_flow
 
         if self._save_start_time and use_timer and duration > 0:
             elapsed = time.time() - self._save_start_time
             if elapsed > duration:
-                self.state['is_saving'] = False
-                write_log(f"[VIS_SAVE] 타이머 완료: {self._frame_count}개 프레임 저장됨")
+                write_log("[VIS_SAVE] 타이머 완료")
                 self._save_start_time = None
                 camera_save_state['status'] = 'Stopped'
                 camera_save_state['start_time'] = None
@@ -1129,7 +1129,9 @@ class VideoFrameSaveNode(BaseNode):
                 # 저장 완료 시 스트리밍도 함께 정지
                 for node in node_registry.values():
                     if node.type_str == 'VIDEO_SRC':
-                        node.state['is_running'] = False
+                        node._started = False
+                        node._auto_stopped_by_timer = True
+                camera_command_queue.append(('STOP', ''))
 
                 self.output_data[self.out_frame] = frame
                 return self.out_flow
@@ -1153,9 +1155,6 @@ class VideoFrameSaveNode(BaseNode):
                                     os.remove(old_file)
                                 except Exception:
                                     pass
-
-                    if self._frame_count % 10 == 0:
-                        write_log(f"[VIS_SAVE] {self._frame_count}개 프레임 저장됨")
             except Exception as e:
                 write_log(f"[VIS_SAVE] 저장 오류: {e}")
         
