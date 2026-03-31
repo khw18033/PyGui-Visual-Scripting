@@ -18,6 +18,7 @@ GO1_IP = "192.168.50.159" # Fallback IP
 GO1_PORT = 8080
 GO1_RTSP_PORT = 8554
 GO1_RTSP_PATH = "live"
+GO1_PROMPT_IP_ON_START = True
 
 BODY_HEIGHT_MIN = -0.12
 BODY_HEIGHT_MAX = 0.12
@@ -26,6 +27,8 @@ BODY_HEIGHT_KEY_STEP = 0.005
 go1_target_vel = {'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0, 'body_height': 0.0}
 go1_dashboard = {"status": "Idle", "hw_link": HwStatus.OFFLINE}
 go1_manual_override_until = 0.0 # 수동 제어 우선권 변수
+go1_ip_prompt_done = False
+go1_ip_locked_by_user = False
 
 
 def clamp(value, min_value, max_value):
@@ -47,10 +50,46 @@ def resolve_go1_ip():
 def get_go1_rtsp_url():
     return f"rtsp://{GO1_IP}:{GO1_RTSP_PORT}/{GO1_RTSP_PATH}"
 
-def init_go1_network():
-    global go1_sock, GO1_IP
 
-    resolve_go1_ip()
+def prompt_go1_ip(default_ip):
+    print("\n" + "=" * 60)
+    print("[System] Go1 본체/릴레이 IP 확인")
+    print("[System] 엔터 입력 시 기본값을 사용합니다.")
+    print("=" * 60)
+
+    current_default = default_ip
+    while True:
+        try:
+            entered = input(f"Go1 IP 입력 [{current_default}]: ").strip()
+        except EOFError:
+            print(f"[System] 콘솔 입력 불가 환경입니다. 기본값({current_default})으로 진행합니다.")
+            return current_default
+
+        candidate = entered if entered else current_default
+        try:
+            socket.inet_aton(candidate)
+        except OSError:
+            print("[System] 잘못된 IP 형식입니다. 예: 192.168.50.42")
+            continue
+
+        confirm = input(f"현재 Go1 본체 IP가 {candidate}가 맞습니까? (y/n): ").strip().lower()
+        if confirm in ['y', 'yes', '']:
+            return candidate
+
+        print("[System] 다시 입력해주세요.")
+        current_default = candidate
+
+def init_go1_network():
+    global go1_sock, GO1_IP, go1_ip_prompt_done, go1_ip_locked_by_user
+
+    if GO1_PROMPT_IP_ON_START and not go1_ip_prompt_done:
+        detected_ip = resolve_go1_ip()
+        GO1_IP = prompt_go1_ip(detected_ip)
+        go1_ip_prompt_done = True
+        go1_ip_locked_by_user = True
+        write_log(f"Go1: User configured IP = {GO1_IP}")
+    elif not go1_ip_locked_by_user:
+        resolve_go1_ip()
 
     try:
         if go1_sock:
