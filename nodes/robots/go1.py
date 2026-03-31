@@ -1,543 +1,592 @@
 import os
 import time
-import socket
 import json
+import socket
 import threading
-from datetime import datetime
-from collections import deque
-import numpy as np
-import cv2
 
 from nodes.base import BaseNode, BaseRobotDriver
-from core.engine import generate_uuid, PortType, write_log, HwStatus, node_registry
+from core.engine import generate_uuid, PortType, write_log, node_registry
 import core.engine as engine_module
 
-# ================= [Go1 Globals & Network] =================
-go1_sock = None
-GO1_HOSTNAME = "raspberrypi.local"
-GO1_IP = "192.168.50.159" # Fallback IP
-GO1_PORT = 8080
-GO1_RTSP_PORT = 8554
-GO1_RTSP_PATH = "live"
-GO1_PROMPT_IP_ON_START = True
+try:
+    import cv2
+    import numpy as np
+    HAS_CV2 = True
+except ImportError:
+    cv2 = None
+    np = None
+    HAS_CV2 = False
 
-BODY_HEIGHT_MIN = -0.12
-BODY_HEIGHT_MAX = 0.12
-BODY_HEIGHT_KEY_STEP = 0.005
-
-go1_target_vel = {'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0, 'body_height': 0.0}
-go1_dashboard = {"status": "Idle", "hw_link": "Offline", "unity_link": "Waiting"}
-go1_manual_override_until = 0.0 # 수동 제어 우선권 변수
-go1_ip_prompt_done = False
-go1_ip_locked_by_user = False
-go1_unity_last_rx_time = 0.0
+try:
+    from flask import Flask, Response
+    HAS_FLASK = True
+except ImportError:
+    Flask = None
+    Response = None
+    HAS_FLASK = False
 
 
-def clamp(value, min_value, max_value):
-    return max(min_value, min(max_value, value))
+# ================= [Go1 Globals] =================
+go1_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+go1_sock.setblocking(False)
+
+GO1_IP = "192.168.12.1"
+GO1_PORT = 8082
+
+GO1_UNITY_IP = "192.168.50.246"
+UNITY_STATE_PORT = 15101
+UNITY_CMD_PORT = 15102
+UNITY_RX_PORT = 15100
+
+V_MAX = 0.8
+S_MAX = 0.8
+W_MAX = 2.5
+
+GO1_SEND_INTERVAL = 0.05  # 20Hz
+UNITY_TIMEOUT = 0.2
+
+go1_target_vel = {
+    'vx': 0.0,
+    'vy': 0.0,
+    'vyaw': 0.0,
+    'body_height': 0.0,
+}
+
+go1_unity_data = {
+    'vx': 0.0,
+    'vy': 0.0,
+    'wz': 0.0,
+    'body_height': 0.0,
+    'estop': 0,
+    'active': False,
+    'last_rx': 0.0,
+}
+
+go1_dashboard = {
+    "status": "Idle",
+    "hw_link": "Offline",
+    "unity_link": "Waiting",
+}
 
 
-def resolve_go1_ip():
-    global GO1_IP
-    try:
-        resolved_ip = socket.gethostbyname(GO1_HOSTNAME)
-        if resolved_ip and resolved_ip != GO1_IP:
-            write_log(f"Go1: Resolved '{GO1_HOSTNAME}' to {resolved_ip}")
-        GO1_IP = resolved_ip
-    except Exception:
-        write_log(f"Go1: Hostname resolve failed, using fallback IP {GO1_IP}")
-    return GO1_IP
+def _clamp(v, lo, hi):
+    return lo if v < lo else hi if v > hi else v
+
+
+def _has_go1_nodes():
+    return any(n.type_str.startswith("GO1_") for n in node_registry.values())
 
 
 def get_go1_rtsp_url():
-    return f"rtsp://{GO1_IP}:{GO1_RTSP_PORT}/{GO1_RTSP_PATH}"
+    return f"rtsp://{GO1_IP}:8554/live"
 
 
-def prompt_go1_ip(default_ip):
-    print("\n" + "=" * 60)
-    print("[System] Go1 본체/릴레이 IP 확인")
-    print("[System] 엔터 입력 시 기본값을 사용합니다.")
-    print("=" * 60)
-
-    current_default = default_ip
-    while True:
-        try:
-            entered = input(f"Go1 IP 입력 [{current_default}]: ").strip()
-        except EOFError:
-            print(f"[System] 콘솔 입력 불가 환경입니다. 기본값({current_default})으로 진행합니다.")
-            return current_default
-
-        candidate = entered if entered else current_default
-        try:
-            socket.inet_aton(candidate)
-        except OSError:
-            print("[System] 잘못된 IP 형식입니다. 예: 192.168.50.42")
-            continue
-
-        confirm = input(f"현재 Go1 본체 IP가 {candidate}가 맞습니까? (y/n): ").strip().lower()
-        if confirm in ['y', 'yes', '']:
-            return candidate
-
-        print("[System] 다시 입력해주세요.")
-        current_default = candidate
+def _build_drive_packet(vx, vy, vyaw, body_height):
+    return f"cmd_vel {vx:.3f} {vy:.3f} {vyaw:.3f} {body_height:.3f}"
 
 
-def _is_go1_node_active():
-    if not engine_module.is_running:
-        return False
+def _send_go1_command(cmd_str):
     try:
-        return any(str(n.type_str).startswith("GO1_") for n in node_registry.values())
+        go1_sock.sendto(cmd_str.encode('utf-8'), (GO1_IP, GO1_PORT))
+        return True
     except Exception:
         return False
 
 
-def _is_go1_online_link():
-    return "Online" in str(go1_dashboard.get("hw_link", ""))
-
-def init_go1_network():
-    global go1_sock, GO1_IP, go1_ip_prompt_done, go1_ip_locked_by_user
-
-    go1_dashboard["hw_link"] = "Connecting..."
-
-    if GO1_PROMPT_IP_ON_START and not go1_ip_prompt_done:
-        detected_ip = resolve_go1_ip()
-        GO1_IP = prompt_go1_ip(detected_ip)
-        go1_ip_prompt_done = True
-        go1_ip_locked_by_user = True
-        write_log(f"Go1: User configured IP = {GO1_IP}")
-    elif not go1_ip_locked_by_user:
-        resolve_go1_ip()
-
-    try:
-        if go1_sock:
-            try:
-                go1_sock.close()
-            except Exception:
-                pass
-        go1_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        go1_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        go1_sock.settimeout(0.5)
-        go1_dashboard["status"] = "Idle"
-        go1_dashboard["hw_link"] = "Online (Listen)"
-        write_log(f"Go1: Network UDP Initialized on {GO1_IP}:{GO1_PORT}")
-    except Exception as e:
-        go1_dashboard["status"] = "Idle"
-        go1_dashboard["hw_link"] = "Offline"
-        write_log(f"Go1 Net Error: {e}")
-
 def go1_keepalive_thread():
-    global go1_sock
+    sock_rx_unity = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock_rx_unity.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock_rx_unity.bind(("0.0.0.0", UNITY_RX_PORT))
+        sock_rx_unity.setblocking(False)
+    except Exception:
+        pass
+
+    sock_tx_state = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock_tx_cmd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    seq = 0
+    world_x = 0.0
+    world_z = 0.0
+    last_time = time.monotonic()
+
     while True:
-        if not engine_module.is_running:
-            go1_dashboard["status"] = "Idle"
-            go1_dashboard["hw_link"] = "Offline"
-            if go1_sock is not None:
-                try:
-                    go1_sock.close()
-                except Exception:
-                    pass
-                go1_sock = None
-            time.sleep(0.5)
-            continue
+        now = time.monotonic()
+        dt = max(1e-3, now - last_time)
+        last_time = now
 
-        if go1_sock is None or not _is_go1_online_link():
-            init_go1_network()
-
-        if go1_sock:
+        while True:
             try:
-                # Go1 SDK requires constant heartbeat to keep connection alive
-                go1_sock.sendto(b'ping', (GO1_IP, GO1_PORT))
-                active = _is_go1_node_active()
-                go1_dashboard["status"] = "Running" if active else "Idle"
-                go1_dashboard["hw_link"] = "Online (Active)" if active else "Online (Listen)"
+                raw, _ = sock_rx_unity.recvfrom(512)
             except Exception:
-                go1_dashboard["status"] = "Idle"
-                go1_dashboard["hw_link"] = "Offline"
-        time.sleep(2.0)
-
-# ================= [Go1 Hardware Nodes] =================
-
-class Go1RobotDriver(BaseRobotDriver):
-    def __init__(self): 
-        self.last_write_time = 0
-        self.write_interval = 0.05 # 20Hz 제한
-
-    def get_ui_schema(self): 
-        return [
-            ('vx', "Vx (F/B)", 0.0),
-            ('vy', "Vy (L/R)", 0.0),
-            ('vyaw', "Yaw (Turn)", 0.0),
-            ('body_height', "Body Height", 0.0),
-        ]
-        
-    def get_settings_schema(self): 
-        return [('speed_scale', "Speed", 1.0)]
-    
-    def execute_command(self, inputs, settings):
-        global go1_target_vel, go1_sock
-        
-        for key, _, _ in self.get_ui_schema():
-            val = inputs.get(key)
-            if val is None:
+                break
+            try:
+                parts = raw.decode('utf-8', errors='ignore').strip().split()
+                if len(parts) >= 4:
+                    go1_unity_data['vx'] = float(parts[0])
+                    go1_unity_data['vy'] = float(parts[1])
+                    go1_unity_data['wz'] = float(parts[2])
+                    go1_unity_data['estop'] = int(parts[3])
+                    if len(parts) >= 5:
+                        go1_unity_data['body_height'] = float(parts[4])
+                    go1_unity_data['last_rx'] = now
+            except Exception:
                 continue
-            parsed = float(val)
-            if key == 'body_height':
-                parsed = clamp(parsed, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
-            if abs(parsed - go1_target_vel.get(key, 0.0)) > 0.001:
-                go1_target_vel[key] = parsed
 
-        scale = max(0.1, min(float(settings.get('speed_scale', 1.0)), 2.0))
-        
-        if time.time() - self.last_write_time >= self.write_interval:
-            if go1_sock and _is_go1_online_link():
-                try:
-                    payload = {
-                        "type": "cmd",
-                        "vx": go1_target_vel['vx'] * scale,
-                        "vy": go1_target_vel['vy'] * scale,
-                        "vyaw": go1_target_vel['vyaw'] * scale,
-                        "body_height": clamp(go1_target_vel.get('body_height', 0.0), BODY_HEIGHT_MIN, BODY_HEIGHT_MAX),
-                    }
-                    go1_sock.sendto(json.dumps(payload).encode(), (GO1_IP, GO1_PORT))
-                    self.last_write_time = time.time()
-                except Exception as e:
-                    go1_dashboard["hw_link"] = "Offline"
-        
-        return go1_target_vel
+        go1_unity_data['active'] = (now - go1_unity_data.get('last_rx', 0.0)) <= UNITY_TIMEOUT
+        go1_dashboard['unity_link'] = "Active" if go1_unity_data['active'] else "Waiting"
+
+        use_unity = go1_unity_data['active'] and go1_unity_data.get('estop', 0) == 0
+        if use_unity:
+            tx = _clamp(float(go1_unity_data['vx']), -V_MAX, V_MAX)
+            ty = _clamp(float(go1_unity_data['vy']), -S_MAX, S_MAX)
+            tz = _clamp(float(go1_unity_data['wz']), -W_MAX, W_MAX)
+            bh = _clamp(float(go1_unity_data.get('body_height', go1_target_vel['body_height'])), -0.12, 0.12)
+            go1_target_vel.update({'vx': tx, 'vy': ty, 'vyaw': tz, 'body_height': bh})
+
+        running = bool(engine_module.is_running)
+        active_nodes = _has_go1_nodes()
+
+        vx = _clamp(float(go1_target_vel['vx']), -V_MAX, V_MAX) if (running and active_nodes) else 0.0
+        vy = _clamp(float(go1_target_vel['vy']), -S_MAX, S_MAX) if (running and active_nodes) else 0.0
+        vyaw = _clamp(float(go1_target_vel['vyaw']), -W_MAX, W_MAX) if (running and active_nodes) else 0.0
+        body_height = _clamp(float(go1_target_vel['body_height']), -0.12, 0.12)
+
+        sent = _send_go1_command(_build_drive_packet(vx, vy, vyaw, body_height))
+        go1_dashboard['hw_link'] = "Online" if sent else "Offline"
+
+        if running and active_nodes and (abs(vx) > 1e-4 or abs(vy) > 1e-4 or abs(vyaw) > 1e-4):
+            go1_dashboard['status'] = "Running"
+        else:
+            go1_dashboard['status'] = "Idle"
+
+        world_x += vx * dt
+        world_z += vy * dt
+
+        seq += 1
+        estop = 1 if (abs(vx) < 1e-6 and abs(vy) < 1e-6 and abs(vyaw) < 1e-6) else 0
+        state_msg = (
+            f"{seq} {time.time() * 1000.0:.1f} {world_x:.6f} {world_z:.6f} "
+            f"{vyaw:.6f} {vx:.3f} {vy:.3f} {vyaw:.3f} {estop} 2"
+        )
+        cmd_msg = f"{vx:.3f} {vy:.3f} {vyaw:.3f} {estop}"
+
+        try:
+            sock_tx_state.sendto(state_msg.encode('utf-8'), (GO1_UNITY_IP, UNITY_STATE_PORT))
+            sock_tx_cmd.sendto(cmd_msg.encode('utf-8'), (GO1_UNITY_IP, UNITY_CMD_PORT))
+        except Exception:
+            pass
+
+        time.sleep(GO1_SEND_INTERVAL)
+
+
+# ================= [Go1 Driver/Control Nodes] =================
+class Go1RobotDriver(BaseRobotDriver):
+    def __init__(self):
+        self.last_write_time = 0.0
+        self.write_interval = GO1_SEND_INTERVAL
+
+    def get_ui_schema(self):
+        return [
+            ('vx', "Vx In", 0.0),
+            ('vy', "Vy In", 0.0),
+            ('vyaw', "Yaw In", 0.0),
+            ('body_height', "BodyH", 0.0),
+        ]
+
+    def get_settings_schema(self):
+        return [
+            ('speed_scale', "Speed", 1.0),
+        ]
+
+    def execute_command(self, inputs, settings):
+        scale = max(0.0, float(settings.get('speed_scale', 1.0)))
+
+        if inputs.get('vx') is not None:
+            go1_target_vel['vx'] = _clamp(float(inputs['vx']) * scale, -V_MAX, V_MAX)
+        if inputs.get('vy') is not None:
+            go1_target_vel['vy'] = _clamp(float(inputs['vy']) * scale, -S_MAX, S_MAX)
+        if inputs.get('vyaw') is not None:
+            go1_target_vel['vyaw'] = _clamp(float(inputs['vyaw']) * scale, -W_MAX, W_MAX)
+        if inputs.get('body_height') is not None:
+            go1_target_vel['body_height'] = _clamp(float(inputs['body_height']), -0.12, 0.12)
+
+        return dict(go1_target_vel)
 
 
 class Go1ActionNode(BaseNode):
-    def __init__(self, node_id): 
+    def __init__(self, node_id):
         super().__init__(node_id, "Go1 Action", "GO1_ACTION")
-        self.in_flow = generate_uuid(); self.inputs[self.in_flow] = PortType.FLOW
-        self.out_flow = generate_uuid(); self.outputs[self.out_flow] = PortType.FLOW
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
         self.state['action'] = "Stand Up"
-        
+
     def execute(self):
-        global go1_sock
-        action = self.state.get("action", "Stand Up")
-        
-        cmd_str = ""
-        if action == "Stand Up": cmd_str = "stand"
-        elif action == "Lie Down": cmd_str = "down"
-        elif action == "Walk Mode": cmd_str = "walk"
-        elif action == "Dance": cmd_str = "dance"
-        
-        if cmd_str and go1_sock:
-            try: go1_sock.sendto(cmd_str.encode(), (GO1_IP, GO1_PORT))
-            except: pass
-            write_log(f"Go1 Action: {action}")
-            
+        action = self.state.get('action', 'Stand Up')
+
+        if action == "Stand Up":
+            _send_go1_command("stand")
+        elif action == "Lie Down":
+            _send_go1_command("down")
+            go1_target_vel.update({'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0})
+        elif action == "Walk Mode":
+            _send_go1_command("walk")
+        elif action == "Dance":
+            _send_go1_command("dance")
+
+        write_log(f"Go1 Action: {action}")
         return self.out_flow
 
 
-# ================= [Vision Nodes (SRP Applied)] =================
+class Go1KeyboardNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Keyboard (Go1)", "GO1_KEYBOARD")
+        self.out_vx = generate_uuid()
+        self.outputs[self.out_vx] = PortType.DATA
+        self.out_vy = generate_uuid()
+        self.outputs[self.out_vy] = PortType.DATA
+        self.out_vyaw = generate_uuid()
+        self.outputs[self.out_vyaw] = PortType.DATA
+        self.out_body_height = generate_uuid()
+        self.outputs[self.out_body_height] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.step_v = 0.2
+        self.step_yaw = 0.4
+        self.step_body_h = 0.01
+        self.cooldown = 0.05
+        self.last_input_time = 0.0
+
+    def execute(self):
+        if self.state.get('is_focused', False):
+            return self.out_flow
+
+        now = time.time()
+        if now - self.last_input_time > self.cooldown:
+            vx = 0.0
+            vy = 0.0
+            vyaw = 0.0
+
+            key_mode = self.state.get("keys", "WASD")
+            if key_mode == "WASD":
+                if self.state.get("W"):
+                    vx = self.step_v
+                if self.state.get("S"):
+                    vx = -self.step_v
+                if self.state.get("A"):
+                    vy = self.step_v
+                if self.state.get("D"):
+                    vy = -self.step_v
+            else:
+                if self.state.get("UP"):
+                    vx = self.step_v
+                if self.state.get("DOWN"):
+                    vx = -self.step_v
+                if self.state.get("LEFT"):
+                    vy = self.step_v
+                if self.state.get("RIGHT"):
+                    vy = -self.step_v
+
+            if self.state.get("Q"):
+                vyaw = self.step_yaw
+            if self.state.get("E"):
+                vyaw = -self.step_yaw
+
+            if self.state.get("Z"):
+                go1_target_vel['body_height'] = _clamp(go1_target_vel['body_height'] + self.step_body_h, -0.12, 0.12)
+            if self.state.get("X"):
+                go1_target_vel['body_height'] = _clamp(go1_target_vel['body_height'] - self.step_body_h, -0.12, 0.12)
+
+            if vx != 0.0 or vy != 0.0 or vyaw != 0.0:
+                go1_target_vel['vx'] = vx
+                go1_target_vel['vy'] = vy
+                go1_target_vel['vyaw'] = vyaw
+                self.last_input_time = now
+
+        self.output_data[self.out_vx] = go1_target_vel['vx']
+        self.output_data[self.out_vy] = go1_target_vel['vy']
+        self.output_data[self.out_vyaw] = go1_target_vel['vyaw']
+        self.output_data[self.out_body_height] = go1_target_vel['body_height']
+        return self.out_flow
+
+
+class Go1UnityNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Unity Logic (Go1)", "GO1_UNITY")
+        self.data_in_id = generate_uuid()
+        self.inputs[self.data_in_id] = PortType.DATA
+        self.out_vx = generate_uuid()
+        self.outputs[self.out_vx] = PortType.DATA
+        self.out_vy = generate_uuid()
+        self.outputs[self.out_vy] = PortType.DATA
+        self.out_vyaw = generate_uuid()
+        self.outputs[self.out_vyaw] = PortType.DATA
+        self.out_body_height = generate_uuid()
+        self.outputs[self.out_body_height] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.last_processed_json = ""
+
+    def execute(self):
+        raw_json = self.fetch_input_data(self.data_in_id)
+
+        if raw_json and raw_json != self.last_processed_json:
+            self.last_processed_json = raw_json
+            try:
+                payload = json.loads(raw_json)
+                go1_unity_data['vx'] = float(payload.get('vx', go1_unity_data['vx']))
+                go1_unity_data['vy'] = float(payload.get('vy', go1_unity_data['vy']))
+                go1_unity_data['wz'] = float(payload.get('wz', go1_unity_data['wz']))
+                go1_unity_data['estop'] = int(payload.get('estop', go1_unity_data['estop']))
+                go1_unity_data['body_height'] = float(payload.get('body_height', go1_unity_data['body_height']))
+                go1_unity_data['last_rx'] = time.monotonic()
+            except Exception as e:
+                write_log(f"Go1 Unity JSON Error: {e}")
+
+        self.output_data[self.out_vx] = go1_unity_data['vx']
+        self.output_data[self.out_vy] = go1_unity_data['vy']
+        self.output_data[self.out_vyaw] = go1_unity_data['wz']
+        self.output_data[self.out_body_height] = go1_unity_data.get('body_height', 0.0)
+        return self.out_flow
+
+
+# ================= [Vision Nodes] =================
+_default_camera_matrix = None
+_default_dist_coeffs = None
+if HAS_CV2:
+    try:
+        calib_dir = "Calib_data"
+        _default_camera_matrix = np.load(os.path.join(calib_dir, "K1.npy"))
+        _default_dist_coeffs = np.load(os.path.join(calib_dir, "D1.npy"))
+    except Exception:
+        _default_camera_matrix = np.array([[640.0, 0.0, 320.0], [0.0, 640.0, 240.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+        _default_dist_coeffs = np.zeros((4, 1), dtype=np.float32)
+
+_aruco_dict = None
+_aruco_detector = None
+if HAS_CV2 and hasattr(cv2, 'aruco'):
+    try:
+        _aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        _aruco_detector = cv2.aruco.ArucoDetector(_aruco_dict, cv2.aruco.DetectorParameters())
+    except Exception:
+        _aruco_dict = None
+        _aruco_detector = None
+
 
 class VideoSourceNode(BaseNode):
     def __init__(self, node_id):
-        super().__init__(node_id, "Video Source (RTSP/Webcam)", "VIDEO_SRC")
-        self.out_frame = generate_uuid(); self.outputs[self.out_frame] = PortType.DATA
+        super().__init__(node_id, "Video Source", "VIDEO_SRC")
+        self.out_frame = generate_uuid()
+        self.outputs[self.out_frame] = PortType.DATA
+
         self.state['url'] = get_go1_rtsp_url()
         self.state['is_running'] = False
-        self.state['auto_go1_url'] = True
-        
-        self.cap = None
-        self.latest_frame = None
-        self.thread = None
-        self.active_source = None
 
-    def _open_capture(self):
-        raw_url = str(self.state.get('url', '')).strip()
-        auto_mode = bool(self.state.get('auto_go1_url', True))
+        self._cap = None
+        self._thread = None
+        self._lock = threading.Lock()
+        self._latest_frame = None
+        self._running = False
+        self._opened_url = ""
 
-        candidates = []
-        if raw_url:
-            candidates.append(raw_url)
-        if auto_mode:
-            candidates.extend([
-                get_go1_rtsp_url(),
-                f"rtsp://{GO1_IP}:{GO1_RTSP_PORT}/stream",
-                "rtsp://192.168.12.1:8554/live",
-            ])
-
-        # 중복 제거
-        seen = set()
-        deduped_candidates = []
-        for item in candidates:
-            if item not in seen:
-                seen.add(item)
-                deduped_candidates.append(item)
-
-        for src in deduped_candidates:
-            cap = cv2.VideoCapture(src)
-            if cap and cap.isOpened():
-                self.cap = cap
-                self.active_source = src
-                write_log(f"Video Source Connected: {src}")
-                return True
-            if cap:
-                cap.release()
-
-        self.cap = None
-        self.active_source = None
-        return False
-        
-    def _read_frames(self):
-        fail_count = 0
-        while self.state.get('is_running', False):
-            if self.cap and self.cap.isOpened():
-                ret, frame = self.cap.read()
-                if ret:
-                    self.latest_frame = frame
-                    fail_count = 0
-                else:
-                    fail_count += 1
-                    time.sleep(0.1)
+    def _reader_loop(self):
+        while self._running:
+            if not self._cap:
+                time.sleep(0.05)
+                continue
+            ok, frame = self._cap.read()
+            if ok:
+                with self._lock:
+                    self._latest_frame = frame
             else:
-                fail_count += 1
-                time.sleep(0.2)
+                time.sleep(0.05)
 
-            if fail_count >= 5 and self.state.get('is_running', False):
-                if self.cap:
-                    self.cap.release()
-                self.cap = None
-                if not self._open_capture():
-                    time.sleep(0.5)
-                fail_count = 0
-            
+    def _start_capture(self, url):
+        if not HAS_CV2:
+            return
+        if self._cap is not None:
+            try:
+                self._cap.release()
+            except Exception:
+                pass
+
+        if str(url).isdigit():
+            self._cap = cv2.VideoCapture(int(url))
+        else:
+            self._cap = cv2.VideoCapture(url)
+        self._opened_url = str(url)
+
+        if self._thread is None or not self._thread.is_alive():
+            self._running = True
+            self._thread = threading.Thread(target=self._reader_loop, daemon=True)
+            self._thread.start()
+
+    def _stop_capture(self):
+        self._running = False
+        if self._cap is not None:
+            try:
+                self._cap.release()
+            except Exception:
+                pass
+            self._cap = None
+
     def execute(self):
-        current_url = self.state.get('url', "")
-        should_run = self.state.get('is_running', False)
+        if not HAS_CV2:
+            return None
 
-        if self.state.get('auto_go1_url', True) and (not current_url or current_url.startswith('rtsp://')):
-            self.state['url'] = get_go1_rtsp_url()
-            current_url = self.state['url']
-        
-        # Thread Management
-        if should_run and (self.thread is None or not self.thread.is_alive()):
-            self._open_capture()
-            self.thread = threading.Thread(target=self._read_frames, daemon=True)
-            self.thread.start()
-            write_log(f"Video Source Started: {current_url}")
-            
-        elif not should_run and self.thread is not None:
-            if self.cap:
-                self.cap.release()
-            self.cap = None
-            self.thread = None
-            self.latest_frame = None
-            self.active_source = None
-            write_log("Video Source Stopped")
-            
-        # Push numpy array to Data Pin
-        self.output_data[self.out_frame] = self.latest_frame
+        run_flag = bool(self.state.get('is_running', False))
+        url = str(self.state.get('url', get_go1_rtsp_url()))
+
+        if run_flag:
+            if self._cap is None or self._opened_url != url:
+                self._start_capture(url)
+        else:
+            self._stop_capture()
+            self.output_data[self.out_frame] = None
+            return None
+
+        with self._lock:
+            frame = self._latest_frame.copy() if self._latest_frame is not None else None
+
+        self.output_data[self.out_frame] = frame
         return None
 
 
 class FisheyeUndistortNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Fisheye Undistort", "VIS_FISHEYE")
-        self.in_frame = generate_uuid(); self.inputs[self.in_frame] = PortType.DATA
-        self.out_frame = generate_uuid(); self.outputs[self.out_frame] = PortType.DATA
-        
-        self.K = None
-        self.D = None
-        self.map1, self.map2 = None, None
-        
-        # Load matrices if exist
-        try:
-            calib_dir = "Calib_data"
-            self.K = np.load(os.path.join(calib_dir, "K1.npy"))
-            self.D = np.load(os.path.join(calib_dir, "D1.npy"))
-        except: pass
+        self.in_frame = generate_uuid()
+        self.inputs[self.in_frame] = PortType.DATA
+        self.out_frame = generate_uuid()
+        self.outputs[self.out_frame] = PortType.DATA
 
     def execute(self):
         frame = self.fetch_input_data(self.in_frame)
-        if frame is not None and self.K is not None:
-            if self.map1 is None:
-                h, w = frame.shape[:2]
-                new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(self.K, self.D, (w, h), np.eye(3), balance=1.0)
-                self.map1, self.map2 = cv2.fisheye.initUndistortRectifyMap(self.K, self.D, np.eye(3), new_K, (w, h), cv2.CV_16SC2)
-            
-            undistorted = cv2.remap(frame, self.map1, self.map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+        if frame is None or not HAS_CV2:
+            return None
+
+        try:
+            undistorted = cv2.fisheye.undistortImage(
+                frame,
+                _default_camera_matrix,
+                _default_dist_coeffs,
+                Knew=_default_camera_matrix,
+            )
             self.output_data[self.out_frame] = undistorted
-        else:
-            self.output_data[self.out_frame] = frame # Pass-through if no calib data
+        except Exception:
+            self.output_data[self.out_frame] = frame
         return None
 
 
 class ArUcoDetectNode(BaseNode):
     def __init__(self, node_id):
-        super().__init__(node_id, "ArUco Detect (V4/V5)", "VIS_ARUCO")
-        self.in_frame = generate_uuid(); self.inputs[self.in_frame] = PortType.DATA
-        self.out_frame = generate_uuid(); self.outputs[self.out_frame] = PortType.DATA
-        self.out_data = generate_uuid(); self.outputs[self.out_data] = PortType.DATA # JSON/Dict info
-        
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-        self.parameters = cv2.aruco.DetectorParameters()
-        self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.parameters)
+        super().__init__(node_id, "ArUco Detect", "VIS_ARUCO")
+        self.in_frame = generate_uuid()
+        self.inputs[self.in_frame] = PortType.DATA
+        self.out_frame = generate_uuid()
+        self.outputs[self.out_frame] = PortType.DATA
+        self.out_data = generate_uuid()
+        self.outputs[self.out_data] = PortType.DATA
 
     def execute(self):
         frame = self.fetch_input_data(self.in_frame)
-        if frame is None:
-            self.output_data[self.out_frame] = None
-            self.output_data[self.out_data] = None
+        if frame is None or not HAS_CV2 or _aruco_detector is None:
+            self.output_data[self.out_frame] = frame
+            self.output_data[self.out_data] = []
             return None
-            
-        process_frame = frame.copy()
-        gray = cv2.cvtColor(process_frame, cv2.COLOR_BGR2GRAY)
-        corners, ids, _ = self.detector.detectMarkers(gray)
-        
-        detected_info = []
-        if ids is not None:
-            cv2.aruco.drawDetectedMarkers(process_frame, corners, ids)
-            for i in range(len(ids)):
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        corners, ids, _ = _aruco_detector.detectMarkers(gray)
+
+        detected = []
+        draw = frame.copy()
+
+        if ids is not None and len(ids) > 0:
+            try:
+                cv2.aruco.drawDetectedMarkers(draw, corners, ids)
+            except Exception:
+                pass
+
+            for i, marker_id in enumerate(ids.flatten()):
                 c = corners[i][0]
-                cx = int((c[0][0] + c[2][0]) / 2)
-                cy = int((c[0][1] + c[2][1]) / 2)
-                cv2.circle(process_frame, (cx, cy), 5, (0, 0, 255), -1)
-                detected_info.append({"id": int(ids[i][0]), "cx": cx, "cy": cy})
-                
-        self.output_data[self.out_frame] = process_frame
-        self.output_data[self.out_data] = detected_info
+                cx = float((c[0][0] + c[2][0]) * 0.5)
+                cy = float((c[0][1] + c[2][1]) * 0.5)
+                detected.append({
+                    "id": int(marker_id),
+                    "cx": round(cx, 2),
+                    "cy": round(cy, 2),
+                })
+
+        self.output_data[self.out_frame] = draw
+        self.output_data[self.out_data] = detected
         return None
 
 
-# ================= [Flask Broadcast Threading] =================
-flask_app = None
-flask_current_frame = None
+_flask_app = Flask(__name__) if HAS_FLASK else None
+_flask_latest_jpg = None
+_flask_lock = threading.Lock()
+_flask_thread_started = False
 
-def start_flask_app(port):
-    from flask import Flask, Response
-    global flask_app
-    app = Flask(__name__)
-    
-    def generate_mjpeg():
-        global flask_current_frame
-        while True:
-            if flask_current_frame is not None:
-                ret, jpeg = cv2.imencode('.jpg', flask_current_frame)
-                if ret:
-                    yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
-            time.sleep(0.05)
-            
-    @app.route('/video_feed')
-    def video_feed():
-        return Response(generate_mjpeg(), mimetype='multipart/x-mixed-replace; boundary=frame')
-        
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+if HAS_FLASK:
+    @_flask_app.route('/video_feed')
+    def _video_feed():
+        def generate():
+            while True:
+                frame = None
+                with _flask_lock:
+                    frame = _flask_latest_jpg
+                if frame is not None:
+                    yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
+                time.sleep(0.03)
+
+        return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
 
 class FlaskStreamNode(BaseNode):
     def __init__(self, node_id):
-        super().__init__(node_id, "UDP/HTTP Broadcast", "VIS_FLASK")
-        self.in_frame = generate_uuid(); self.inputs[self.in_frame] = PortType.DATA
+        super().__init__(node_id, "Flask Stream", "VIS_FLASK")
+        self.in_frame = generate_uuid()
+        self.inputs[self.in_frame] = PortType.DATA
         self.state['port'] = 5000
         self.state['is_running'] = False
-        self.flask_thread = None
+        self._started_local = False
+
+    def _start_server_once(self):
+        global _flask_thread_started
+        if not HAS_FLASK or _flask_app is None:
+            return
+        if _flask_thread_started:
+            return
+
+        port = int(self.state.get('port', 5000))
+
+        def run_server():
+            _flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+        threading.Thread(target=run_server, daemon=True).start()
+        _flask_thread_started = True
+        write_log(f"Flask Stream Started: http://0.0.0.0:{port}/video_feed")
 
     def execute(self):
-        global flask_current_frame, flask_app
-        
-        frame = self.fetch_input_data(self.in_frame)
-        if frame is not None:
-            flask_current_frame = frame.copy()
-            
-        should_run = self.state.get('is_running', False)
-        if should_run and (self.flask_thread is None or not self.flask_thread.is_alive()):
-            port = int(self.state.get('port', 5000))
-            self.flask_thread = threading.Thread(target=start_flask_app, args=(port,), daemon=True)
-            self.flask_thread.start()
-            write_log(f"Flask Stream started on port {port}")
-            
+        if not HAS_CV2 or not HAS_FLASK:
+            return None
+
+        if bool(self.state.get('is_running', False)):
+            if not self._started_local:
+                self._start_server_once()
+                self._started_local = True
+
+            frame = self.fetch_input_data(self.in_frame)
+            if frame is not None:
+                ok, buf = cv2.imencode('.jpg', frame)
+                if ok:
+                    with _flask_lock:
+                        global _flask_latest_jpg
+                        _flask_latest_jpg = buf.tobytes()
+
         return None
-    
-class Go1KeyboardNode(BaseNode):
-    def __init__(self, node_id):
-        super().__init__(node_id, "Go1 Keyboard", "GO1_KEYBOARD")
-        self.in_flow = generate_uuid(); self.inputs[self.in_flow] = PortType.FLOW
-        self.out_vx = generate_uuid(); self.outputs[self.out_vx] = PortType.DATA
-        self.out_vy = generate_uuid(); self.outputs[self.out_vy] = PortType.DATA
-        self.out_vyaw = generate_uuid(); self.outputs[self.out_vyaw] = PortType.DATA
-        self.out_body_height = generate_uuid(); self.outputs[self.out_body_height] = PortType.DATA
-        self.out_flow = generate_uuid(); self.outputs[self.out_flow] = PortType.FLOW
-        self.state.update({'keys': 'WASD', 'W':False, 'A':False, 'S':False, 'D':False, 'Q':False, 'E':False, 'Z':False, 'X':False, 'is_focused':False})
-
-    def execute(self):
-        if self.state.get('is_focused', False): return self.out_flow
-
-        speed = 0.2
-        yaw_speed = 0.5
-        vx = 0.0; vy = 0.0; vyaw = 0.0
-        body_height = go1_target_vel.get('body_height', 0.0)
-        
-        keys = self.state.get('keys', 'WASD')
-        if keys == "WASD":
-            if self.state.get('W', False): vx = speed
-            if self.state.get('S', False): vx = -speed
-            if self.state.get('A', False): vy = speed
-            if self.state.get('D', False): vy = -speed
-            if self.state.get('Q', False): vyaw = yaw_speed
-            if self.state.get('E', False): vyaw = -yaw_speed
-        else:
-            if self.state.get('UP', False): vx = speed
-            if self.state.get('DOWN', False): vx = -speed
-            if self.state.get('LEFT', False): vy = speed
-            if self.state.get('RIGHT', False): vy = -speed
-
-        if self.state.get('Z', False):
-            body_height = clamp(body_height + BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
-        if self.state.get('X', False):
-            body_height = clamp(body_height - BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
-
-        go1_target_vel['body_height'] = body_height
-
-        self.output_data[self.out_vx] = vx
-        self.output_data[self.out_vy] = vy
-        self.output_data[self.out_vyaw] = vyaw
-        self.output_data[self.out_body_height] = body_height
-        return self.out_flow
-
-class Go1UnityNode(BaseNode):
-    def __init__(self, node_id):
-        super().__init__(node_id, "Go1 Unity Logic", "GO1_UNITY")
-        self.in_flow = generate_uuid(); self.inputs[self.in_flow] = PortType.FLOW
-        self.data_in_id = generate_uuid(); self.inputs[self.data_in_id] = PortType.DATA
-        self.out_vx = generate_uuid(); self.outputs[self.out_vx] = PortType.DATA
-        self.out_vy = generate_uuid(); self.outputs[self.out_vy] = PortType.DATA
-        self.out_vyaw = generate_uuid(); self.outputs[self.out_vyaw] = PortType.DATA
-        self.out_body_height = generate_uuid(); self.outputs[self.out_body_height] = PortType.DATA
-        self.out_flow = generate_uuid(); self.outputs[self.out_flow] = PortType.FLOW
-        self.vx = 0.0; self.vy = 0.0; self.vyaw = 0.0; self.body_height = 0.0
-
-    def execute(self):
-        import json
-        global go1_manual_override_until, go1_unity_last_rx_time
-        
-        raw_data = self.fetch_input_data(self.data_in_id)
-        if raw_data:
-            try:
-                parsed = json.loads(raw_data)
-                if parsed.get("type") == "GO1_MOVE":
-                    self.vx = float(parsed.get("vx", 0.0))
-                    self.vy = float(parsed.get("vy", 0.0))
-                    self.vyaw = float(parsed.get("vyaw", 0.0))
-                    self.body_height = clamp(float(parsed.get("body_height", self.body_height)), BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
-                    go1_unity_last_rx_time = time.time()
-            except: pass
-
-        go1_dashboard["unity_link"] = "Active" if (time.time() - go1_unity_last_rx_time) < 1.0 else "Waiting"
-
-        # 대시보드 버튼을 통한 수동 조작 우선권 부여
-        is_overridden = time.time() < go1_manual_override_until
-        if not is_overridden:
-            self.output_data[self.out_vx] = self.vx
-            self.output_data[self.out_vy] = self.vy
-            self.output_data[self.out_vyaw] = self.vyaw
-            self.output_data[self.out_body_height] = self.body_height
-        else:
-            self.output_data[self.out_vx] = None
-            self.output_data[self.out_vy] = None
-            self.output_data[self.out_vyaw] = None
-            self.output_data[self.out_body_height] = None
-
-        return self.out_flow

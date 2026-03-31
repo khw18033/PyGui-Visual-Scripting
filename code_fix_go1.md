@@ -49,3 +49,19 @@
 - **UDP/HTTP Broadcast 노드 (`VIS_FLASK`)**:
   - **입출력**: Data 입력(최종 프로세싱 플로우를 거친 Frame)
   - **기능**: 최종 프레임을 Flask 프레임워크를 이용해 웹 영상 스트림으로 쏘아줍니다. 내부적으로 데몬 스레드가 백그라운드에서 동작하여 타 기기나 브라우저 화면(`http://localhost:5000/video_feed`)에서도 확인할 수 있게 합니다.
+
+### [2026-03-31 00:00:00] Go1_DS.py 로직 기반 모듈 재이식 (현재 아키텍처 정합)
+- 문제 분석:
+  - `nodes/robots/go1.py`가 비어 있어 `NodeFactory`/`UI Renderer`가 기대하는 Go1 노드 클래스 및 전역 심볼을 제공하지 못했고, 실행 시 Import/런타임 오류 위험이 있었음.
+  - 기존 `Go1_DS.py`의 핵심 동작(주행 인텐트 유지, Unity 텔레옵 수신, 비전 파이프라인 분리, Flask 스트리밍)을 현재 모듈 구조(`BaseNode` + `NodeFactory` + `engine`)로 맞춰 재구성할 필요가 있었음.
+  - 엔진의 flowless 실행 목록에 `VIS_FISHEYE`, `VIS_ARUCO`가 누락되어 비전 중간 노드가 자동 실행되지 않는 문제가 있었음.
+- 조치 방안:
+  - `nodes/robots/go1.py`를 신규 구현하여 다음 요소를 통합함:
+    - 전역 상태/심볼: `go1_sock`, `GO1_IP`, `GO1_PORT`, `go1_target_vel`, `go1_dashboard`, `go1_unity_data`, `get_go1_rtsp_url()`
+    - 백그라운드 통신: `go1_keepalive_thread()` (20Hz 송신, Unity UDP 수신/타임아웃, 상태 브로드캐스트)
+    - 제어 노드: `Go1RobotDriver`, `Go1ActionNode`, `Go1KeyboardNode`, `Go1UnityNode`
+    - 비전 노드: `VideoSourceNode`, `FisheyeUndistortNode`, `ArUcoDetectNode`, `FlaskStreamNode`
+  - `core/engine.py`의 주기 실행 대상에 `VIS_FISHEYE`, `VIS_ARUCO`를 추가하여 비전 파이프라인이 실제로 프레임 데이터를 연쇄 처리하도록 수정함.
+- 수정 파일:
+  - `nodes/robots/go1.py` (신규 구현)
+  - `core/engine.py` (flowless 실행 목록 보완)
