@@ -98,5 +98,36 @@
   - Unitree SDK 경로를 프로젝트 루트 기준(`.../unitree_legged_sdk/lib/python/<arch>`)으로 수정.
   - Go1 IP 확인을 DS와 동일하게 항상 수행하고, 콘솔 미지원 시 `EOF` 처리로 기본값 사용.
   - 초기화 단계에서 `Go1 SDK Ready/Missing` 로그를 출력해 Simulation fallback 원인을 즉시 확인 가능하게 개선.
+
+### [2026-03-31 14:30:00] 카메라 프레임 저장 노드 구현 (Go1_DS.py 저장 로직 이식)
+- 문제 분석:
+  - `VideoSourceNode`, `FisheyeUndistortNode`, `ArUcoDetectNode`, `FlaskStreamNode`는 존재했으나, **프레임을 지정된 폴더에 저장하는 노드가 없음**.
+  - Go1_DS.py의 `CameraControlNode`처럼 JPEG 파일로 연속 저장하고, 타이머/Start/Stop 제어하는 기능이 누락되어 있었음.
+  - 데이터 플로우 기반 아키텍처에서는 저장 기능을 별도 노드로 분리하는 것이 `SRP` 준수.
+- 조치 방안:
+  - **`VideoFrameSaveNode` 신규 구현**:
+    - 입력: `VideoSourceNode`의 Frame 데이터
+    - UI: 저장 폴더 경로, 지속 시간(타이머), Start/Stop 체크박스
+    - 기능: 입력 프레임을 `cv2.imwrite()`로 `frame_XXXXXX.jpg` 형식으로 저장
+    - 상태: `camera_save_state` 전역변수로 저장 진행 상황(Stopped/Running), 프레임 카운트, 타이머 관리
+  - **`nodes/robots/go1.py` 개선**:
+    - 임포트 추가: `subprocess`, `glob`, `datetime`, `deque`
+    - 전역 변수 추가: `camera_save_state`, `camera_save_queue` (향후 GStreamer 확장 대비)
+    - `VideoFrameSaveNode` 클래스 신규 추가
+  - **`core/factory.py` 등록**:
+    - `VideoFrameSaveNode` 임포트 및 `VIS_SAVE` 타입 등록
+  - **`ui/dpg_manager.py` UI 통합**:
+    - `NodeUIRenderer._render_video_save()` 렌더러 메서드 신규 구현
+    - `sync_ui_to_state()`, `sync_state_to_ui()`에 `VIS_SAVE` 처리 추가
+    - 노드 생성 버튼 메뉴에 "SAVE" 버튼 추가
+- 파이프라인 구성 예시:
+  ```
+  Video Source → [Fisheye Undistort] → [ArUco Detect] → [Video Save] → [Flask Stream]
+                       (선택)                  (선택)          (폴더 저장)   (웹 스트리밍)
+  ```
+- 수정 及 신규 파일:
+  - `nodes/robots/go1.py` (임포트, 전역변수, `VideoFrameSaveNode` 추가)
+  - `core/factory.py` (`VideoFrameSaveNode` 임포트 및 등록)
+  - `ui/dpg_manager.py` (렌더러, 동기화, 버튼 추가)
 - 수정 파일:
   - `nodes/robots/go1.py`

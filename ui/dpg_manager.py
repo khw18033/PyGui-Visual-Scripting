@@ -186,6 +186,10 @@ class NodeUIRenderer:
             elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
                 node.state['port'] = dpg.get_value(node.ui_port)
                 node.state['is_running'] = dpg.get_value(node.ui_run)
+            elif t == "VIS_SAVE" and hasattr(node, 'ui_folder'):
+                node.state['folder'] = dpg.get_value(node.ui_folder)
+                node.state['duration'] = dpg.get_value(node.ui_duration)
+                node.state['is_saving'] = dpg.get_value(node.ui_is_saving)
 
     @staticmethod
     def sync_state_to_ui(node):
@@ -222,6 +226,10 @@ class NodeUIRenderer:
         elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
             dpg.set_value(node.ui_port, node.state.get('port', 5000))
             dpg.set_value(node.ui_run, node.state.get('is_running', False))
+        elif t == "VIS_SAVE" and hasattr(node, 'ui_folder'):
+            dpg.set_value(node.ui_folder, node.state.get('folder', 'Captured_Images/go1_front'))
+            dpg.set_value(node.ui_duration, node.state.get('duration', 10.0))
+            dpg.set_value(node.ui_is_saving, node.state.get('is_saving', False))
 
         elif t == "EP_ACTION" and hasattr(node, 'combo_act'): 
             dpg.set_value(node.combo_act, node.state.get('action', 'LED Red'))
@@ -253,6 +261,7 @@ class NodeUIRenderer:
         elif t == "VIS_FISHEYE": NodeUIRenderer._render_fisheye(node)
         elif t == "VIS_ARUCO": NodeUIRenderer._render_aruco(node)
         elif t == "VIS_FLASK": NodeUIRenderer._render_flask(node)
+        elif t == "VIS_SAVE": NodeUIRenderer._render_video_save(node)
         # --- EP01 ---
         elif t == "EP_ACTION": NodeUIRenderer._render_ep_action(node)
 
@@ -501,6 +510,17 @@ class NodeUIRenderer:
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.ui_port = dpg.add_input_int(label="Port", width=80, default_value=5000)
                 node.ui_run = dpg.add_checkbox(label="Start Server")
+
+    @staticmethod
+    def _render_video_save(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Video Save"):
+            with dpg.node_attribute(tag=node.in_frame, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Frame In", color=(255,255,0))
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_text("Folder:"); node.ui_folder = dpg.add_input_text(width=180, default_value="Captured_Images/go1_front")
+                dpg.add_text("Duration(s):"); node.ui_duration = dpg.add_input_float(width=80, default_value=10.0, step=1.0)
+                node.ui_is_saving = dpg.add_checkbox(label="Start Saving")
+            with dpg.node_attribute(tag=node.out_frame, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Frame Out", color=(255,255,0))
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
     def _render_ep_action(node):
@@ -801,6 +821,7 @@ def __init_ui__():
                 dpg.add_button(label="FISHEYE", callback=add_node_cb, user_data="VIS_FISHEYE")
                 dpg.add_button(label="ARUCO", callback=add_node_cb, user_data="VIS_ARUCO")
                 dpg.add_button(label="FLASK", callback=add_node_cb, user_data="VIS_FLASK")
+                dpg.add_button(label="SAVE", callback=add_node_cb, user_data="VIS_SAVE")
                 dpg.add_spacer(width=50)
                 dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
             

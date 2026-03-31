@@ -6,6 +6,10 @@ import math
 import socket
 import threading
 import platform
+import subprocess
+import glob
+from datetime import datetime
+from collections import deque
 
 from nodes.base import BaseNode, BaseRobotDriver
 from core.engine import generate_uuid, PortType, write_log, node_registry
@@ -143,6 +147,15 @@ aruco_settings = {
 camera_state = {
     'status': 'Stopped',
 }
+
+camera_save_state = {
+    'status': 'Stopped',
+    'folder': 'Captured_Images/go1_front',
+    'duration': 0.0,
+    'start_time': None,
+    'frame_count': 0,
+}
+camera_save_queue = deque()
 
 
 def _clamp(v, lo, hi):
@@ -947,3 +960,85 @@ class FlaskStreamNode(BaseNode):
                         _flask_latest_jpg = buf.tobytes()
 
         return None
+
+
+# ================= [Video Frame Save Node] =================
+class VideoFrameSaveNode(BaseNode):
+    """프레임을 지정된 폴더에 JPEG 파일로 저장 (Go1_DS.py와 동일한 저장 방식)"""
+    def __init__(self, node_id):
+        super().__init__(node_id, "Video Save", "VIS_SAVE")
+        self.in_frame = generate_uuid()
+        self.inputs[self.in_frame] = PortType.DATA
+        self.out_frame = generate_uuid()
+        self.outputs[self.out_frame] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['folder'] = 'Captured_Images/go1_front'
+        self.state['is_saving'] = False
+        self.state['duration'] = 10.0
+        
+        self._save_start_time = None
+        self._frame_count = 0
+
+    def execute(self):
+        global camera_save_state
+        
+        frame = self.fetch_input_data(self.in_frame)
+        folder = str(self.state.get('folder', 'Captured_Images/go1_front'))
+        is_saving = bool(self.state.get('is_saving', False))
+        duration = float(self.state.get('duration', 10.0))
+
+        # 저장 상태 업데이트
+        camera_save_state['folder'] = folder
+        camera_save_state['duration'] = duration
+
+        if is_saving and not self._save_start_time:
+            # 저장 시작
+            self._save_start_time = time.time()
+            self._frame_count = 0
+            camera_save_state['status'] = 'Running'
+            camera_save_state['start_time'] = self._save_start_time
+            try:
+                os.makedirs(folder, exist_ok=True)
+                write_log(f"[VIS_SAVE] 저장 시작: {folder}")
+            except Exception as e:
+                write_log(f"[VIS_SAVE] 폴더 생성 실패: {e}")
+                self.state['is_saving'] = False
+                return self.out_flow
+
+        if self._save_start_time:
+            elapsed = time.time() - self._save_start_time
+            
+            # 타이머 체크
+            if elapsed > duration:
+                is_saving = False
+                self.state['is_saving'] = False
+                write_log(f"[VIS_SAVE] 저장 완료: {self._frame_count}개 프레임 저장됨")
+                self._save_start_time = None
+                camera_save_state['status'] = 'Stopped'
+                camera_save_state['start_time'] = None
+                camera_save_state['frame_count'] = 0
+            elif frame is not None and HAS_CV2:
+                # 프레임 저장
+                try:
+                    filename = os.path.join(folder, f"frame_{self._frame_count:06d}.jpg")
+                    success = cv2.imwrite(filename, frame)
+                    if success:
+                        self._frame_count += 1
+                        camera_save_state['frame_count'] = self._frame_count
+                        if self._frame_count % 10 == 0:
+                            write_log(f"[VIS_SAVE] {self._frame_count}개 프레임 저장됨")
+                except Exception as e:
+                    write_log(f"[VIS_SAVE] 저장 오류: {e}")
+
+        elif not is_saving and self._save_start_time:
+            # 저장 중단
+            write_log(f"[VIS_SAVE] 저장 중단: {self._frame_count}개 프레임 저장됨")
+            self._save_start_time = None
+            camera_save_state['status'] = 'Stopped'
+            camera_save_state['start_time'] = None
+            camera_save_state['frame_count'] = 0
+        
+        self.output_data[self.out_frame] = frame
+        return self.out_flow
