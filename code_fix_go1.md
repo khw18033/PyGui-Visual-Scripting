@@ -99,26 +99,6 @@
   - Go1 IP 확인을 DS와 동일하게 항상 수행하고, 콘솔 미지원 시 `EOF` 처리로 기본값 사용.
   - 초기화 단계에서 `Go1 SDK Ready/Missing` 로그를 출력해 Simulation fallback 원인을 즉시 확인 가능하게 개선.
 
-### [2026-03-31 15:05:00] Go1 카메라 로직을 Go1_DS.py 방식으로 전환
-- 문제 분석:
-  - 기존 `VIDEO_SRC`는 RTSP 직접 연결(`cv2.VideoCapture`) 방식이라, `Go1_DS.py`의 카메라 제어 흐름(나노 SSH 제어 + GStreamer 수신 + JPG 파일 기반 처리)과 달랐음.
-- 조치 방안:
-  - `nodes/robots/go1.py`
-    - `camera_command_queue`, `GO1_CAMERA_NANOS`, `CAMERA_CONFIG`, `camera_worker_thread()` 추가.
-    - `init_go1_connection()`에서 카메라 워커 스레드를 1회 자동 시작하도록 변경.
-    - `VideoSourceNode`를 DS 방식으로 변경:
-      - Start 시 `START_CMD(target_ip, folder, duration)` 큐에 등록
-      - Stop 시 `STOP` 큐에 등록
-      - 출력 프레임은 폴더의 최신 JPG 파일(안정성을 위해 최근 2번째 파일)에서 읽어 Data 출력
-  - `ui/dpg_manager.py`
-    - `VIDEO_SRC` UI를 `Target IP`, `Folder`, `Timer(s)`, `Start Stream`으로 변경.
-    - `sync_ui_to_state`, `sync_state_to_ui`를 신규 필드(`target_ip`, `folder`, `duration`)에 맞게 수정.
-  - `core/engine.py`
-    - `VIS_SAVE`를 flowless 실행 목록에 추가하여 데이터 노드로 주기 실행되도록 보완.
-- 수정 파일:
-  - `nodes/robots/go1.py`
-  - `ui/dpg_manager.py`
-  - `core/engine.py`
 
 ### [2026-03-31 14:30:00] 카메라 프레임 저장 노드 구현 (Go1_DS.py 저장 로직 이식)
 - 문제 분석:
@@ -152,3 +132,104 @@
   - `ui/dpg_manager.py` (렌더러, 동기화, 버튼 추가)
 - 수정 파일:
   - `nodes/robots/go1.py`
+
+### [2026-03-31 15:05:00] Go1 카메라 로직을 Go1_DS.py 방식으로 전환
+- 문제 분석:
+  - 기존 `VIDEO_SRC`는 RTSP 직접 연결(`cv2.VideoCapture`) 방식이라, `Go1_DS.py`의 카메라 제어 흐름(나노 SSH 제어 + GStreamer 수신 + JPG 파일 기반 처리)과 달랐음.
+- 조치 방안:
+  - `nodes/robots/go1.py`
+    - `camera_command_queue`, `GO1_CAMERA_NANOS`, `CAMERA_CONFIG`, `camera_worker_thread()` 추가.
+    - `init_go1_connection()`에서 카메라 워커 스레드를 1회 자동 시작하도록 변경.
+    - `VideoSourceNode`를 DS 방식으로 변경:
+      - Start 시 `START_CMD(target_ip, folder, duration)` 큐에 등록
+      - Stop 시 `STOP` 큐에 등록
+      - 출력 프레임은 폴더의 최신 JPG 파일(안정성을 위해 최근 2번째 파일)에서 읽어 Data 출력
+  - `ui/dpg_manager.py`
+    - `VIDEO_SRC` UI를 `Target IP`, `Folder`, `Timer(s)`, `Start Stream`으로 변경.
+    - `sync_ui_to_state`, `sync_state_to_ui`를 신규 필드(`target_ip`, `folder`, `duration`)에 맞게 수정.
+  - `core/engine.py`
+    - `VIS_SAVE`를 flowless 실행 목록에 추가하여 데이터 노드로 주기 실행되도록 보완.
+- 수정 파일:
+  - `nodes/robots/go1.py`
+  - `ui/dpg_manager.py`
+  - `core/engine.py`
+
+### [2026-03-31 21:42:44] 그래프 저장/불러오기 Go1·EP01 호환성 수정
+- 문제 분석:
+  - 저장은 `node.state` 기준인데, 실행 중이 아닐 때는 UI 값이 `state`로 동기화되지 않아 Go1/EP01 노드 설정이 기본값으로 저장되는 문제가 있었음.
+  - 일부 Go1/EP01 렌더러가 매 렌더마다 임의 Flow 입력 포트를 새로 생성해 포트 안정성이 떨어졌고, 불러오기 시 링크 인덱스 기반 복원과 충돌 가능성이 있었음.
+- 조치 방안:
+  - `core/serializer.py`
+    - `save_graph()` 시작 시 `NodeUIRenderer.sync_ui_to_state()`를 호출하도록 변경.
+    - 실행/정지 상태와 무관하게 현재 UI 값이 저장 JSON에 반영되도록 보장.
+  - `nodes/robots/go1.py`
+    - `Go1KeyboardNode`, `Go1UnityNode`에 고정 `in_flow` 입력 포트 추가.
+  - `ui/dpg_manager.py`
+    - `GO1_KEYBOARD`, `GO1_UNITY`, `GO1_ACTION`, `EP_ACTION` 렌더러에서 임의 포트 생성 제거.
+    - 각 노드의 고정 포트(`node.in_flow`)를 사용하도록 변경.
+- 기대 효과:
+  - Go1/EP01 노드의 콤보/입력값이 저장 파일에 정확히 반영됨.
+  - 불러오기 후 노드 설정과 링크 연결의 재현성이 향상됨.
+- 수정 파일:
+  - `core/serializer.py`
+  - `nodes/robots/go1.py`
+  - `ui/dpg_manager.py`
+
+### [2026-03-31 21:51:29] 카메라 스트리밍 프레임워크 고도화 (타이머/파일제한/자동종료)
+- 문제 분석:
+  - 현재 `VideoSourceNode`의 타이머는 단순 경과 시간 로그만 하고, 타이머 완료 시 자동 종료 기능이 없었음.
+  - 타이머 비활성화 시 이전에 저장된 이미지 파일이 누적되기만 하고, 개수 제한이 없어 저장공간이 무한정 증가할 수 있었음.
+  - `VideoFrameSaveNode`가 Flow in 포트가 없어 노드 그래프 흐름 제어가 불가능했음.
+  - `camera_worker_thread()`의 START_CMD에서 타이머 정보를 전달받지 않아, 타이머 완료 시 UI 상태 동기화가 어려웠음.
+
+- 조치 방안:
+  - **`nodes/robots/go1.py`**:
+    - `VideoSourceNode.__init__()`에 두 가지 새로운 상태 옵션 추가:
+      - `use_timer`: 타이머 기능 ON/OFF 토글 (기본값: True)
+      - `max_frames`: 타이머 비활성화 시 유지할 최대 파일 개수 (기본값: 100)
+    - `VideoSourceNode.execute()`에서 `use_timer=False`이고 파일 개수가 `max_frames` 초과 시, 오래된 파일부터 자동 삭제하도록 로직 추가.
+    - START_CMD 명령에 5번째 파라미터로 `use_timer` 정보 추가.
+    - camera_state 전역변수에 `use_timer` 초기화.
+    
+    - **`VideoFrameSaveNode` 개선**:
+      - `__init__()`에 `in_flow` 입력 포트 추가 (Flow in - 노드 실행 트리거 용도).
+      - `execute()`에서 `duration > 0`일 때의 타이머 완료 로직을 개선:
+        - 타이머 만료 시 `is_saving=False`로 자동 변경
+        - 주 실행 루프의 저장 프레임 카운트 초기화
+      
+    - **`camera_worker_thread()` 강화**:
+      - START_CMD에서 5개 파라미터(`use_timer` 포함) 추출.
+      - `camera_state['use_timer']` 설정.
+      - Timer ON(`use_timer=True`) 상태에서 경과 시간 체크: 타이머 완료 시
+        - `[Cam Timer]` 완료 로그 출력
+        - GStreamer 수신 프로세스 자동 종료
+        - `camera_state['status'] = 'Stopped'`로 변경
+        - **모든 노드의 자동 동기화**: `node_registry`에서 `VIDEO_SRC`와 `VIS_SAVE` 노드를 찾아 `is_running/is_saving` 플래그를 False로 자동 설정
+      - Timer OFF(`use_timer=False`) 상태에서는 매 10초마다 `[Cam Running]` 로그만 출력하고 지속.
+  
+  - **`ui/dpg_manager.py`**:
+    - `_render_video_src()` UI 개선:
+      - 기존: `Target IP`, `Folder`, `Timer(s)`, `Start Stream`
+      - 추가: `Use Timer` 체크박스 (타이머 ON/OFF 토글)
+      - 추가: `Max Frames` 정수 입력 필드 (타이머 OFF 시 최대 유지 파일 개수)
+    - `sync_ui_to_state()` VIDEO_SRC 분기에 두 가지 새 필드 동기화 추가:
+      - `node.state['use_timer'] = dpg.get_value(node.ui_use_timer)`
+      - `node.state['max_frames'] = dpg.get_value(node.ui_max_frames)`
+    - `sync_state_to_ui()` VIDEO_SRC 분기에 역 동기화 추가:
+      - `dpg.set_value(node.ui_use_timer, node.state.get('use_timer', True))`
+      - `dpg.set_value(node.ui_max_frames, node.state.get('max_frames', 100))`
+    
+    - `_render_video_save()` UI 개선:
+      - Flow in 속성 추가 (노드 실행 흐름 제어)
+      - 레이아웃: [Flow In] → [Frame In] → [설정] → [Frame Out], [Flow Out]
+
+- 기대 효과:
+  1. **타이머 ON 시**: 지정 시간 경과 후 카메라와 저장이 자동으로 중지되어 리소스 낭비 방지
+  2. **타이머 OFF 시**: 무한 스트리밍하되, 저장 폴더 크기 제한으로 저장공간 고갈 회피
+  3. **상태 동기화**: 타이머 자동 완료 시 UI가 자동으로 "Start Stream" 체크박스를 해제하여 사용자가 즉시 인식 가능
+  4. **Video Save 노드 연결성**: Flow in 포트 추가로 START 노드와의 순차적 연결 가능 → 일관된 노드 그래프 구조
+
+- 수정 파일:
+  - `nodes/robots/go1.py` (VideoSourceNode 옵션, camera_worker_thread 자동 종료, VideoFrameSaveNode Flow in)
+  - `ui/dpg_manager.py` (_render_video_src UI 개선, sync 메서드 추가)
+

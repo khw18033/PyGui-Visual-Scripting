@@ -7,12 +7,15 @@ def get_save_files():
     return [f for f in os.listdir(SAVE_DIR) if f.endswith(".json")]
 
 def save_graph(filename):
-    from ui.dpg_manager import get_item_pos_safe
-    
+    from ui.dpg_manager import get_item_pos_safe, NodeUIRenderer
+
+    # 실행 중이 아니어도 현재 UI 입력값을 state에 반영해 저장 정합성을 보장한다.
+    NodeUIRenderer.sync_ui_to_state()
+
     if not filename.endswith(".json"): filename += ".json"
     filepath = os.path.join(SAVE_DIR, filename)
     data = {"nodes": [], "links": []}
-    
+
     for nid, node in node_registry.items():
         pos = get_item_pos_safe(nid) or [0,0]
         data["nodes"].append({

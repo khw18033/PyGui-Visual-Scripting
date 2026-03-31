@@ -151,6 +151,7 @@ camera_state = {
     'start_time': 0.0,
     'timer_started_logged': False,
     'last_interval_count': 0,
+    'use_timer': True,
 }
 
 camera_command_queue = deque()
@@ -265,15 +266,16 @@ def camera_worker_thread():
             cmd = cmd_data[0]
 
             if cmd == 'START_CMD':
-                _, pc_ip, target_folder, duration = cmd_data
+                _, pc_ip, target_folder, duration, use_timer = cmd_data
                 camera_state['status'] = 'Starting...'
                 camera_state['target_ip'] = pc_ip
                 camera_state['duration'] = float(duration)
+                camera_state['use_timer'] = bool(use_timer)
 
                 CAMERA_CONFIG.clear()
                 CAMERA_CONFIG.append({"folder": target_folder, "id": "go1_front"})
 
-                write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
+                write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s, Timer: {use_timer}")
 
                 for nano in nanos:
                     key_path = os.path.expanduser("~/.ssh/id_rsa")
@@ -342,11 +344,44 @@ def camera_worker_thread():
                 time.sleep(0.5)
                 camera_state['status'] = 'Stopped'
 
-        if camera_state['status'] == 'Running' and camera_state.get('duration', 0) > 0:
+        # 타이머 체크 및 자동 종료
+        if camera_state['status'] == 'Running' and camera_state.get('use_timer', True):
+            duration = camera_state.get('duration', 0.0)
+            if duration > 0:
+                elapsed = time.time() - float(camera_state.get('start_time', 0.0))
+                
+                # 10초 간격 로그
+                interval_count = int(elapsed // 10)
+                if interval_count > camera_state.get('last_interval_count', 0) and interval_count > 0:
+                    write_log(f"[Cam Timer] {interval_count * 10}초 경과")
+                    camera_state['last_interval_count'] = interval_count
+                
+                # 타이머 완료 시 자동 종료
+                if elapsed > duration:
+                    write_log(f"[Cam Timer] {duration}초 타이머 완료 - 카메라 및 저장 종료")
+                    camera_state['status'] = 'Stopping...'
+                    camera_state['duration'] = 0.0
+                    try:
+                        subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+                    camera_state['status'] = 'Stopped'
+                    
+                    # VideoSourceNode와 VideoFrameSaveNode 자동 종료
+                    for node in node_registry.values():
+                        if node.type_str == 'VIDEO_SRC':
+                            node.state['is_running'] = False
+                            node._started = False
+                        elif node.type_str == 'VIS_SAVE':
+                            node.state['is_saving'] = False
+                            node._save_start_time = None
+        elif camera_state['status'] == 'Running' and not camera_state.get('use_timer', True):
+            # 타이머 OFF 시 간단히 10초 간격 로그만
             elapsed = time.time() - float(camera_state.get('start_time', 0.0))
             interval_count = int(elapsed // 10)
             if interval_count > camera_state.get('last_interval_count', 0) and interval_count > 0:
-                write_log(f"[Cam Timer] {interval_count * 10}초 경과")
+                write_log(f"[Cam Running] {interval_count * 10}초 경과")
                 camera_state['last_interval_count'] = interval_count
             if elapsed >= camera_state['duration']:
                 write_log("[Cam Timer] 카메라 타이머 종료")
@@ -716,6 +751,8 @@ class Go1ActionNode(BaseNode):
 class Go1KeyboardNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Keyboard (Go1)", "GO1_KEYBOARD")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
         self.out_vx = generate_uuid()
         self.outputs[self.out_vx] = PortType.DATA
         self.out_vy = generate_uuid()
@@ -788,6 +825,8 @@ class Go1KeyboardNode(BaseNode):
 class Go1UnityNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Unity Logic (Go1)", "GO1_UNITY")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
         self.data_in_id = generate_uuid()
         self.inputs[self.data_in_id] = PortType.DATA
 
@@ -869,6 +908,8 @@ class VideoSourceNode(BaseNode):
         self.state['folder'] = 'Captured_Images/go1_front'
         self.state['duration'] = 10.0
         self.state['is_running'] = False
+        self.state['use_timer'] = True  # 타이머 기능 ON/OFF
+        self.state['max_frames'] = 100  # 타이머 OFF 시 최대 프레임 개수
         self._started = False
         self._last_file = None
 
@@ -881,10 +922,12 @@ class VideoSourceNode(BaseNode):
         target_ip = str(self.state.get('target_ip', get_local_ip())).strip() or get_local_ip()
         folder = str(self.state.get('folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
         duration = float(self.state.get('duration', 10.0))
+        use_timer = bool(self.state.get('use_timer', True))
+        max_frames = int(self.state.get('max_frames', 100))
 
         if run_flag:
             if not self._started and camera_state['status'] in ['Stopped', 'Stopping...']:
-                camera_command_queue.append(('START_CMD', target_ip, folder, duration))
+                camera_command_queue.append(('START_CMD', target_ip, folder, duration, use_timer))
                 self._started = True
         else:
             if self._started and camera_state['status'] in ['Running', 'Starting...']:
@@ -897,6 +940,19 @@ class VideoSourceNode(BaseNode):
         frame = None
         try:
             files = glob.glob(os.path.join(folder, "*.jpg"))
+            
+            # 타이머 OFF 시 최대 프레임 체크 및 오래된 파일 삭제
+            if not use_timer and len(files) > max_frames:
+                files.sort(key=os.path.getctime)
+                files_to_delete = files[:len(files) - max_frames]
+                for f in files_to_delete:
+                    try:
+                        os.remove(f)
+                    except Exception:
+                        pass
+                files = glob.glob(os.path.join(folder, "*.jpg"))  # 갱신
+                files.sort(key=os.path.getctime)
+            
             if len(files) >= 2:
                 files.sort(key=os.path.getctime)
                 target_file = files[-2]
@@ -1061,6 +1117,8 @@ class VideoFrameSaveNode(BaseNode):
     """프레임을 지정된 폴더에 JPEG 파일로 저장 (Go1_DS.py와 동일한 저장 방식)"""
     def __init__(self, node_id):
         super().__init__(node_id, "Video Save", "VIS_SAVE")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
         self.in_frame = generate_uuid()
         self.inputs[self.in_frame] = PortType.DATA
         self.out_frame = generate_uuid()
@@ -1104,11 +1162,11 @@ class VideoFrameSaveNode(BaseNode):
         if self._save_start_time:
             elapsed = time.time() - self._save_start_time
             
-            # 타이머 체크
-            if elapsed > duration:
+            # 타이머 체크 및 총 저장 완료 처리
+            if duration > 0 and elapsed > duration:
                 is_saving = False
                 self.state['is_saving'] = False
-                write_log(f"[VIS_SAVE] 저장 완료: {self._frame_count}개 프레임 저장됨")
+                write_log(f"[VIS_SAVE] 타이머 완료: {self._frame_count}개 프레임 저장됨")
                 self._save_start_time = None
                 camera_save_state['status'] = 'Stopped'
                 camera_save_state['start_time'] = None

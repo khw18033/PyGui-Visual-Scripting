@@ -185,6 +185,8 @@ class NodeUIRenderer:
                 node.state['folder'] = dpg.get_value(node.ui_folder)
                 node.state['duration'] = dpg.get_value(node.ui_duration)
                 node.state['is_running'] = dpg.get_value(node.ui_run)
+                node.state['use_timer'] = dpg.get_value(node.ui_use_timer)
+                node.state['max_frames'] = dpg.get_value(node.ui_max_frames)
             elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
                 node.state['port'] = dpg.get_value(node.ui_port)
                 node.state['is_running'] = dpg.get_value(node.ui_run)
@@ -227,6 +229,8 @@ class NodeUIRenderer:
             dpg.set_value(node.ui_folder, node.state.get('folder', 'Captured_Images/go1_front'))
             dpg.set_value(node.ui_duration, node.state.get('duration', 10.0))
             dpg.set_value(node.ui_run, node.state.get('is_running', False))
+            dpg.set_value(node.ui_use_timer, node.state.get('use_timer', True))
+            dpg.set_value(node.ui_max_frames, node.state.get('max_frames', 100))
         elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
             dpg.set_value(node.ui_port, node.state.get('port', 5000))
             dpg.set_value(node.ui_run, node.state.get('is_running', False))
@@ -438,8 +442,7 @@ class NodeUIRenderer:
     @staticmethod
     def _render_go1_keyboard(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="Go1 Keyboard"):
-            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
-            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
                 dpg.add_text("Move / QE: Turn\nZ/X: Body Height +/-\nSpace: Stop / R: Yaw Align / C: Reset Yaw", color=(255,150,150))
@@ -452,8 +455,7 @@ class NodeUIRenderer:
     @staticmethod
     def _render_go1_unity(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="Unity Logic (Go1)"):
-            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
-            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_text("Unity PC IP", color=(100,255,100))
                 node.field_ip = dpg.add_input_text(width=140, default_value=getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246'))
@@ -470,8 +472,7 @@ class NodeUIRenderer:
     @staticmethod
     def _render_go1_action(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="Go1 Action"):
-            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
-            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.combo_id = dpg.add_combo(
                     ["Stand", "Reset Yaw0", "Walk Fwd/Back", "Walk Strafe", "Turn", "Sit Down", "Stand Tall", "Set Body Height"],
@@ -492,7 +493,9 @@ class NodeUIRenderer:
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.ui_target_ip = dpg.add_input_text(label="Target IP", width=150, default_value=default_target_ip)
                 node.ui_folder = dpg.add_input_text(label="Folder", width=180, default_value="Captured_Images/go1_front")
-                node.ui_duration = dpg.add_input_float(label="Timer(s)", width=90, default_value=10.0, step=1.0)
+                node.ui_duration = dpg.add_input_float(label="Duration(s)", width=90, default_value=10.0, step=1.0)
+                node.ui_use_timer = dpg.add_checkbox(label="Use Timer")
+                node.ui_max_frames = dpg.add_input_int(label="Max Frames", width=80, default_value=100, step=10)
                 node.ui_run = dpg.add_checkbox(label="Start Stream")
             with dpg.node_attribute(tag=node.out_frame, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Frame Data", color=(255,255,0))
 
@@ -520,6 +523,7 @@ class NodeUIRenderer:
     @staticmethod
     def _render_video_save(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="Video Save"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(tag=node.in_frame, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Frame In", color=(255,255,0))
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_text("Folder:"); node.ui_folder = dpg.add_input_text(width=180, default_value="Captured_Images/go1_front")
@@ -531,8 +535,7 @@ class NodeUIRenderer:
     @staticmethod
     def _render_ep_action(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="EP Action"):
-            _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
-            with dpg.node_attribute(tag=_f_in, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.combo_act = dpg.add_combo(["LED Red", "LED Blue", "Blaster Fire", "Arm Center", "Grip Open", "Grip Close"], default_value="LED Red", width=120)
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
