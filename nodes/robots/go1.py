@@ -159,6 +159,7 @@ CAMERA_CONFIG = [
     {"folder": "Captured_Images/go1_front", "id": "go1_front"}
 ]
 _CAMERA_WORKER_STARTED = False
+_CAMERA_RECEIVER_PROC = None
 
 camera_save_state = {
     'status': 'Stopped',
@@ -256,7 +257,7 @@ def init_go1_connection():
 
 
 def camera_worker_thread():
-    global camera_state, CAMERA_CONFIG
+    global camera_state, CAMERA_CONFIG, _CAMERA_RECEIVER_PROC
     nanos = GO1_CAMERA_NANOS
 
     while True:
@@ -309,8 +310,23 @@ def camera_worker_thread():
                     except Exception as e:
                         write_log(f"[Cam START ERROR] SSH execution failed: {e}")
 
+                # Stop previous local receiver process if still alive.
+                try:
+                    if _CAMERA_RECEIVER_PROC is not None and _CAMERA_RECEIVER_PROC.poll() is None:
+                        _CAMERA_RECEIVER_PROC.terminate()
+                        _CAMERA_RECEIVER_PROC.wait(timeout=2)
+                except Exception:
+                    try:
+                        if _CAMERA_RECEIVER_PROC is not None and _CAMERA_RECEIVER_PROC.poll() is None:
+                            _CAMERA_RECEIVER_PROC.kill()
+                    except Exception:
+                        pass
+                finally:
+                    _CAMERA_RECEIVER_PROC = None
+
                 try:
                     subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
+                    subprocess.call("pkill -f 'gst-launch-1.0.*port=9400'", shell=True)
                 except Exception:
                     pass
                 time.sleep(0.5)
@@ -322,7 +338,7 @@ def camera_worker_thread():
                         f"caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" "
                         f"! rtpjpegdepay ! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
                     )
-                    subprocess.Popen(gst_cmd, shell=True)
+                    _CAMERA_RECEIVER_PROC = subprocess.Popen(gst_cmd, shell=True)
                     write_log(f"[Cam START] Receiver listening on port 9400 -> {target_folder}")
                 except Exception as e:
                     write_log(f"[Cam START ERROR] Failed to start receiver: {e}")
@@ -337,7 +353,20 @@ def camera_worker_thread():
                 camera_state['status'] = 'Stopping...'
                 camera_state['duration'] = 0.0
                 try:
+                    if _CAMERA_RECEIVER_PROC is not None and _CAMERA_RECEIVER_PROC.poll() is None:
+                        _CAMERA_RECEIVER_PROC.terminate()
+                        _CAMERA_RECEIVER_PROC.wait(timeout=2)
+                except Exception:
+                    try:
+                        if _CAMERA_RECEIVER_PROC is not None and _CAMERA_RECEIVER_PROC.poll() is None:
+                            _CAMERA_RECEIVER_PROC.kill()
+                    except Exception:
+                        pass
+                finally:
+                    _CAMERA_RECEIVER_PROC = None
+                try:
                     subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
+                    subprocess.call("pkill -f 'gst-launch-1.0.*port=9400'", shell=True)
                 except Exception:
                     pass
                 time.sleep(0.5)
@@ -1125,7 +1154,11 @@ class VideoFrameSaveNode(BaseNode):
         folder = str(self.state.get('folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
         is_saving = bool(engine_module.is_running)
         duration = float(self.state.get('duration', 10.0))
-        use_timer = bool(self.state.get('use_timer', False))
+        raw_use_timer = self.state.get('use_timer', False)
+        if isinstance(raw_use_timer, str):
+            use_timer = raw_use_timer.strip().lower() in ['1', 'true', 'yes', 'on']
+        else:
+            use_timer = bool(raw_use_timer)
         max_frames = max(1, int(self.state.get('max_frames', 100)))
 
         if not is_saving:
