@@ -1173,18 +1173,44 @@ class VideoFrameSaveNode(BaseNode):
 
     def _prune_saved_frames(self, folder, max_frames):
         """Max Frames 초과 파일 삭제"""
-        files = glob.glob(os.path.join(folder, "front_*.jpg"))
+        patterns = ["front_*.jpg", "frame_*.jpg", "*.jpg", "*.jpeg", "*.png"]
+        seen = set()
+        files = []
+        for p in patterns:
+            for f in glob.glob(os.path.join(folder, p)):
+                if f not in seen and os.path.isfile(f):
+                    seen.add(f)
+                    files.append(f)
         if len(files) <= max_frames:
             return
-        files.sort(key=os.path.getctime)
+
+        # Prefer filename timestamp/index order; fallback to mtime.
+        def _sort_key(path):
+            name = os.path.basename(path)
+            digits = ''.join(ch for ch in name if ch.isdigit())
+            if digits:
+                try:
+                    return (0, int(digits))
+                except Exception:
+                    pass
+            try:
+                return (1, os.path.getmtime(path))
+            except Exception:
+                return (2, name)
+
+        files.sort(key=_sort_key)
         delete_fail_count = 0
+        delete_count = 0
         for old_file in files[:len(files) - max_frames]:
             try:
                 os.remove(old_file)
+                delete_count += 1
             except Exception as e:
                 delete_fail_count += 1
                 if delete_fail_count == 1:
                     write_log(f"[VIS_SAVE] MaxFrames 삭제 실패(예시): {os.path.basename(old_file)} ({e})")
+        if delete_count > 0:
+            write_log(f"[VIS_SAVE] MaxFrames 정리: {delete_count}개 삭제 (최대 {max_frames})")
 
     def execute(self):
         global camera_save_state
@@ -1260,7 +1286,7 @@ class VideoFrameSaveNode(BaseNode):
                 write_log(f"[VIS_SAVE] 프레임 저장 실패: {e}")
 
         # Max Frames 정리 (타이머 OFF 상태에서만)
-        if self._save_start_time is not None and not use_timer:
+        if is_saving and not use_timer:
             self._prune_saved_frames(folder, max_frames)
         
         return self.out_flow

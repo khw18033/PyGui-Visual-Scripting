@@ -103,8 +103,28 @@ class NodeUIRenderer:
     key_map = {"A": 65, "B": 66, "C": 67, "S": 83, "W": 87, "SPACE": 32}
 
     @staticmethod
+    def _is_text_input_focused():
+        # Block keyboard control when user is typing in any text input widget.
+        try:
+            active_item = dpg.get_active_item()
+            if active_item:
+                info = dpg.get_item_info(active_item)
+                item_type = str(info.get('type', '')).lower()
+                if 'mvappitemtype::mvinputtext' in item_type or 'inputtext' in item_type:
+                    return True
+        except Exception:
+            pass
+
+        # Fallback for known global inputs used outside node renderer.
+        if dpg.does_item_exist("file_name_input") and dpg.is_item_focused("file_name_input"):
+            return True
+        if dpg.does_item_exist("path_name_input") and dpg.is_item_focused("path_name_input"):
+            return True
+        return False
+
+    @staticmethod
     def sync_ui_to_state():
-        is_focused = dpg.is_item_focused("file_name_input") or (dpg.does_item_exist("path_name_input") and dpg.is_item_focused("path_name_input"))
+        is_focused = NodeUIRenderer._is_text_input_focused()
         input_manager.set_focused(is_focused)
 
         for nid, node in node_registry.items():
