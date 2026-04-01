@@ -862,14 +862,17 @@ if HAS_CV2 and hasattr(cv2, 'aruco'):
 
 
 class VideoSourceNode(BaseNode):
+    """라즈베리파이 Go1 카메라와 PC를 연결하는 노드
+    - PC IP 설정만 담당
+    - 라즈베리파이로 START/STOP 명령 전송
+    - 이미지 저장은 VideoSaveNode에서 담당
+    """
     def __init__(self, node_id):
         super().__init__(node_id, "Video Source", "VIDEO_SRC")
         self.out_frame = generate_uuid()
         self.outputs[self.out_frame] = PortType.DATA
         self.state['target_ip'] = get_local_ip()
-        self.state['folder'] = 'Captured_Images/go1_front'
         self._started = False
-        self._last_file = None
         self._last_frame = None
         self._auto_stopped_by_timer = False
 
@@ -883,34 +886,39 @@ class VideoSourceNode(BaseNode):
 
         run_flag = bool(engine_module.is_running and not self._auto_stopped_by_timer)
         target_ip = str(self.state.get('target_ip', get_local_ip())).strip() or get_local_ip()
-        folder = str(self.state.get('folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
-
+        
         if run_flag:
             if not self._started and camera_state['status'] in ['Stopped', 'Stopping...']:
-                camera_command_queue.append(('START_CMD', target_ip, folder, 0.0))
+                    # PC IP만 라즈베리파이로 전송 (저장은 하지 않음)
+                    camera_command_queue.append(('START_CMD', target_ip, '', 0.0))
                 self._started = True
         else:
             if self._started and camera_state['status'] in ['Running', 'Starting...']:
                 camera_command_queue.append(('STOP', target_ip))
             self._started = False
-            self._last_file = None
             self._last_frame = None
             self.output_data[self.out_frame] = None
             return None
 
+            # VideoSaveNode에서 저장한 사용자 지정 폴더에서 프레임 읽기
         frame = self._last_frame
         try:
-            files = glob.glob(os.path.join(folder, "*.jpg"))
+                # 모든 노드를 순회하여 VideoSaveNode의 save_folder 찾기
+                save_folder = 'Captured_Images/go1_front'  # 기본값
+                for node in node_registry.values():
+                    if node.type_str == 'VIS_SAVE':
+                        save_folder = str(node.state.get('save_folder', 'Captured_Images/go1_front'))
+                        break
+            
+                files = glob.glob(os.path.join(save_folder, "front_*.jpg"))
 
             if len(files) >= 2:
                 files.sort(key=os.path.getctime)
-                target_file = files[-2]
-                if target_file != self._last_file:
-                    self._last_file = target_file
-                    loaded = cv2.imread(target_file)
-                    if loaded is not None:
-                        self._last_frame = loaded
-                        frame = loaded
+                target_file = files[-2]  # 가장 최신 두 번째 파일
+                loaded = cv2.imread(target_file)
+                if loaded is not None:
+                    self._last_frame = loaded
+                    frame = loaded
         except Exception:
             frame = self._last_frame
 
@@ -1066,29 +1074,34 @@ class FlaskStreamNode(BaseNode):
 
 # ================= [Video Frame Save Node] =================
 class VideoFrameSaveNode(BaseNode):
-    """프레임을 지정된 폴더에 JPEG 파일로 저장 (Go1_DS.py와 동일한 저장 방식)"""
+    """VideoSourceNode에서 전달받은 프레임을 지정된 폴더에 저장
+    - 입력 포트에서 프레임 수신
+    - 이미지를 JPEG 파일로 저장
+    - 타이머 설정 가능 (타이머 종료 후 저장 중단)
+    - 타이머 미설정 시 Max Frames 초과 파일 자동 삭제
+    """
     def __init__(self, node_id):
         super().__init__(node_id, "Video Save", "VIS_SAVE")
         self.in_flow = generate_uuid()
         self.inputs[self.in_flow] = PortType.FLOW
         self.in_frame = generate_uuid()
         self.inputs[self.in_frame] = PortType.DATA
-        self.out_frame = generate_uuid()
-        self.outputs[self.out_frame] = PortType.DATA
         self.out_flow = generate_uuid()
         self.outputs[self.out_flow] = PortType.FLOW
 
-        self.state['folder'] = 'Captured_Images/go1_saved'
+        self.state['folder'] = 'Captured_Images/go1_front'
         self.state['duration'] = 10.0
-        self.state['use_timer'] = True
+        self.state['use_timer'] = False
         self.state['max_frames'] = 100
         
         self._save_start_time = None
         self._frame_count = 0
         self._timer_completed_this_run = False
+        self._frame_index = 0
 
     def _prune_saved_frames(self, folder, max_frames):
-        files = glob.glob(os.path.join(folder, "frame_*.jpg"))
+        """Max Frames 초과 파일 삭제"""
+        files = glob.glob(os.path.join(folder, "front_*.jpg"))
         if len(files) <= max_frames:
             return
         files.sort(key=os.path.getctime)
@@ -1099,12 +1112,12 @@ class VideoFrameSaveNode(BaseNode):
             except Exception as e:
                 delete_fail_count += 1
                 if delete_fail_count == 1:
-                    write_log(f"[VIS_SAVE] MaxFrames 삭제 실패(예시): {old_file} ({e})")
+                    write_log(f"[VIS_SAVE] MaxFrames 삭제 실패(예시): {os.path.basename(old_file)} ({e})")
 
     def execute(self):
         global camera_save_state
         
-        save_folder = self.state.get('save_folder', 'Captured_Images/go1_front')
+        folder = str(self.state.get('folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
         is_saving = bool(engine_module.is_running)
         duration = float(self.state.get('duration', 10.0))
         use_timer = bool(self.state.get('use_timer', False))
@@ -1114,7 +1127,7 @@ class VideoFrameSaveNode(BaseNode):
             self._timer_completed_this_run = False
 
         # 저장 상태 업데이트
-        camera_save_state['folder'] = save_folder
+        camera_save_state['folder'] = folder
         camera_save_state['duration'] = duration
 
         if not is_saving:
@@ -1126,19 +1139,21 @@ class VideoFrameSaveNode(BaseNode):
                 camera_save_state['frame_count'] = 0
             return self.out_flow
 
+        # 저장 시작
         if is_saving and not self._save_start_time and not self._timer_completed_this_run:
-            # 저장 시작
             self._save_start_time = time.time()
             self._frame_count = 0
+            self._frame_index = 0
             camera_save_state['status'] = 'Running'
             camera_save_state['start_time'] = self._save_start_time
             try:
-                os.makedirs(save_folder, exist_ok=True)
-                write_log(f"[VIS_SAVE] 저장 시작: {save_folder}")
+                os.makedirs(folder, exist_ok=True)
+                write_log(f"[VIS_SAVE] 저장 시작: {folder}")
             except Exception as e:
                 write_log(f"[VIS_SAVE] 폴더 생성 실패: {e}")
                 return self.out_flow
 
+        # 타이머 체크
         if self._save_start_time and use_timer and duration > 0:
             elapsed = time.time() - self._save_start_time
             if elapsed > duration:
@@ -1151,13 +1166,25 @@ class VideoFrameSaveNode(BaseNode):
                 # 저장 완료 시 스트리밍도 함께 정지
                 for node in node_registry.values():
                     if node.type_str == 'VIDEO_SRC':
-                        node._started = False
                         node._auto_stopped_by_timer = True
                 camera_command_queue.append(('STOP', ''))
                 return self.out_flow
 
-        # go1_front 폴더의 Max Frames 정리 (타이머 OFF 상태에서만)
+        # 프레임 저장
+        frame = self.fetch_input_data(self.in_frame)
+        if frame is not None and HAS_CV2 and self._save_start_time is not None:
+            try:
+                self._frame_index += 1
+                filename = os.path.join(folder, f"front_{self._frame_index:06d}.jpg")
+                success = cv2.imwrite(filename, frame)
+                if success:
+                    self._frame_count += 1
+                    camera_save_state['frame_count'] = self._frame_count
+            except Exception as e:
+                write_log(f"[VIS_SAVE] 프레임 저장 실패: {e}")
+
+        # Max Frames 정리 (타이머 OFF 상태에서만)
         if self._save_start_time is not None and not use_timer:
-            self._prune_saved_frames(save_folder, max_frames)
+            self._prune_saved_frames(folder, max_frames)
         
         return self.out_flow
