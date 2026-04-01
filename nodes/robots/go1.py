@@ -1104,8 +1104,7 @@ class VideoFrameSaveNode(BaseNode):
     def execute(self):
         global camera_save_state
         
-        frame = self.fetch_input_data(self.in_frame)
-        folder = str(self.state.get('folder', 'Captured_Images/go1_saved'))
+        save_folder = self.state.get('save_folder', 'Captured_Images/go1_front')
         is_saving = bool(engine_module.is_running)
         duration = float(self.state.get('duration', 10.0))
         use_timer = bool(self.state.get('use_timer', False))
@@ -1115,7 +1114,7 @@ class VideoFrameSaveNode(BaseNode):
             self._timer_completed_this_run = False
 
         # 저장 상태 업데이트
-        camera_save_state['folder'] = folder
+        camera_save_state['folder'] = save_folder
         camera_save_state['duration'] = duration
 
         if not is_saving:
@@ -1125,7 +1124,6 @@ class VideoFrameSaveNode(BaseNode):
                 camera_save_state['status'] = 'Stopped'
                 camera_save_state['start_time'] = None
                 camera_save_state['frame_count'] = 0
-            self.output_data[self.out_frame] = frame
             return self.out_flow
 
         if is_saving and not self._save_start_time and not self._timer_completed_this_run:
@@ -1135,8 +1133,8 @@ class VideoFrameSaveNode(BaseNode):
             camera_save_state['status'] = 'Running'
             camera_save_state['start_time'] = self._save_start_time
             try:
-                os.makedirs(folder, exist_ok=True)
-                write_log(f"[VIS_SAVE] 저장 시작: {folder}")
+                os.makedirs(save_folder, exist_ok=True)
+                write_log(f"[VIS_SAVE] 저장 시작: {save_folder}")
             except Exception as e:
                 write_log(f"[VIS_SAVE] 폴더 생성 실패: {e}")
                 return self.out_flow
@@ -1156,24 +1154,10 @@ class VideoFrameSaveNode(BaseNode):
                         node._started = False
                         node._auto_stopped_by_timer = True
                 camera_command_queue.append(('STOP', ''))
-
-                self.output_data[self.out_frame] = frame
                 return self.out_flow
 
-        if frame is not None and HAS_CV2 and self._save_start_time is not None:
-            # 프레임 저장
-            try:
-                filename = os.path.join(folder, f"frame_{self._frame_count:06d}.jpg")
-                success = cv2.imwrite(filename, frame)
-                if success:
-                    self._frame_count += 1
-                    camera_save_state['frame_count'] = self._frame_count
-            except Exception as e:
-                write_log(f"[VIS_SAVE] 저장 오류: {e}")
-        
-        # 타이머 OFF 상태에서만 max_frames 초과 파일 정리
+        # go1_front 폴더의 Max Frames 정리 (타이머 OFF 상태에서만)
         if self._save_start_time is not None and not use_timer:
-            self._prune_saved_frames(folder, max_frames)
+            self._prune_saved_frames(save_folder, max_frames)
         
-        self.output_data[self.out_frame] = frame
         return self.out_flow
