@@ -889,8 +889,8 @@ class VideoSourceNode(BaseNode):
         
         if run_flag:
             if not self._started and camera_state['status'] in ['Stopped', 'Stopping...']:
-                    # PC IP만 라즈베리파이로 전송 (저장은 하지 않음)
-                    camera_command_queue.append(('START_CMD', target_ip, '', 0.0))
+                # PC IP만 라즈베리파이로 전송 (저장은 하지 않음)
+                camera_command_queue.append(('START_CMD', target_ip, '', 0.0))
                 self._started = True
         else:
             if self._started and camera_state['status'] in ['Running', 'Starting...']:
@@ -900,17 +900,17 @@ class VideoSourceNode(BaseNode):
             self.output_data[self.out_frame] = None
             return None
 
-            # VideoSaveNode에서 저장한 사용자 지정 폴더에서 프레임 읽기
+        # VideoSaveNode에서 저장한 사용자 지정 폴더에서 프레임 읽기
         frame = self._last_frame
         try:
-                # 모든 노드를 순회하여 VideoSaveNode의 save_folder 찾기
-                save_folder = 'Captured_Images/go1_front'  # 기본값
-                for node in node_registry.values():
-                    if node.type_str == 'VIS_SAVE':
-                        save_folder = str(node.state.get('save_folder', 'Captured_Images/go1_front'))
-                        break
+            # 모든 노드를 순회하여 VideoSaveNode의 save_folder 찾기
+            save_folder = 'Captured_Images/go1_front'  # 기본값
+            for node in node_registry.values():
+                if node.type_str == 'VIS_SAVE':
+                    save_folder = str(node.state.get('save_folder', 'Captured_Images/go1_front'))
+                    break
             
-                files = glob.glob(os.path.join(save_folder, "front_*.jpg"))
+            files = glob.glob(os.path.join(save_folder, "front_*.jpg"))
 
             if len(files) >= 2:
                 files.sort(key=os.path.getctime)
