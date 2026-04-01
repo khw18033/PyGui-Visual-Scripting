@@ -350,6 +350,8 @@ def camera_worker_thread():
                 camera_state['last_interval_count'] = 0
 
             elif cmd == 'STOP':
+                if camera_state['status'] == 'Running' and float(camera_state.get('duration', 0.0)) > 0.0:
+                    write_log("[Cam Timer] 카메라 타이머 종료")
                 camera_state['status'] = 'Stopping...'
                 camera_state['duration'] = 0.0
                 try:
@@ -371,6 +373,31 @@ def camera_worker_thread():
                     pass
                 time.sleep(0.5)
                 camera_state['status'] = 'Stopped'
+
+        if camera_state['status'] == 'Running' and float(camera_state.get('duration', 0.0)) > 0.0:
+            elapsed = time.time() - float(camera_state.get('start_time', 0.0))
+            if not camera_state.get('timer_started_logged', False):
+                write_log("[Cam Timer] 카메라 타이머 시작")
+                camera_state['timer_started_logged'] = True
+
+            interval_count = int(elapsed // 10)
+            if interval_count > camera_state.get('last_interval_count', 0) and interval_count > 0:
+                write_log(f"[Cam Timer] {interval_count * 10}초 경과")
+                camera_state['last_interval_count'] = interval_count
+
+            if elapsed >= float(camera_state.get('duration', 0.0)):
+                write_log("[Cam Timer] 카메라 타이머 종료")
+                camera_state['status'] = 'Stopping...'
+                camera_state['duration'] = 0.0
+                for node in node_registry.values():
+                    if node.type_str == 'VIDEO_SRC' and hasattr(node, '_auto_stopped_by_timer'):
+                        node._auto_stopped_by_timer = True
+                    if node.type_str == 'VIS_SAVE':
+                        if hasattr(node, '_save_start_time'):
+                            node._save_start_time = None
+                        if hasattr(node, '_timer_completed_this_run'):
+                            node._timer_completed_this_run = True
+                camera_command_queue.append(('STOP', camera_state.get('target_ip', '')))
 
         if camera_state['status'] == 'Running':
             elapsed = time.time() - float(camera_state.get('start_time', 0.0))
@@ -920,11 +947,22 @@ class VideoSourceNode(BaseNode):
         if run_flag:
             if not self._started and camera_state['status'] in ['Stopped', 'Stopping...']:
                 receiver_folder = 'Captured_Images/go1_front'
+                start_duration = 0.0
                 for node in node_registry.values():
                     if node.type_str == 'VIS_SAVE':
                         receiver_folder = str(node.state.get('folder', receiver_folder)).strip() or receiver_folder
+                        raw_use_timer = node.state.get('use_timer', False)
+                        if isinstance(raw_use_timer, str):
+                            use_timer = raw_use_timer.strip().lower() in ['1', 'true', 'yes', 'on']
+                        else:
+                            use_timer = bool(raw_use_timer)
+                        if use_timer:
+                            try:
+                                start_duration = max(0.0, float(node.state.get('duration', 0.0)))
+                            except Exception:
+                                start_duration = 0.0
                         break
-                camera_command_queue.append(('START_CMD', target_ip, receiver_folder, 0.0))
+                camera_command_queue.append(('START_CMD', target_ip, receiver_folder, start_duration))
                 self._started = True
         else:
             if self._started and camera_state['status'] in ['Running', 'Starting...']:
@@ -1195,7 +1233,7 @@ class VideoFrameSaveNode(BaseNode):
         if self._save_start_time and use_timer and duration > 0:
             elapsed = time.time() - self._save_start_time
             if elapsed > duration:
-                write_log("[VIS_SAVE] 타이머 완료")
+                write_log(f"[VIS_SAVE] 타이머 종료: {duration:.1f}s 경과")
                 self._save_start_time = None
                 self._timer_completed_this_run = True
                 camera_save_state['status'] = 'Stopped'
