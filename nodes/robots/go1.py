@@ -1108,7 +1108,7 @@ class VideoFrameSaveNode(BaseNode):
         folder = str(self.state.get('folder', 'Captured_Images/go1_saved'))
         is_saving = bool(engine_module.is_running)
         duration = float(self.state.get('duration', 10.0))
-        use_timer = bool(self.state.get('use_timer', True))
+        use_timer = bool(self.state.get('use_timer', False))
         max_frames = max(1, int(self.state.get('max_frames', 100)))
 
         if not is_saving:
@@ -1141,9 +1141,6 @@ class VideoFrameSaveNode(BaseNode):
                 write_log(f"[VIS_SAVE] 폴더 생성 실패: {e}")
                 return self.out_flow
 
-        if self._save_start_time is not None and not use_timer:
-            self._prune_saved_frames(folder, max_frames)
-
         if self._save_start_time and use_timer and duration > 0:
             elapsed = time.time() - self._save_start_time
             if elapsed > duration:
@@ -1171,12 +1168,12 @@ class VideoFrameSaveNode(BaseNode):
                 if success:
                     self._frame_count += 1
                     camera_save_state['frame_count'] = self._frame_count
-
-                    # 타이머 OFF인 경우 폴더 파일 개수를 max_frames로 제한
-                    if not use_timer:
-                        self._prune_saved_frames(folder, max_frames)
             except Exception as e:
                 write_log(f"[VIS_SAVE] 저장 오류: {e}")
+        
+        # 타이머 OFF 상태에서만 max_frames 초과 파일 정리
+        if self._save_start_time is not None and not use_timer:
+            self._prune_saved_frames(folder, max_frames)
         
         self.output_data[self.out_frame] = frame
         return self.out_flow

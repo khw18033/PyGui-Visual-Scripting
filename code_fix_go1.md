@@ -374,3 +374,57 @@
   - `core/engine.py`
   - `nodes/robots/go1.py`
   - `ui/dpg_manager.py`
+
+### [2026-04-01 10:15:00] VideoFrameSaveNode MaxFrames 초과 시 파일 삭제 미작동 근본 원인 제거
+- 문제 분석:
+  - **타이머 OFF 상태에서 Max Frames 수를 초과한 파일들이 삭제되지 않는 현상** 발생.
+  - 원인: `_prune_saved_frames()` 호출이 프레임 저장 성공 여부에 종속되어 있었음.
+    1. 첫 번째 호출: `if self._save_start_time is not None and not use_timer:` (프레임 로드 **전**)
+    2. 두 번째 호출: 프레임 저장 성공 시에만 실행 (프레임 로드 **후**, `if success` 블록 **내부**)
+  - 만약 프레임이 `None`이거나 `cv2.imwrite()` 실패 시, 두 번째 호출이 실행되지 않음.
+  - 특히 첫 번째 호출 시점에는 아직 새 프레임이 저장되지 않았으므로:
+    - 이미 100개(max_frames) 파일이 있으면 `len(files) <= max_frames` 조건에 걸려 정리 안 함
+    - 이후 프레임 저장으로 101개가 되어도 다음 실행까지는 위상이 맞지 않음
+  - **결과**: 파일 개수가 max_frames을 초과하는 상태가 지속.
+
+- 조치 방안:
+  - `nodes/robots/go1.py` `VideoFrameSaveNode.execute()`
+    - 기존 두 개의 분산된 호출을 **하나의 단일 호출**로 통합
+    - 위치: 지정된 폴더에 프레임이 저장되는 Try 블록 **완료 후**에만 호출
+    - **조건**: `if self._save_start_time and not use_timer:` (프레임 저장 성공/실패 무관)
+    - 효과: 매 실행마다 안정적으로 MaxFrames 정리 수행 보장
+    
+    ```python
+    # 기존 문제 코드:
+    if self._save_start_time is not None and not use_timer:
+        self._prune_saved_frames(folder, max_frames)  # 1차 호출 (저장 전)
+    
+    # ... 프레임 저장 로직 ...
+    if frame is not None and HAS_CV2 and self._save_start_time is not None:
+        try:
+            # 파일 저장
+            if success:
+                if not use_timer:
+                    self._prune_saved_frames(folder, max_frames)  # 2차 호출 (저장 성공 시만)
+    
+    # 수정 후 (단일 호출):
+    if frame is not None and HAS_CV2 and self._save_start_time is not None:
+        # 파일 저장
+        try:
+            ...
+        except Exception as e:
+            ...
+    
+    # 타이머 OFF인 경우, 프레임 저장 성공 여부와 무관하게 항상 max_frames 초과 파일 정리
+    if self._save_start_time and not use_timer:
+        self._prune_saved_frames(folder, max_frames)
+    ```
+
+- 기대 효과:
+  1. 타이머 OFF에서 MaxFrames가 **매 실행마다 안정적으로 적용**됨.
+  2. 프레임이 간헐적으로 None이거나 저장 실패해도 **정리 로직은 항상 실행**.
+  3. 저장 폴더의 파일 개수가 max_frames 범위 내에서 일정하게 유지.
+
+- 수정 파일:
+  - `nodes/robots/go1.py` (VideoFrameSaveNode.execute() 로직 재정리)
+
