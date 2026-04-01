@@ -266,6 +266,7 @@ def camera_worker_thread():
 
             if cmd == 'START_CMD':
                 _, pc_ip, target_folder, duration = cmd_data
+                target_folder = str(target_folder).strip() or "Captured_Images/go1_front"
                 camera_state['status'] = 'Starting...'
                 camera_state['target_ip'] = pc_ip
                 camera_state['duration'] = float(duration)
@@ -889,8 +890,12 @@ class VideoSourceNode(BaseNode):
         
         if run_flag:
             if not self._started and camera_state['status'] in ['Stopped', 'Stopping...']:
-                # PC IP만 라즈베리파이로 전송 (저장은 하지 않음)
-                camera_command_queue.append(('START_CMD', target_ip, '', 0.0))
+                receiver_folder = 'Captured_Images/go1_front'
+                for node in node_registry.values():
+                    if node.type_str == 'VIS_SAVE':
+                        receiver_folder = str(node.state.get('folder', receiver_folder)).strip() or receiver_folder
+                        break
+                camera_command_queue.append(('START_CMD', target_ip, receiver_folder, 0.0))
                 self._started = True
         else:
             if self._started and camera_state['status'] in ['Running', 'Starting...']:
@@ -907,7 +912,7 @@ class VideoSourceNode(BaseNode):
             save_folder = 'Captured_Images/go1_front'  # 기본값
             for node in node_registry.values():
                 if node.type_str == 'VIS_SAVE':
-                    save_folder = str(node.state.get('save_folder', 'Captured_Images/go1_front'))
+                    save_folder = str(node.state.get('folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
                     break
             
             files = glob.glob(os.path.join(save_folder, "front_*.jpg"))
