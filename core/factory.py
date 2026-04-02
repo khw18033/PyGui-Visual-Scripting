@@ -10,7 +10,7 @@ from nodes.robots.mt4 import (
 )
 
 from nodes.robots.go1 import (Go1RobotDriver, Go1ActionNode, VideoSourceNode, Go1KeyboardNode, Go1UnityNode,
-                              FisheyeUndistortNode, ArUcoDetectNode, FlaskStreamNode, VideoFrameSaveNode)
+                              FisheyeUndistortNode, ArUcoDetectNode, FlaskStreamNode, VideoFrameSaveNode, ServerSenderNode)
 
 from nodes.robots.ep01 import EPRobotDriver, EPActionNode
 
@@ -50,6 +50,7 @@ class NodeFactory:
         elif node_type == "VIS_ARUCO": node = ArUcoDetectNode(node_id)
         elif node_type == "VIS_FLASK": node = FlaskStreamNode(node_id)
         elif node_type == "VIS_SAVE": node = VideoFrameSaveNode(node_id)
+        elif node_type == "GO1_SERVER_SENDER": node = ServerSenderNode(node_id)
         elif node_type == "EP_DRIVER": node = UniversalRobotNode(node_id, EPRobotDriver(), "EP Driver", "EP_DRIVER")
         elif node_type == "EP_ACTION": node = EPActionNode(node_id)
         

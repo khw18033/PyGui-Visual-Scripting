@@ -23,7 +23,7 @@ import nodes.robots.mt4 as mt4_module
 try:
     from nodes.robots.go1 import (
         go1_dashboard, go1_target_vel, go1_state, go1_node_intent,
-        camera_state, aruco_settings, go1_estop_callback
+        camera_state, aruco_settings, go1_estop_callback, ServerSenderNode
     )
     import nodes.robots.go1 as go1_module
     HAS_GO1 = True
@@ -194,6 +194,9 @@ class NodeUIRenderer:
             elif t == "GO1_ACTION" and hasattr(node, 'combo_id'):
                 node.state['mode'] = dpg.get_value(node.combo_id)
                 node.state['v1'] = dpg.get_value(node.field_v1)
+            elif t == "GO1_SERVER_SENDER" and hasattr(node, 'combo_action'):
+                node.state['action'] = dpg.get_value(node.combo_action)
+                node.state['server_url'] = dpg.get_value(node.field_url)
             elif t == "GO1_UNITY" and hasattr(node, 'field_ip'):
                 node.state['unity_ip'] = dpg.get_value(node.field_ip)
                 node.state['enable_teleop_rx'] = dpg.get_value(node.chk_enable)
@@ -233,6 +236,9 @@ class NodeUIRenderer:
         elif t == "GO1_ACTION" and hasattr(node, 'combo_id'):
             dpg.set_value(node.combo_id, node.state.get('mode', 'Stand'))
             dpg.set_value(node.field_v1, node.state.get('v1', 0.2))
+        elif t == "GO1_SERVER_SENDER" and hasattr(node, 'combo_action'):
+            dpg.set_value(node.combo_action, node.state.get('action', 'Start Sender'))
+            dpg.set_value(node.field_url, node.state.get('server_url', "http://192.168.1.100:5001/upload"))
         elif t == "GO1_UNITY" and hasattr(node, 'field_ip'):
             dpg.set_value(node.field_ip, node.state.get('unity_ip', getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246')))
             dpg.set_value(node.chk_enable, node.state.get('enable_teleop_rx', True))
@@ -277,6 +283,7 @@ class NodeUIRenderer:
         elif t == "GO1_KEYBOARD": NodeUIRenderer._render_go1_keyboard(node)
         elif t == "GO1_UNITY": NodeUIRenderer._render_go1_unity(node)
         elif t == "GO1_ACTION": NodeUIRenderer._render_go1_action(node)
+        elif t == "GO1_SERVER_SENDER": NodeUIRenderer._render_go1_server_sender(node)
         elif t == "VIDEO_SRC": NodeUIRenderer._render_video_src(node)
         elif t == "VIS_FISHEYE": NodeUIRenderer._render_fisheye(node)
         elif t == "VIS_ARUCO": NodeUIRenderer._render_aruco(node)
@@ -494,6 +501,21 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.in_val1, attribute_type=dpg.mvNode_Attr_Input):
                 dpg.add_text("Speed/Val")
                 node.field_v1 = dpg.add_input_float(width=60, default_value=0.2)
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_go1_server_sender(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Server Sender (Go1)"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_action = dpg.add_combo(
+                    ["Start Sender", "Stop Sender"],
+                    default_value="Start Sender",
+                    width=140
+                )
+                dpg.add_spacer(height=3)
+                dpg.add_text("Server URL:")
+                node.field_url = dpg.add_input_text(width=160, default_value="http://192.168.1.100:5001/upload")
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod

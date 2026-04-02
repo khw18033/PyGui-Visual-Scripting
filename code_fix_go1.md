@@ -495,3 +495,51 @@
 - 수정 파일:
   - `nodes/robots/go1.py`
 
+
+### [2026-04-02 18:42:00] Server Sender 노드 구현 (Go1_DS.py → go1.py 이식)
+- 문제 분석:
+  - 기존 Go1_DS.py의 **Server Sender 기능** (비동기 HTTP 멀티파트 이미지 업로드)이 go1.py에 구현되지 않음.
+  - 사용자 요구:  Server Sender 기능을 go1.py에 구현하고 dpg_manager.py/factory.py 등 통합
+  
+- 조치 방안:
+  - 
+odes/robots/go1.py 수정:
+    - 임포트: import asyncio, import aiohttp (선택사항, 없으면 기능 비활성화)
+    - 글로벌 변수: sender_state, sender_command_queue, multi_sender_active, TARGET_FPS, INTERVAL, _SENDER_MANAGER_STARTED
+    - 함수 추가 (4종):
+      - send_image_async(): 파일 읽기 → aiohttp multipart/form-data 구성 → 2초 타임아웃 HTTP POST
+      - camera_async_worker(): CAMERA_CONFIG 폴더 모니터링 → 최신 파일 감지 → 중복 방지 → 비동기 업로드 (10Hz)
+      - start_async_loop(): asyncio 이벤트루프 생성/실행
+      - sender_manager_thread(): 송신 명령 큐 감시 → START/STOP 처리
+    - 클래스 추가: ServerSenderNode
+      - 입력: Flow In
+      - 출력: Flow Out
+      - 상태: ction (Start Sender/Stop Sender), server_url (기본: http://192.168.1.100:5001/upload)
+      - execute(): action 변경 감지 → 명령 큐잉
+    - init_go1_connection(): HAS_AIOHTTP 확인 후 sender_manager_thread() daemon 시작
+  
+  - core/factory.py 수정:
+    - ServerSenderNode import 추가
+    - create_node(): elif node_type == GO1_SERVER_SENDER: node = ServerSenderNode(node_id)
+  
+- 설계 특징:
+  1. 비동기: aiohttp + asyncio로 메인 스레드 블로킹 방지
+  2. 다중 카메라: CAMERA_CONFIG 크기만큼 병렬 워커 생성
+  3. 중복 방지: 최신 파일 경로 추적
+  4. 안전 종료: multi_sender_active 플래그
+  5. Flow 제어: VideoFrameSaveNode와 체인 연결 가능
+  
+- 파이프라인:
+  `
+  [Video Source] → [Video Save] → [Server Sender] → [후속노드]
+  `
+
+- 성능 파라미터:
+  - TARGET_FPS = 10 (초당 10회 업로드 시도)
+  - INTERVAL = 0.1초 (100ms)
+  - HTTP timeout = 2.0초
+
+- 수정 파일:
+  - 
+odes/robots/go1.py (함수/클래스 추가)
+  - core/factory.py (ServerSenderNode 등록)

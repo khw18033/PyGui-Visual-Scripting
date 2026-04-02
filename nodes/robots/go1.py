@@ -8,6 +8,7 @@ import threading
 import platform
 import subprocess
 import glob
+import asyncio
 from datetime import datetime
 from collections import deque
 
@@ -31,6 +32,13 @@ except ImportError:
     Flask = None
     Response = None
     HAS_FLASK = False
+
+try:
+    import aiohttp
+    HAS_AIOHTTP = True
+except ImportError:
+    aiohttp = None
+    HAS_AIOHTTP = False
 
 # ================= [Unitree SDK Import (Optional)] =================
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -170,6 +178,14 @@ camera_save_state = {
 }
 camera_save_queue = deque()
 
+# ================= [Go1 Server Sender (HTTP Upload)] =================
+sender_state = {'status': 'Stopped'}
+sender_command_queue = deque()
+multi_sender_active = False
+TARGET_FPS = 10
+INTERVAL = 1.0 / TARGET_FPS
+_SENDER_MANAGER_STARTED = False
+
 
 def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
@@ -239,7 +255,7 @@ def _prompt_go1_ip(default_ip):
 
 
 def init_go1_connection():
-    global GO1_IP, _GO1_IP_INITIALIZED, _CAMERA_WORKER_STARTED
+    global GO1_IP, _GO1_IP_INITIALIZED, _CAMERA_WORKER_STARTED, _SENDER_MANAGER_STARTED
     if _GO1_IP_INITIALIZED:
         return
     _GO1_IP_INITIALIZED = True
@@ -254,6 +270,11 @@ def init_go1_connection():
     if not _CAMERA_WORKER_STARTED:
         _CAMERA_WORKER_STARTED = True
         threading.Thread(target=camera_worker_thread, daemon=True).start()
+
+    if not _SENDER_MANAGER_STARTED and HAS_AIOHTTP:
+        _SENDER_MANAGER_STARTED = True
+        threading.Thread(target=sender_manager_thread, daemon=True).start()
+
 
 
 def camera_worker_thread():
@@ -406,6 +427,102 @@ def camera_worker_thread():
                 write_log(f"[Cam Running] {interval_count * 10}초 경과")
                 camera_state['last_interval_count'] = interval_count
 
+        time.sleep(0.1)
+
+
+# ================= [Server Sender Functions] =================
+async def send_image_async(session, filepath, camera_id, server_url):
+    """HTTP multipart/form-data로 이미지 비동기 업로드"""
+    try:
+        if not os.path.exists(filepath):
+            return
+        with open(filepath, 'rb') as f:
+            file_data = f.read()
+        
+        form = aiohttp.FormData()
+        form.add_field('camera_id', camera_id)
+        form.add_field('file', file_data, filename=f"{camera_id}_calib.jpg", content_type='image/jpeg')
+        
+        async with session.post(server_url, data=form, timeout=aiohttp.ClientTimeout(total=2.0)) as response:
+            pass
+    except Exception:
+        pass
+
+
+async def camera_async_worker(config, server_url):
+    """카메라 폴더 모니터링 및 이미지 송신"""
+    global multi_sender_active
+    
+    folder = config["folder"]
+    camera_id = config["id"]
+    last_processed_file = None
+    
+    os.makedirs(folder, exist_ok=True)
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            while multi_sender_active:
+                cycle_start = time.time()
+                files = glob.glob(os.path.join(folder, "*.jpg"))
+                
+                if files:
+                    valid_files = []
+                    for f in files:
+                        try:
+                            valid_files.append((os.path.getctime(f), f))
+                        except OSError:
+                            pass
+                    
+                    if valid_files:
+                        _, latest_file = max(valid_files)
+                        if latest_file != last_processed_file:
+                            last_processed_file = latest_file
+                            await send_image_async(session, latest_file, camera_id, server_url)
+                
+                await asyncio.sleep(max(0, INTERVAL - (time.time() - cycle_start)))
+    except Exception:
+        pass
+
+
+def start_async_loop(config, server_url):
+    """asyncio 이벤트루프 생성 및 실행"""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(camera_async_worker(config, server_url))
+    except Exception:
+        pass
+
+
+def sender_manager_thread():
+    """송신 명령 처리 및 워커 스레드 관리"""
+    global multi_sender_active, sender_state
+    sender_threads = []
+    
+    while True:
+        if sender_command_queue:
+            cmd, url = sender_command_queue.popleft()
+            
+            if cmd == 'START' and not multi_sender_active:
+                multi_sender_active = True
+                sender_state['status'] = 'Running'
+                write_log(f"[Server Sender] 연결: {url}")
+                
+                for config in CAMERA_CONFIG:
+                    s_thread = threading.Thread(
+                        target=start_async_loop,
+                        args=(config, url),
+                        daemon=True
+                    )
+                    s_thread.start()
+                    sender_threads.append(s_thread)
+            
+            elif cmd == 'STOP' and multi_sender_active:
+                multi_sender_active = False
+                sender_state['status'] = 'Stopped'
+                write_log("[Server Sender] 연결 해제")
+                sender_threads.clear()
+        
         time.sleep(0.1)
 
 
@@ -1286,3 +1403,44 @@ class VideoFrameSaveNode(BaseNode):
             self._prune_saved_frames(folder, max_frames)
         
         return self.out_flow
+
+
+# ================= [Server Sender Node] =================
+class ServerSenderNode(BaseNode):
+    """원격 서버로 이미지 업로드하는 노드
+    - VideoFrameSaveNode에서 저장한 이미지 감지
+    - HTTP multipart/form-data로 비동기 업로드
+    - 시작/중지 제어
+    """
+    def __init__(self, node_id):
+        super().__init__(node_id, "Server Sender", "GO1_SERVER_SENDER")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+        
+        self.state['action'] = 'Start Sender'  # "Start Sender" / "Stop Sender"
+        self.state['server_url'] = "http://192.168.1.100:5001/upload"
+        
+        self._last_action = None
+
+    def execute(self):
+        global sender_state
+        
+        action = self.state.get('action', 'Start Sender')
+        url = self.state.get('server_url', "http://192.168.1.100:5001/upload")
+        
+        # 액션 변경 감지
+        if action != self._last_action:
+            self._last_action = action
+            
+            if action == "Start Sender" and sender_state['status'] == 'Stopped':
+                sender_state['status'] = 'Starting...'
+                sender_command_queue.append(('START', url))
+            
+            elif action == "Stop Sender" and sender_state['status'] == 'Running':
+                sender_state['status'] = 'Stopping...'
+                sender_command_queue.append(('STOP', url))
+        
+        return self.out_flow
+
