@@ -471,3 +471,27 @@
 - 수정 파일:
   - `ui/dpg_manager.py`
 
+### [2026-04-02 18:36:25] VIS_SAVE Max Frames 동작 조건 확인 및 정렬/인덱스 안정화
+- 문제 분석:
+  - 요구사항은 **Max Frames 정리 기능이 타이머 OFF 상태에서만 동작**해야 함.
+  - 기존 실행 흐름 점검 결과, `VideoFrameSaveNode.execute()`에서 Max Frames 정리 호출은 `not use_timer` 조건으로 제한되어 있었음.
+  - 다만 폴더 내 오래된 파일 판별과 저장 인덱스 초기화 방식이 환경에 따라 불안정할 여지가 있어, 실사용에서 개수 유지가 기대와 다르게 보일 가능성이 있었음.
+
+- 조치 방안:
+  - `nodes/robots/go1.py`의 `VideoFrameSaveNode`에 아래 보강 적용:
+    - 파일명(`front_000001.jpg`)에서 프레임 인덱스를 추출하는 `_extract_frame_index()` 추가.
+    - 저장 시작 시 기존 폴더 파일을 스캔해 다음 인덱스를 맞추는 `_sync_frame_index_from_folder()` 추가.
+    - `_prune_saved_frames()` 정렬 기준을 생성시간 단독 기준에서 **파일명 인덱스 우선**으로 개선.
+    - `max_frames` 입력값이 문자열/실수여도 안전하게 파싱되도록 방어 로직 추가.
+  - 동작 조건 재확인:
+    - Max Frames 정리는 `if self._save_start_time is not None and not use_timer:`에서만 수행됨.
+    - 즉, 타이머 ON에서는 Max Frames 삭제 로직이 실행되지 않음.
+
+- 기대 효과:
+  1. 타이머 OFF에서만 오래된 파일 삭제가 수행되어 요구사항과 정확히 일치.
+  2. 시간이 지나도 저장 파일 수가 `max_frames` 범위로 안정적으로 유지.
+  3. 실행 재시작 후에도 인덱스 충돌/역정렬 가능성이 줄어 정리 동작 신뢰성 향상.
+
+- 수정 파일:
+  - `nodes/robots/go1.py`
+
