@@ -1171,12 +1171,30 @@ class VideoFrameSaveNode(BaseNode):
         self._timer_completed_this_run = False
         self._frame_index = 0
 
+    def _extract_frame_index(self, path):
+        name = os.path.basename(path)
+        if not (name.startswith("front_") and name.endswith(".jpg")):
+            return -1
+        number_part = name[6:-4]
+        return int(number_part) if number_part.isdigit() else -1
+
+    def _sync_frame_index_from_folder(self, folder):
+        files = glob.glob(os.path.join(folder, "front_*.jpg"))
+        max_idx = 0
+        for path in files:
+            idx = self._extract_frame_index(path)
+            if idx > max_idx:
+                max_idx = idx
+        self._frame_index = max_idx
+
     def _prune_saved_frames(self, folder, max_frames):
         """Max Frames 초과 파일 삭제"""
         files = glob.glob(os.path.join(folder, "front_*.jpg"))
         if len(files) <= max_frames:
             return
-        files.sort(key=os.path.getctime)
+
+        # 파일명(front_000001.jpg) 인덱스를 우선 기준으로 정렬해 가장 오래된 프레임부터 삭제한다.
+        files.sort(key=lambda p: (self._extract_frame_index(p), os.path.getmtime(p)))
         delete_fail_count = 0
         for old_file in files[:len(files) - max_frames]:
             try:
@@ -1197,7 +1215,11 @@ class VideoFrameSaveNode(BaseNode):
             use_timer = raw_use_timer.strip().lower() in ['1', 'true', 'yes', 'on']
         else:
             use_timer = bool(raw_use_timer)
-        max_frames = max(1, int(self.state.get('max_frames', 100)))
+        raw_max_frames = self.state.get('max_frames', 100)
+        try:
+            max_frames = max(1, int(float(raw_max_frames)))
+        except Exception:
+            max_frames = 100
 
         if not is_saving:
             self._timer_completed_this_run = False
@@ -1219,11 +1241,11 @@ class VideoFrameSaveNode(BaseNode):
         if is_saving and not self._save_start_time and not self._timer_completed_this_run:
             self._save_start_time = time.time()
             self._frame_count = 0
-            self._frame_index = 0
             camera_save_state['status'] = 'Running'
             camera_save_state['start_time'] = self._save_start_time
             try:
                 os.makedirs(folder, exist_ok=True)
+                self._sync_frame_index_from_folder(folder)
                 write_log(f"[VIS_SAVE] 저장 시작: {folder}")
             except Exception as e:
                 write_log(f"[VIS_SAVE] 폴더 생성 실패: {e}")
