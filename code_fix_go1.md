@@ -543,3 +543,22 @@ odes/robots/go1.py 수정:
   - 
 odes/robots/go1.py (함수/클래스 추가)
   - core/factory.py (ServerSenderNode 등록)
+
+### [2026-04-02 18:43:00] Server Sender 노드 생성 UI 버튼 추가
+- 문제 분석:
+  - Server Sender 노드의 백엔드 구현(go1.py 클래스, factory.py 등록, dpg_manager.py 렌더러/동기화)은 완료되었으나, 사용자가 시각 에디터에서 노드를 생성할 UI 버튼이 없었음.
+  - 기존 Go1 노드들(GO1_ACTION, GO1_KEYBOARD, GO1_UNITY, VIDEO_SRC 등)은 모두 dpg_manager.py의 노드 메뉴에 생성 버튼이 있었음.
+
+- 조치 방안:
+  - `ui/dpg_manager.py`
+    - 노드 생성 메뉴의 "Go1 & Vision" 그룹에서 "GO1 ACTION" 버튼 바로 다음에 "GO1 SENDER" 버튼 추가.
+    - 버튼 콜백: `add_node_cb` (기존 다른 노드와 동일)
+    - 사용자 데이터: `"GO1_SERVER_SENDER"` (factory.py에 등록된 노드 타입 정확히 일치).
+
+- 기대 효과:
+  1. 사용자가 노드 메뉴의 "GO1 SENDER" 버튼을 클릭하면 VideoFrameSaveNode처럼 Server Sender 노드를 생성 가능.
+  2. 노드 그래프에서 [Video Save] → [Server Sender] 체인 연결로 이미지 업로드 파이프라인 구성 가능.
+  3. 모든 진행도 추적 (분석/이식/통합/버튼 추가) 완료되어, 사용자가 즉시 기능 테스트 가능.
+
+- 수정 파일:
+  - `ui/dpg_manager.py` (900줄 근처, GO1 ACTION 다음에 GO1 SENDER 버튼 추가)

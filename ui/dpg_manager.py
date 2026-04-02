@@ -897,6 +897,7 @@ def __init_ui__():
                 dpg.add_button(label="GO1 UNITY", callback=add_node_cb, user_data="GO1_UNITY")
                 dpg.add_button(label="GO1 DRIVER", callback=add_node_cb, user_data="GO1_DRIVER")
                 dpg.add_button(label="GO1 ACTION", callback=add_node_cb, user_data="GO1_ACTION")
+                dpg.add_button(label="GO1 SENDER", callback=add_node_cb, user_data="GO1_SERVER_SENDER")
                 dpg.add_button(label="VIDEO SRC", callback=add_node_cb, user_data="VIDEO_SRC")
                 dpg.add_button(label="FISHEYE", callback=add_node_cb, user_data="VIS_FISHEYE")
                 dpg.add_button(label="ARUCO", callback=add_node_cb, user_data="VIS_ARUCO")
