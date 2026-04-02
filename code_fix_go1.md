@@ -562,3 +562,24 @@ odes/robots/go1.py (함수/클래스 추가)
 
 - 수정 파일:
   - `ui/dpg_manager.py` (900줄 근처, GO1 ACTION 다음에 GO1 SENDER 버튼 추가)
+
+### [2026-04-02 19:00:00] Go1 Dashboard 하단 3패널 완전 제거
+- 문제 분석:
+  - Go1 Dashboard 하단의 3개 패널(Manual Control, Direct Speed & Actions, Speeds)을 더 이상 사용하지 않아 UI 단순화가 필요했음.
+  - 패널 UI만 제거하고 갱신 코드를 남기면 존재하지 않는 태그에 `set_value`가 호출되어 런타임 오류 위험이 있음.
+
+- 조치 방안:
+  - `ui/dpg_manager.py`
+    - Go1 Dashboard 하단 `with dpg.group(horizontal=True):` 내부의 아래 3개 child window 블록을 모두 삭제:
+      1. `Manual Control`
+      2. `Direct Speed & Actions`
+      3. `Speeds`
+    - 삭제 후 블록 구조 유지를 위해 `pass`만 남겨 레이아웃 문법 안정성 확보.
+    - 제거된 `Speeds` 태그(`go1_dash_vx`, `go1_dash_vy`, `go1_dash_vyaw`)에 대한 주기 갱신 3줄도 함께 삭제.
+
+- 기대 효과:
+  1. Go1 Dashboard 하단 3패널이 완전히 사라져 UI가 단순해짐.
+  2. 삭제된 태그 참조로 인한 런타임 오류 가능성 제거.
+
+- 수정 파일:
+  - `ui/dpg_manager.py`

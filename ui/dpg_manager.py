@@ -792,38 +792,7 @@ def __init_ui__():
                         dpg.add_text("Interfaces: Loading...", tag="dash_net_if", color=(170,170,170))
 
                 with dpg.group(horizontal=True):
-                    with dpg.child_window(width=300, height=140, border=True):
-                        dpg.add_text("Manual Control", color=(255,200,0))
-                        with dpg.group(horizontal=True):
-                            dpg.add_button(label="Vx+", width=60, callback=go1_manual_control_callback, user_data=('vx', 0.1))
-                            dpg.add_button(label="Vx-", width=60, callback=go1_manual_control_callback, user_data=('vx', -0.1))
-                            dpg.add_text("|")
-                            dpg.add_button(label="Vy+", width=60, callback=go1_manual_control_callback, user_data=('vy', 0.1))
-                            dpg.add_button(label="Vy-", width=60, callback=go1_manual_control_callback, user_data=('vy', -0.1))
-                        with dpg.group(horizontal=True):
-                            dpg.add_button(label="Yaw+", width=60, callback=go1_manual_control_callback, user_data=('vyaw', 0.2))
-                            dpg.add_button(label="Yaw-", width=60, callback=go1_manual_control_callback, user_data=('vyaw', -0.2))
-                            dpg.add_text("|")
-                            dpg.add_button(label="STOP", width=130, callback=lambda s,a,u: go1_target_vel.update({'vx':0.0, 'vy':0.0, 'vyaw':0.0}) if HAS_GO1 else None)
-
-                    with dpg.child_window(width=300, height=140, border=True):
-                        dpg.add_text("Direct Speed & Actions", color=(0,255,255))
-                        with dpg.group(horizontal=True):
-                            dpg.add_text("Vx"); dpg.add_input_float(tag="go1_input_vx", width=50, default_value=0.0, step=0)
-                            dpg.add_text("Vy"); dpg.add_input_float(tag="go1_input_vy", width=50, default_value=0.0, step=0)
-                            dpg.add_text("Yaw"); dpg.add_input_float(tag="go1_input_vyaw", width=50, default_value=0.0, step=0)
-                        with dpg.group(horizontal=True):
-                            dpg.add_button(label="Move", width=50, callback=go1_move_to_coord_callback)
-                            dpg.add_button(label="Stand", width=50, callback=go1_action_callback, user_data="stand")
-                            dpg.add_button(label="Down", width=50, callback=go1_action_callback, user_data="down")
-                            dpg.add_button(label="Walk", width=50, callback=go1_action_callback, user_data="walk")
-                            dpg.add_button(label="Dance", width=50, callback=go1_action_callback, user_data="dance")
-
-                    with dpg.child_window(width=150, height=140, border=True):
-                        dpg.add_text("Speeds", color=(0,255,255))
-                        dpg.add_text("Vx: 0.0", tag="go1_dash_vx")
-                        dpg.add_text("Vy: 0.0", tag="go1_dash_vy")
-                        dpg.add_text("Vyaw: 0.0", tag="go1_dash_vyaw")
+                    pass
 
             # ================= [EP Dashboard Tab] =================
             with dpg.tab(label="EP Dashboard"):
@@ -1003,10 +972,6 @@ def start_gui():
             if dpg.does_item_exist("dash_net_if"):
                 dpg.set_value("dash_net_if", f"Interfaces: {sys_net_str.replace(chr(10), ' | ')}")
             
-            dpg.set_value("go1_dash_vx", f"Vx: {go1_target_vel['vx']:.2f}")
-            dpg.set_value("go1_dash_vy", f"Vy: {go1_target_vel['vy']:.2f}")
-            dpg.set_value("go1_dash_vyaw", f"Vyaw: {go1_target_vel['vyaw']:.2f}")
-
         if HAS_EP:
             ep_link = ep_dashboard.get('hw_link', 'Offline')
             dpg.set_value("ep_dash_link", f"HW: {ep_link}")
