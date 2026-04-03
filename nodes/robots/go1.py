@@ -1420,7 +1420,7 @@ class ServerSenderNode(BaseNode):
         self.outputs[self.out_flow] = PortType.FLOW
         
         self.state['action'] = 'Start Sender'  # "Start Sender" / "Stop Sender"
-        self.state['server_url'] = "http://210.110.250.33:5001/upload"
+        self.state['server_url'] = "http://192.168.1.100:5001/upload"
         
         self._last_action = None
 
@@ -1428,7 +1428,7 @@ class ServerSenderNode(BaseNode):
         global sender_state
         
         action = self.state.get('action', 'Start Sender')
-        url = self.state.get('server_url', "http://210.110.250.33:5001/upload")
+        url = self.state.get('server_url', "http://192.168.1.100:5001/upload")
         
         # 액션 변경 감지
         if action != self._last_action:
