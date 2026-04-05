@@ -192,6 +192,25 @@ def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
 
 
+def _extract_front_frame_index(path):
+    name = os.path.basename(path)
+    if not (name.startswith("front_") and name.endswith(".jpg")):
+        return -1
+    number_part = name[6:-4]
+    return int(number_part) if number_part.isdigit() else -1
+
+
+def _is_file_stable(path, wait_sec=0.02):
+    """Check whether a file write has settled before upload."""
+    try:
+        size1 = os.path.getsize(path)
+        time.sleep(wait_sec)
+        size2 = os.path.getsize(path)
+        return size1 > 0 and size1 == size2
+    except OSError:
+        return False
+
+
 def _wrap_pi(a):
     while a > math.pi:
         a -= 2.0 * math.pi
@@ -432,7 +451,7 @@ def camera_worker_thread():
 
 
 # ================= [Server Sender Functions] =================
-async def send_image_async(session, filepath, camera_id, server_url):
+async def send_image_async(session, filepath, camera_id, server_url, frame_tag=None):
     """HTTP multipart/form-data로 이미지 비동기 업로드"""
     try:
         if not os.path.exists(filepath):
@@ -442,12 +461,14 @@ async def send_image_async(session, filepath, camera_id, server_url):
         
         form = aiohttp.FormData()
         form.add_field('camera_id', camera_id)
-        form.add_field('file', file_data, filename=f"{camera_id}_calib.jpg", content_type='image/jpeg')
+        if frame_tag is None:
+            frame_tag = str(int(time.time() * 1000.0))
+        form.add_field('file', file_data, filename=f"{camera_id}_{frame_tag}.jpg", content_type='image/jpeg')
         
-        async with session.post(server_url, data=form, timeout=aiohttp.ClientTimeout(total=2.0)) as response:
+        async with session.post(server_url, data=form, timeout=aiohttp.ClientTimeout(total=3.5)) as response:
             pass
-    except Exception:
-        pass
+    except Exception as e:
+        write_log(f"[Server Sender] upload error: {e}")
 
 
 async def camera_async_worker(config, server_url):
@@ -457,6 +478,7 @@ async def camera_async_worker(config, server_url):
     folder = config["folder"]
     camera_id = config["id"]
     last_processed_file = None
+    last_processed_idx = -1
     
     os.makedirs(folder, exist_ok=True)
     
@@ -467,22 +489,41 @@ async def camera_async_worker(config, server_url):
                 files = glob.glob(os.path.join(folder, "*.jpg"))
                 
                 if files:
-                    valid_files = []
+                    best_file = None
+                    best_idx = -1
                     for f in files:
-                        try:
-                            valid_files.append((os.path.getctime(f), f))
-                        except OSError:
-                            pass
-                    
-                    if valid_files:
-                        _, latest_file = max(valid_files)
-                        if latest_file != last_processed_file:
-                            last_processed_file = latest_file
-                            await send_image_async(session, latest_file, camera_id, server_url)
+                        idx = _extract_front_frame_index(f)
+                        if idx > best_idx:
+                            best_idx = idx
+                            best_file = f
+
+                    if best_file is None:
+                        valid_files = []
+                        for f in files:
+                            try:
+                                valid_files.append((os.path.getctime(f), f))
+                            except OSError:
+                                pass
+                        if valid_files:
+                            _, latest_file = max(valid_files)
+                            if latest_file != last_processed_file and _is_file_stable(latest_file):
+                                last_processed_file = latest_file
+                                await send_image_async(session, latest_file, camera_id, server_url)
+                    else:
+                        if best_idx > last_processed_idx and _is_file_stable(best_file):
+                            await send_image_async(
+                                session,
+                                best_file,
+                                camera_id,
+                                server_url,
+                                frame_tag=f"{best_idx:06d}",
+                            )
+                            last_processed_idx = best_idx
+                            last_processed_file = best_file
                 
                 await asyncio.sleep(max(0, INTERVAL - (time.time() - cycle_start)))
-    except Exception:
-        pass
+    except Exception as e:
+        write_log(f"[Server Sender] worker error ({camera_id}): {e}")
 
 
 def start_async_loop(config, server_url):
