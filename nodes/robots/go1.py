@@ -510,8 +510,8 @@ async def camera_async_worker(config, server_url):
                     else:
                         if best_idx > last_processed_idx and _is_file_stable(best_file):
                                 await send_image_async(session, best_file, camera_id, server_url)
-                            last_processed_idx = best_idx
-                            last_processed_file = best_file
+                                last_processed_idx = best_idx
+                                last_processed_file = best_file
                 
                 await asyncio.sleep(max(0, INTERVAL - (time.time() - cycle_start)))
     except Exception as e:
