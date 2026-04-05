@@ -451,7 +451,7 @@ def camera_worker_thread():
 
 
 # ================= [Server Sender Functions] =================
-async def send_image_async(session, filepath, camera_id, server_url, frame_tag=None):
+async def send_image_async(session, filepath, camera_id, server_url):
     """HTTP multipart/form-data로 이미지 비동기 업로드"""
     try:
         if not os.path.exists(filepath):
@@ -461,9 +461,7 @@ async def send_image_async(session, filepath, camera_id, server_url, frame_tag=N
         
         form = aiohttp.FormData()
         form.add_field('camera_id', camera_id)
-        if frame_tag is None:
-            frame_tag = str(int(time.time() * 1000.0))
-        form.add_field('file', file_data, filename=f"{camera_id}_{frame_tag}.jpg", content_type='image/jpeg')
+        form.add_field('file', file_data, filename=f"{camera_id}_calib.jpg", content_type='image/jpeg')
         
         async with session.post(server_url, data=form, timeout=aiohttp.ClientTimeout(total=3.5)) as response:
             pass
@@ -511,13 +509,7 @@ async def camera_async_worker(config, server_url):
                                 await send_image_async(session, latest_file, camera_id, server_url)
                     else:
                         if best_idx > last_processed_idx and _is_file_stable(best_file):
-                            await send_image_async(
-                                session,
-                                best_file,
-                                camera_id,
-                                server_url,
-                                frame_tag=f"{best_idx:06d}",
-                            )
+                                await send_image_async(session, best_file, camera_id, server_url)
                             last_processed_idx = best_idx
                             last_processed_file = best_file
                 
