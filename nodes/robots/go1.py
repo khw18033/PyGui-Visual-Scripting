@@ -186,7 +186,6 @@ multi_sender_active = False
 TARGET_FPS = 30
 INTERVAL = 1.0 / TARGET_FPS
 _SENDER_MANAGER_STARTED = False
-latest_processed_frames = {}
 
 
 def _clamp(v, lo, hi):
@@ -436,12 +435,10 @@ def camera_worker_thread():
 async def send_image_async(session, filepath, camera_id, server_url):
     """HTTP multipart/form-data로 이미지 비동기 업로드"""
     try:
-        file_data = latest_processed_frames.get(camera_id)
-        if file_data is None:
-            if not os.path.exists(filepath):
-                return
-            with open(filepath, 'rb') as f:
-                file_data = f.read()
+        if not os.path.exists(filepath):
+            return
+        with open(filepath, 'rb') as f:
+            file_data = f.read()
         
         form = aiohttp.FormData()
         form.add_field('camera_id', camera_id)
@@ -1326,7 +1323,7 @@ class VideoFrameSaveNode(BaseNode):
                     write_log(f"[VIS_SAVE] MaxFrames 삭제 실패(예시): {os.path.basename(old_file)} ({e})")
 
     def execute(self):
-        global camera_save_state, latest_processed_frames
+        global camera_save_state
         
         folder = str(self.state.get('folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
         is_saving = bool(engine_module.is_running)
@@ -1399,9 +1396,6 @@ class VideoFrameSaveNode(BaseNode):
                 if success:
                     self._frame_count += 1
                     camera_save_state['frame_count'] = self._frame_count
-                    ok, encoded = cv2.imencode('.jpg', frame)
-                    if ok:
-                        latest_processed_frames['go1_front'] = encoded.tobytes()
             except Exception as e:
                 write_log(f"[VIS_SAVE] 프레임 저장 실패: {e}")
 
