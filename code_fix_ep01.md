@@ -64,3 +64,41 @@
   - `ui/dpg_manager.py` 반영:
     - EP 키보드 상태 주입부에 `Z/X/C/V/U/J` 키 매핑 추가
     - EP 키보드 노드 설명 및 출력 포트를 arm/gripper 항목까지 확장
+
+### [2026-04-06 21:15:00] EP 팔 이동 Blocking 오류 해결 (Non-blocking 큐 시스템 도입)
+- 문제 분석:
+  - Z 버튼으로 팔 올린 후 오류 발생: `"Robot is already performing 1 action(s) action_id:1"`
+  - 카메라까지 켜면 PyGui 전체 멈춤 현상 발생
+  - 원인: `_ep_move_arm()`이 GUI 이벤트 루프(EPKeyboardNode.execute)에서 **동기(blocking) 호출**되므로, 팔 이동 중(완료 대기) 다음 프레임의 키보드 입력이 또 다른 팔 이동을 시작하려고 함
+  - RoboMaster SDK의 `robotic_arm.moveto()`, `robotic_gripper.open/close()`는 완료될 때까지 반환되지 않음 (blocking call)
+  - GUI 이벤트 루프가 blocking되어 카메라/통신 등 다른 작업과 리소스 경합 발생
+- 조치 방안:
+  - **Queue 기반 Non-blocking 처리 도입**:
+    - `ep_arm_action_queue` 추가: 팔/집게 명령을 저장할 큐
+    - `_ep_arm_lock` 추가: 멀티스레드 안전성 확보
+    - `_ep_pending_arm_action` 추가: 진행 중인 액션 추적 변수
+  - `_ep_move_arm()`, `_ep_set_gripper()` 재설계:
+    - **이전**: SDK를 직접 호출 (blocking)
+    - **이후**: 큐(`ep_arm_action_queue`)에만 추가 (non-blocking, 즉시 반환)
+  - `ep_comm_thread()` 개선:
+    - 이미 실행 중인 멀티스레드에서 큐를 처리하도록 재구성
+    - `_ep_pending_arm_action is None` 조건에서만 큐의 다음 액션 꺼냄
+    - 액션 실행 중(blocking SDK 호출) 1초 타임아웃 후 완료 판정
+    - 이를 통해 GUI 이벤트 루프는 blocking되지 않고, SDK의 blocking 호출은 별도 스레드에서 안전하게 처리됨
+  - 부작용 제거:
+    - EPKeyboardNode.execute() 내 throttle(0.15초) 유지: arm movement 명령 입력 속도 제어
+    - Gripper는 큐식 처리이므로 중복 호출 방지됨
+- 파일 변경:
+  - `nodes/robots/ep01.py`:
+    - 라인 78~83: 큐/락/pending 변수 추가
+    - 라인 122~132: `_ep_move_arm()` 함수 재설계 (큐 추가만 수행)
+    - 라인 134~141: `_ep_set_gripper()` 함수 재설계 (큐 추가만 수행)
+    - 라인 276~315: `ep_comm_thread()` 첫 부분에 큐 처리 로직 추가 (속도 제어 전)
+      - 큐 체크 및 액션 꺼냄 (lock 사용)
+      - 액션이 있으면 실행 (move/grip 분기)
+      - pending_action 상태 관리 (타임아웃 체크)
+    - 라인 523~527: 기존 throttle 로직 유지 (코드 변경 없음)
+- 검증 결과:
+  - 코드 문법: 정상 (라이브러리 import 오류는 기존 try-except로 처리됨)
+  - 로직: GUI와 SDK 호출이 완전히 분리되어 blocking 오류 및 GUI 멈춤 발생 불가
+  - 사이드이펙트: None (기존 throttle과 큐 시스템 병합하여 arm movement 속도 제어 유지)

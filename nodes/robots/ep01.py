@@ -71,6 +71,11 @@ EP_ARM_MIN = 0.0
 EP_ARM_MAX = 200.0
 EP_GRIPPER_POWER = 50
 
+# ================= [EP Arm Action Queue - Non-blocking] =================
+ep_arm_action_queue = []  # Queue of {'type': 'move'/'grip', 'params': {...}}
+_ep_arm_lock = threading.Lock()
+_ep_pending_arm_action = None  # Track ongoing action to prevent overlapping
+
 _ep_cam_lock = threading.Lock()
 _ep_cam_cap = None
 _ep_cam_sdk_started = False
@@ -115,34 +120,28 @@ def ep_sub_imu(info):
     ep_state['accel_x'], ep_state['accel_y'], ep_state['accel_z'] = info[:3]
 
 def _ep_move_arm(delta_x=0.0, delta_y=0.0):
+    """큐에 팔 이동 액션 추가 (non-blocking)"""
     target_x = max(EP_ARM_MIN, min(ep_arm_state['x'] + float(delta_x), EP_ARM_MAX))
     target_y = max(EP_ARM_MIN, min(ep_arm_state['y'] + float(delta_y), EP_ARM_MAX))
-    ep_arm_state['x'] = target_x
-    ep_arm_state['y'] = target_y
-
-    if ep_robot_inst is None:
-        return False
-
-    try:
-        ep_robot_inst.robotic_arm.moveto(x=target_x, y=target_y)
-        return True
-    except Exception as e:
-        write_log(f"EP Arm Move Error: {e}")
-        return False
+    
+    with _ep_arm_lock:
+        ep_arm_action_queue.append({
+            'type': 'move',
+            'target_x': target_x,
+            'target_y': target_y,
+            'timestamp': time.monotonic()
+        })
+    return True
 
 def _ep_set_gripper(open_gripper):
-    if ep_robot_inst is None:
-        return False
-
-    try:
-        if open_gripper:
-            ep_robot_inst.robotic_gripper.open(power=EP_GRIPPER_POWER)
-        else:
-            ep_robot_inst.robotic_gripper.close(power=EP_GRIPPER_POWER)
-        return True
-    except Exception as e:
-        write_log(f"EP Gripper Error: {e}")
-        return False
+    """큐에 그리퍼 액션 추가 (non-blocking)"""
+    with _ep_arm_lock:
+        ep_arm_action_queue.append({
+            'type': 'grip',
+            'open': open_gripper,
+            'timestamp': time.monotonic()
+        })
+    return True
 
 def connect_ep_thread_func(conn_mode):
     global ep_robot_inst
@@ -277,13 +276,45 @@ def ep_status_thread():
     ep_comm_thread()
 
 def ep_comm_thread():
-    global ep_node_intent, ep_robot_inst
+    global ep_node_intent, ep_robot_inst, _ep_pending_arm_action
     is_moving = False
 
     while True:
         time.sleep(0.05)
         if ep_robot_inst is None or ep_dashboard.get("hw_link", "Offline") == "Offline":
             continue
+
+        # ========== [Arm Action Queue Processing] ==========
+        # Only process if no action is currently pending
+        if _ep_pending_arm_action is None:
+            action = None
+            with _ep_arm_lock:
+                if ep_arm_action_queue:
+                    action = ep_arm_action_queue.pop(0)
+            
+            if action:
+                try:
+                    if action['type'] == 'move':
+                        write_log(f"EP: Arm moving to ({action['target_x']}, {action['target_y']})")
+                        ep_arm_state['x'] = action['target_x']
+                        ep_arm_state['y'] = action['target_y']
+                        ep_robot_inst.robotic_arm.moveto(x=action['target_x'], y=action['target_y'])
+                        _ep_pending_arm_action = action
+                    elif action['type'] == 'grip':
+                        write_log(f"EP: Gripper {'opening' if action['open'] else 'closing'}")
+                        if action['open']:
+                            ep_robot_inst.robotic_gripper.open(power=EP_GRIPPER_POWER)
+                        else:
+                            ep_robot_inst.robotic_gripper.close(power=EP_GRIPPER_POWER)
+                        _ep_pending_arm_action = action
+                except Exception as e:
+                    write_log(f"EP Arm Action Error: {e}")
+                    _ep_pending_arm_action = None
+        else:
+            # Check if pending action completed (simple timeout-based check: 1 second)
+            elapsed = time.monotonic() - _ep_pending_arm_action.get('timestamp', time.monotonic())
+            if elapsed > 1.0:
+                _ep_pending_arm_action = None
 
         tnow = time.monotonic()
         active = (tnow - ep_node_intent['trigger_time']) < 0.2
@@ -487,11 +518,13 @@ class EPKeyboardNode(BaseNode):
             ep_node_intent['wz'] = wz
             ep_node_intent['trigger_time'] = time.monotonic()
 
+        # Arm movement: queue-based, throttled to prevent command spam
         if arm_dx or arm_dy:
             if time.monotonic() - self.last_arm_input_time > 0.15:
                 self.last_arm_input_time = time.monotonic()
                 _ep_move_arm(delta_x=arm_dx, delta_y=arm_dy)
 
+        # Gripper: queue-based (each frame if pressed)
         if grip_open:
             _ep_set_gripper(True)
         elif grip_close:
