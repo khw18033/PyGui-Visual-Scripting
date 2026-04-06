@@ -118,3 +118,69 @@
   - nodes/robots/ep01.py 라인 309~311: exception 시 pending 유지
   - nodes/robots/ep01.py 라인 523: throttle 1.0초로 변경
 - 결과: 안정적인 arm movement (중복 오류 방지)
+
+### [2026-04-06 21:30:00] EP 팔/그리퍼 전용 워커 스레드 분리 (Action 직렬화)
+- 문제 분석:
+  - 기존 구조는 `ep_comm_thread()` 내부에서 팔 액션까지 함께 처리하여, 주행 루프와 팔 액션 루프가 결합되어 있었음.
+  - RoboMaster SDK의 arm/gripper action은 비동기 액션 객체 기반이며, 완료 전 재호출 시 `Robot is already performing ...` 오류가 반복될 수 있음.
+  - 고정 timeout 기반 pending 해제 방식은 실제 액션 완료 타이밍과 어긋나 재발 가능성이 있었음.
+- 조치 방안:
+  - 팔/그리퍼 처리 전용 스레드 `ep_arm_action_worker()` 추가:
+    - `ep_status_thread()` 시작 시 워커를 1회만 생성
+    - 워커가 큐를 단독 소비하며 arm/grip action을 직렬 실행
+  - 액션 완료 동기화:
+    - SDK 반환 객체에 `wait_for_completed()`가 있으면 호출하여 실제 완료까지 대기
+    - timeout은 `EP_ARM_ACTION_TIMEOUT=5.0`으로 통일
+  - 재시도 정책:
+    - `already performing` 오류 감지 시 front requeue + 짧은 backoff(`EP_ARM_RETRY_DELAY=0.25`)
+    - 최대 재시도 `EP_ARM_MAX_RETRY=5` 후 드롭
+  - 큐 폭주 억제:
+    - 이동 명령 enqueue 시 큐 내 기존 move 항목 제거 후 최신 목표만 유지 (last target only)
+    - 그리퍼는 동일 연속 명령 중복 enqueue 차단
+  - `ep_comm_thread()`에서는 팔/그리퍼 큐 처리 코드를 제거하고 주행 제어만 담당하도록 분리
+  - `arm_center`도 direct SDK 호출 대신 큐 경유로 통일
+- 파일 변경:
+  - nodes/robots/ep01.py
+    - 전역: `_ep_arm_worker_started`, `EP_ARM_ACTION_TIMEOUT`, `EP_ARM_RETRY_DELAY`, `EP_ARM_MAX_RETRY` 추가
+    - 함수 추가: `_wait_for_action_completion()`, `ep_arm_action_worker()`
+    - `_ep_move_arm()` 개선: 최신 move만 유지하도록 큐 정리
+    - `_ep_set_gripper()` 개선: 동일 명령 중복 enqueue 차단
+    - `ep_status_thread()` 개선: arm worker 시작 후 `ep_comm_thread()` 실행
+    - `ep_comm_thread()` 정리: arm action 처리 블록 제거
+    - `send_ep_command('arm_center')`를 큐 경유 방식으로 변경
+- 기대 효과:
+  - arm/gripper 액션이 완전 직렬화되어 중첩 호출 자체를 구조적으로 차단
+  - 카메라 송출과 병행 시에도 GUI 루프가 arm action에 의해 점유되지 않음
+
+### [2026-04-06 21:45:00] EP CAM Flow 포트 추가 + 그래프 저장/불러오기 전 노드 호환성 강화
+- 문제 분석:
+  - `EP_CAM_SRC`, `EP_CAM_STREAM` 노드가 데이터 포트 중심으로만 구성되어 Flow 체인 연결이 불가능했음.
+  - 그래프 저장/불러오기 시 일부 GO1 노드 및 EP 노드에서 링크 복원 오류가 발생함.
+  - 기존 serializer는 링크를 포트 "인덱스"만으로 복원했는데, 노드 버전 변경/포트 순서 변경 시 인덱스가 어긋나 깨질 수 있음.
+- 조치 방안:
+  - EP 카메라 노드 Flow 포트 추가:
+    - `EPCameraSourceNode`: `in_flow`, `out_flow` 추가, execute에서 `self.out_flow` 반환
+    - `EPCameraStreamNode`: `in_flow`, `out_flow` 추가, execute에서 `self.out_flow` 반환
+    - UI 렌더러(`ui/dpg_manager.py`)에도 Flow In/Out 포트 렌더링 반영
+  - serializer 호환성 강화:
+    - 저장 시 기존 `src_idx/dst_idx` 유지 + 추가 메타데이터 저장
+      - `src_attr/dst_attr` (원본 포트 ID)
+      - `src_name/dst_name` (심볼릭 포트명: 예 `in_pins:vx`, `out_flow`)
+    - 로드 시 다중 fallback 복원 적용
+      1) 심볼릭 포트명 우선
+      2) 인덱스 fallback
+      3) 원본 포트 ID fallback
+    - 복원 불가 링크는 전체 실패 대신 스킵하고 경고 로그 출력
+    - 저장 시 stale 링크(ValueError)도 안전하게 무시
+- 파일 변경:
+  - `nodes/robots/ep01.py`:
+    - `EPCameraSourceNode`, `EPCameraStreamNode`에 flow in/out 추가
+    - 두 노드 execute 반환값을 flow out으로 통일
+  - `ui/dpg_manager.py`:
+    - `_render_ep_cam_src`, `_render_ep_cam_stream`에 Flow In/Out UI 포트 추가
+  - `core/serializer.py`:
+    - `_find_attr_name_for_port`, `_resolve_port_from_name`, `_resolve_port_with_fallback` 추가
+    - save/load 링크 처리 로직을 다중 복원 방식으로 개선
+- 기대 효과:
+  - EP 카메라 노드가 일반 Flow 그래프 체인에 자연스럽게 결합됨
+  - 노드 타입/포트 변경이 있어도 그래프 파일 호환성이 크게 개선되어 전체 노드군에서 저장/복원 안정성 향상

@@ -74,7 +74,10 @@ EP_GRIPPER_POWER = 50
 # ================= [EP Arm Action Queue - Non-blocking] =================
 ep_arm_action_queue = []  # Queue of {'type': 'move'/'grip', 'params': {...}}
 _ep_arm_lock = threading.Lock()
-_ep_pending_arm_action = None  # Track ongoing action to prevent overlapping
+_ep_arm_worker_started = False
+EP_ARM_ACTION_TIMEOUT = 5.0
+EP_ARM_RETRY_DELAY = 0.25
+EP_ARM_MAX_RETRY = 5
 
 _ep_cam_lock = threading.Lock()
 _ep_cam_cap = None
@@ -123,25 +126,90 @@ def _ep_move_arm(delta_x=0.0, delta_y=0.0):
     """큐에 팔 이동 액션 추가 (non-blocking)"""
     target_x = max(EP_ARM_MIN, min(ep_arm_state['x'] + float(delta_x), EP_ARM_MAX))
     target_y = max(EP_ARM_MIN, min(ep_arm_state['y'] + float(delta_y), EP_ARM_MAX))
-    
+
+    ep_arm_state['x'] = target_x
+    ep_arm_state['y'] = target_y
+
     with _ep_arm_lock:
+        # 이동 명령은 마지막 목표만 유지해 backlog를 방지한다.
+        ep_arm_action_queue[:] = [a for a in ep_arm_action_queue if a.get('type') != 'move']
         ep_arm_action_queue.append({
             'type': 'move',
             'target_x': target_x,
             'target_y': target_y,
-            'timestamp': time.monotonic()
+            'timestamp': time.monotonic(),
+            'retry': 0,
         })
     return True
 
 def _ep_set_gripper(open_gripper):
     """큐에 그리퍼 액션 추가 (non-blocking)"""
     with _ep_arm_lock:
+        # 동일한 그리퍼 명령 연속 입력은 중복 enqueue를 막는다.
+        if ep_arm_action_queue:
+            last = ep_arm_action_queue[-1]
+            if last.get('type') == 'grip' and bool(last.get('open')) == bool(open_gripper):
+                return True
         ep_arm_action_queue.append({
             'type': 'grip',
             'open': open_gripper,
-            'timestamp': time.monotonic()
+            'timestamp': time.monotonic(),
+            'retry': 0,
         })
     return True
+
+def _wait_for_action_completion(action_obj, timeout_sec=EP_ARM_ACTION_TIMEOUT):
+    if action_obj is None:
+        return
+    waiter = getattr(action_obj, 'wait_for_completed', None)
+    if callable(waiter):
+        try:
+            waiter(timeout=timeout_sec)
+        except TypeError:
+            waiter()
+
+def ep_arm_action_worker():
+    while True:
+        time.sleep(0.01)
+
+        if ep_robot_inst is None or ep_dashboard.get("hw_link", "Offline") == "Offline":
+            continue
+
+        action = None
+        with _ep_arm_lock:
+            if ep_arm_action_queue:
+                action = ep_arm_action_queue.pop(0)
+
+        if action is None:
+            continue
+
+        try:
+            if action['type'] == 'move':
+                x = float(action['target_x'])
+                y = float(action['target_y'])
+                write_log(f"EP: Arm moving to ({x}, {y})")
+                action_obj = ep_robot_inst.robotic_arm.moveto(x=x, y=y)
+                _wait_for_action_completion(action_obj)
+            elif action['type'] == 'grip':
+                opening = bool(action['open'])
+                write_log(f"EP: Gripper {'opening' if opening else 'closing'}")
+                if opening:
+                    action_obj = ep_robot_inst.robotic_gripper.open(power=EP_GRIPPER_POWER)
+                else:
+                    action_obj = ep_robot_inst.robotic_gripper.close(power=EP_GRIPPER_POWER)
+                _wait_for_action_completion(action_obj)
+        except Exception as e:
+            msg = str(e)
+            write_log(f"EP Arm Action Error: {msg}")
+            if "already performing" in msg.lower():
+                retry = int(action.get('retry', 0)) + 1
+                if retry <= EP_ARM_MAX_RETRY:
+                    action['retry'] = retry
+                    time.sleep(EP_ARM_RETRY_DELAY)
+                    with _ep_arm_lock:
+                        ep_arm_action_queue.insert(0, action)
+                else:
+                    write_log("EP Arm Action Error: retry limit reached, dropped action")
 
 def connect_ep_thread_func(conn_mode):
     global ep_robot_inst
@@ -176,6 +244,9 @@ def connect_ep_thread_func(conn_mode):
         ep_dashboard["hw_link"] = f"Online ({conn_mode.upper()})"
         ep_dashboard["conn_type"] = conn_mode.upper()
         write_log(f"System: EP Connected! (SN: {ep_dashboard['sn']})")
+
+        with _ep_arm_lock:
+            ep_arm_action_queue.clear()
 
         write_log("EP_DEBUG: Subscribing to telemetry (Pos, Vel, Bat, IMU)...")
         ep_robot_inst.chassis.sub_position(freq=1, callback=ep_sub_pos)
@@ -213,8 +284,7 @@ def send_ep_command(cmd_str):
                 ep_robot_inst.blaster.fire(times=1)
                 return True
             if cmd_str == "arm_center":
-                ep_robot_inst.robotic_arm.moveto(x=100, y=100)
-                return True
+                return _ep_move_arm(delta_x=(100.0 - ep_arm_state['x']), delta_y=(100.0 - ep_arm_state['y']))
             if cmd_str == "arm_up":
                 return _ep_move_arm(delta_y=EP_ARM_STEP)
             if cmd_str == "arm_down":
@@ -273,49 +343,20 @@ def stop_ep_camera_pipeline():
         ep_camera_state['source'] = 'none'
 
 def ep_status_thread():
+    global _ep_arm_worker_started
+    if not _ep_arm_worker_started:
+        threading.Thread(target=ep_arm_action_worker, daemon=True).start()
+        _ep_arm_worker_started = True
     ep_comm_thread()
 
 def ep_comm_thread():
-    global ep_node_intent, ep_robot_inst, _ep_pending_arm_action
+    global ep_node_intent, ep_robot_inst
     is_moving = False
 
     while True:
         time.sleep(0.05)
         if ep_robot_inst is None or ep_dashboard.get("hw_link", "Offline") == "Offline":
             continue
-
-        # ========== [Arm Action Queue Processing - Non-blocking with longer timeout] ==========
-        # 진행 중인 액션 체크: 3초 이상 경과 시에만 다음 액션 처리
-        if _ep_pending_arm_action is not None:
-            elapsed = time.monotonic() - _ep_pending_arm_action.get('timestamp', time.monotonic())
-            if elapsed > 3.0:  # 3초 대기 (SDK 작업 충분히 완료 시간)
-                _ep_pending_arm_action = None
-                write_log("EP: Arm action timeout completed, processing next queue item")
-        
-        # 큐에서 다음 액션만 처리 (pending이 None일 때만)
-        if _ep_pending_arm_action is None:
-            action = None
-            with _ep_arm_lock:
-                if ep_arm_action_queue:
-                    action = ep_arm_action_queue.pop(0)
-            
-            if action:
-                try:
-                    if action['type'] == 'move':
-                        write_log(f"EP: Arm moving to ({action['target_x']}, {action['target_y']})")
-                        ep_arm_state['x'] = action['target_x']
-                        ep_arm_state['y'] = action['target_y']
-                        ep_robot_inst.robotic_arm.moveto(x=action['target_x'], y=action['target_y'])
-                        _ep_pending_arm_action = action
-                    elif action['type'] == 'grip':
-                        write_log(f"EP: Gripper {'opening' if action['open'] else 'closing'}")
-                        if action['open']:
-                            ep_robot_inst.robotic_gripper.open(power=EP_GRIPPER_POWER)
-                        else:
-                            ep_robot_inst.robotic_gripper.close(power=EP_GRIPPER_POWER)
-                        _ep_pending_arm_action = action
-                except Exception as e:
-                    write_log(f"EP Arm Action Error: {e}")
 
         tnow = time.monotonic()
         active = (tnow - ep_node_intent['trigger_time']) < 0.2
@@ -543,8 +584,12 @@ class EPKeyboardNode(BaseNode):
 class EPCameraSourceNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "EP Camera Source", "EP_CAM_SRC")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
         self.out_frame = generate_uuid()
         self.outputs[self.out_frame] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
         self.state['url'] = ep_camera_state.get('url', 'rtsp://192.168.42.2/live')
         self.state['prefer_sdk'] = True
 
@@ -617,13 +662,17 @@ class EPCameraSourceNode(BaseNode):
             if _ep_cam_last_frame is None:
                 ep_camera_state['status'] = 'Stopped'
 
-        return None
+        return self.out_flow
 
 class EPCameraStreamNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "EP Camera Stream", "EP_CAM_STREAM")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
         self.in_frame = generate_uuid()
         self.inputs[self.in_frame] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
         self.state['port'] = 5050
         self.state['is_running'] = False
         self._started_local = False
@@ -646,7 +695,7 @@ class EPCameraStreamNode(BaseNode):
 
     def execute(self):
         if not HAS_CV2 or not HAS_FLASK:
-            return None
+            return self.out_flow
 
         if bool(self.state.get('is_running', False)):
             if not self._started_local:
@@ -661,7 +710,7 @@ class EPCameraStreamNode(BaseNode):
                         global _ep_flask_latest_jpg
                         _ep_flask_latest_jpg = buf.tobytes()
 
-        return None
+        return self.out_flow
 
 class EPActionNode(BaseNode):
     def __init__(self, node_id):

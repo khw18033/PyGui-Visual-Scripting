@@ -628,20 +628,28 @@ class NodeUIRenderer:
     @staticmethod
     def _render_ep_cam_src(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="EP Camera Source"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Flow In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.ui_url = dpg.add_input_text(label="URL", width=220, default_value="rtsp://192.168.42.2/live")
                 node.chk_sdk = dpg.add_checkbox(label="Prefer SDK Camera", default_value=True)
             with dpg.node_attribute(tag=node.out_frame, attribute_type=dpg.mvNode_Attr_Output):
                 dpg.add_text("Frame Data", color=(255, 255, 0))
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output):
+                dpg.add_text("Flow Out")
 
     @staticmethod
     def _render_ep_cam_stream(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="EP Camera Stream"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Flow In")
             with dpg.node_attribute(tag=node.in_frame, attribute_type=dpg.mvNode_Attr_Input):
                 dpg.add_text("Frame In", color=(255, 255, 0))
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.ui_port = dpg.add_input_int(label="Port", width=80, default_value=5050)
                 node.ui_run = dpg.add_checkbox(label="Start Server")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output):
+                dpg.add_text("Flow Out")
 
 # Callback functions
 def toggle_exec(s, a): 
