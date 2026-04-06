@@ -187,6 +187,9 @@ class NodeUIRenderer:
                 node.state['UP'] = dpg.is_key_down(dpg.mvKey_Up); node.state['DOWN'] = dpg.is_key_down(dpg.mvKey_Down)
                 node.state['LEFT'] = dpg.is_key_down(dpg.mvKey_Left); node.state['RIGHT'] = dpg.is_key_down(dpg.mvKey_Right)
                 node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)
+                node.state['Z'] = dpg.is_key_down(dpg.mvKey_Z); node.state['X'] = dpg.is_key_down(dpg.mvKey_X)
+                node.state['C'] = dpg.is_key_down(dpg.mvKey_C); node.state['V'] = dpg.is_key_down(dpg.mvKey_V)
+                node.state['U_pressed'] = dpg.is_key_pressed(dpg.mvKey_U); node.state['J_pressed'] = dpg.is_key_pressed(dpg.mvKey_J)
                 node.state['SPACE'] = dpg.is_key_down(dpg.mvKey_Spacebar)
             elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER"]:
                 for k, fid in getattr(node, 'ui_fields', {}).items():
@@ -612,10 +615,14 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
-                dpg.add_text("Move / QE: Turn\nSpace: Stop", color=(100,255,100))
+                dpg.add_text("Move / QE: Turn\nZ/X/C/V: Arm Move\nU/J: Gripper Open/Close\nSpace: Stop", color=(100,255,100))
             with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vx")
             with dpg.node_attribute(tag=node.out_vy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vy")
             with dpg.node_attribute(tag=node.out_wz, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Wz")
+            with dpg.node_attribute(tag=node.out_arm_dx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Arm dX")
+            with dpg.node_attribute(tag=node.out_arm_dy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Arm dY")
+            with dpg.node_attribute(tag=node.out_grip_open, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Grip Open")
+            with dpg.node_attribute(tag=node.out_grip_close, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Grip Close")
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod

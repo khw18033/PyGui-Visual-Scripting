@@ -50,3 +50,17 @@
     - 상태 동기화(UI <-> node.state) 분기 추가
     - Node Palette에 `EP CAM`, `EP STREAM` 버튼 추가
     - 스크립트 정지 시 EP 카메라 파이프라인 정리 호출 추가
+
+### [2026-04-06 00:00:00] EP 키보드/드라이버 입력 확장 (그리퍼 이동 및 집게 제어)
+- 문제 분석:
+  - EP 키보드 노드와 드라이버 노드가 주행(Vx/Vy/Wz) 중심이라, 로봇 팔/집게를 키보드로 직접 다루는 경로가 부족했음.
+  - 사용자 요청 기준으로 arm 이동과 gripper open/close를 같은 EP 입력 체계 안에 통합할 필요가 있었음.
+- 조치 방안:
+  - `nodes/robots/ep01.py` 개선:
+    - `ep_arm_state`, `EP_ARM_STEP`, `EP_ARM_MIN/MAX`, `EP_GRIPPER_POWER` 추가
+    - `EPRobotDriver`에 `arm_dx`, `arm_dy`, `grip_open`, `grip_close` 입력 스키마 추가
+    - `EPKeyboardNode`에 `Z/X/C/V` arm 이동 및 `U/J` 집게 제어 키 추가
+    - SDK 우선으로 `robotic_arm.moveto(...)`, `robotic_gripper.open/close(...)`를 호출하도록 helper 함수 정리
+  - `ui/dpg_manager.py` 반영:
+    - EP 키보드 상태 주입부에 `Z/X/C/V/U/J` 키 매핑 추가
+    - EP 키보드 노드 설명 및 출력 포트를 arm/gripper 항목까지 확장

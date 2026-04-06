@@ -61,6 +61,16 @@ ep_camera_state = {
     "url": "rtsp://192.168.42.2/live",
 }
 
+ep_arm_state = {
+    "x": 100.0,
+    "y": 100.0,
+}
+
+EP_ARM_STEP = 10.0
+EP_ARM_MIN = 0.0
+EP_ARM_MAX = 200.0
+EP_GRIPPER_POWER = 50
+
 _ep_cam_lock = threading.Lock()
 _ep_cam_cap = None
 _ep_cam_sdk_started = False
@@ -103,6 +113,36 @@ def ep_sub_bat(info):
 
 def ep_sub_imu(info):
     ep_state['accel_x'], ep_state['accel_y'], ep_state['accel_z'] = info[:3]
+
+def _ep_move_arm(delta_x=0.0, delta_y=0.0):
+    target_x = max(EP_ARM_MIN, min(ep_arm_state['x'] + float(delta_x), EP_ARM_MAX))
+    target_y = max(EP_ARM_MIN, min(ep_arm_state['y'] + float(delta_y), EP_ARM_MAX))
+    ep_arm_state['x'] = target_x
+    ep_arm_state['y'] = target_y
+
+    if ep_robot_inst is None:
+        return False
+
+    try:
+        ep_robot_inst.robotic_arm.moveto(x=target_x, y=target_y)
+        return True
+    except Exception as e:
+        write_log(f"EP Arm Move Error: {e}")
+        return False
+
+def _ep_set_gripper(open_gripper):
+    if ep_robot_inst is None:
+        return False
+
+    try:
+        if open_gripper:
+            ep_robot_inst.robotic_gripper.open(power=EP_GRIPPER_POWER)
+        else:
+            ep_robot_inst.robotic_gripper.close(power=EP_GRIPPER_POWER)
+        return True
+    except Exception as e:
+        write_log(f"EP Gripper Error: {e}")
+        return False
 
 def connect_ep_thread_func(conn_mode):
     global ep_robot_inst
@@ -176,12 +216,18 @@ def send_ep_command(cmd_str):
             if cmd_str == "arm_center":
                 ep_robot_inst.robotic_arm.moveto(x=100, y=100)
                 return True
+            if cmd_str == "arm_up":
+                return _ep_move_arm(delta_y=EP_ARM_STEP)
+            if cmd_str == "arm_down":
+                return _ep_move_arm(delta_y=-EP_ARM_STEP)
+            if cmd_str == "arm_left":
+                return _ep_move_arm(delta_x=-EP_ARM_STEP)
+            if cmd_str == "arm_right":
+                return _ep_move_arm(delta_x=EP_ARM_STEP)
             if cmd_str == "grip_open":
-                ep_robot_inst.robotic_gripper.open(power=50)
-                return True
+                return _ep_set_gripper(True)
             if cmd_str == "grip_close":
-                ep_robot_inst.robotic_gripper.close(power=50)
-                return True
+                return _ep_set_gripper(False)
         except Exception:
             pass
 
@@ -298,7 +344,15 @@ def ep_comm_thread():
 
 class EPRobotDriver(BaseRobotDriver):
     def get_ui_schema(self):
-        return [('vx', "Vx(m/s)", 0.0), ('vy', "Vy(m/s)", 0.0), ('wz', "Wz(deg/s)", 0.0)]
+        return [
+            ('vx', "Vx(m/s)", 0.0),
+            ('vy', "Vy(m/s)", 0.0),
+            ('wz', "Wz(deg/s)", 0.0),
+            ('arm_dx', "Arm dX", 0.0),
+            ('arm_dy', "Arm dY", 0.0),
+            ('grip_open', "Grip Open", 0.0),
+            ('grip_close', "Grip Close", 0.0),
+        ]
         
     def get_settings_schema(self):
         return []
@@ -312,17 +366,42 @@ class EPRobotDriver(BaseRobotDriver):
         if wz_val is None:
             wz_val = inputs.get('vz')
 
+        arm_dx_val = inputs.get('arm_dx')
+        arm_dy_val = inputs.get('arm_dy')
+        grip_open_val = inputs.get('grip_open')
+        grip_close_val = inputs.get('grip_close')
+
         if vx_val is not None or vy_val is not None or wz_val is not None:
             ep_node_intent['vx'] = float(vx_val or 0.0)
             ep_node_intent['vy'] = float(vy_val or 0.0)
             ep_node_intent['wz'] = float(wz_val or 0.0)
             ep_node_intent['trigger_time'] = time.monotonic()
 
+        arm_dx = float(arm_dx_val or 0.0)
+        arm_dy = float(arm_dy_val or 0.0)
+        if arm_dx or arm_dy:
+            _ep_move_arm(delta_x=arm_dx, delta_y=arm_dy)
+
+        grip_open_active = bool(grip_open_val)
+        grip_close_active = bool(grip_close_val)
+        if grip_open_active:
+            _ep_set_gripper(True)
+        elif grip_close_active:
+            _ep_set_gripper(False)
+
         ep_target_vel['vx'] = ep_node_intent['vx']
         ep_target_vel['vy'] = ep_node_intent['vy']
         ep_target_vel['vz'] = ep_node_intent['wz']
 
-        return ep_target_vel
+        return {
+            'vx': ep_target_vel['vx'],
+            'vy': ep_target_vel['vy'],
+            'vz': ep_target_vel['vz'],
+            'arm_dx': arm_dx,
+            'arm_dy': arm_dy,
+            'grip_open': 1.0 if grip_open_active else 0.0,
+            'grip_close': 1.0 if grip_close_active else 0.0,
+        }
 
 class EPKeyboardNode(BaseNode):
     def __init__(self, node_id):
@@ -335,8 +414,18 @@ class EPKeyboardNode(BaseNode):
         self.outputs[self.out_vy] = PortType.DATA
         self.out_wz = generate_uuid()
         self.outputs[self.out_wz] = PortType.DATA
+        self.out_arm_dx = generate_uuid()
+        self.outputs[self.out_arm_dx] = PortType.DATA
+        self.out_arm_dy = generate_uuid()
+        self.outputs[self.out_arm_dy] = PortType.DATA
+        self.out_grip_open = generate_uuid()
+        self.outputs[self.out_grip_open] = PortType.DATA
+        self.out_grip_close = generate_uuid()
+        self.outputs[self.out_grip_close] = PortType.DATA
         self.out_flow = generate_uuid()
         self.outputs[self.out_flow] = PortType.FLOW
+        self.arm_step = EP_ARM_STEP
+        self.last_arm_input_time = 0.0
 
     def execute(self):
         if self.state.get('is_focused', False):
@@ -347,6 +436,10 @@ class EPKeyboardNode(BaseNode):
         wz = 0.0
         ep_v_max = 0.5
         ep_w_max = 60.0
+        arm_dx = 0.0
+        arm_dy = 0.0
+        grip_open = False
+        grip_close = False
 
         key_mode = self.state.get('keys', 'WASD')
         if key_mode == 'WASD':
@@ -375,15 +468,42 @@ class EPKeyboardNode(BaseNode):
         if self.state.get('SPACE'):
             ep_node_intent['stop'] = True
 
+        if self.state.get('Z'):
+            arm_dy = self.arm_step
+        if self.state.get('X'):
+            arm_dy = -self.arm_step
+        if self.state.get('C'):
+            arm_dx = -self.arm_step
+        if self.state.get('V'):
+            arm_dx = self.arm_step
+        if self.state.get('U_pressed'):
+            grip_open = True
+        if self.state.get('J_pressed'):
+            grip_close = True
+
         if vx or vy or wz:
             ep_node_intent['vx'] = vx
             ep_node_intent['vy'] = vy
             ep_node_intent['wz'] = wz
             ep_node_intent['trigger_time'] = time.monotonic()
 
+        if arm_dx or arm_dy:
+            if time.monotonic() - self.last_arm_input_time > 0.15:
+                self.last_arm_input_time = time.monotonic()
+                _ep_move_arm(delta_x=arm_dx, delta_y=arm_dy)
+
+        if grip_open:
+            _ep_set_gripper(True)
+        elif grip_close:
+            _ep_set_gripper(False)
+
         self.output_data[self.out_vx] = vx
         self.output_data[self.out_vy] = vy
         self.output_data[self.out_wz] = wz
+        self.output_data[self.out_arm_dx] = arm_dx
+        self.output_data[self.out_arm_dy] = arm_dy
+        self.output_data[self.out_grip_open] = 1.0 if grip_open else 0.0
+        self.output_data[self.out_grip_close] = 1.0 if grip_close else 0.0
         return self.out_flow
 
 class EPCameraSourceNode(BaseNode):
