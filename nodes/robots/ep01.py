@@ -3,13 +3,32 @@ import socket
 import threading
 import math
 import sys
+import os
 from unittest.mock import MagicMock
 from nodes.base import BaseNode, BaseRobotDriver
 from core.engine import generate_uuid, PortType, write_log, HwStatus
 
+try:
+    import cv2
+    HAS_CV2 = True
+except ImportError:
+    cv2 = None
+    HAS_CV2 = False
+
+try:
+    from flask import Flask, Response
+    HAS_FLASK = True
+except ImportError:
+    Flask = None
+    Response = None
+    HAS_FLASK = False
+
 # ================= [EP Globals & Network] =================
-sys.modules['libmedia_codec'] = MagicMock()
-sys.modules['libmedia_codec.media_codec'] = MagicMock()
+EP_USE_MEDIA_MOCK = os.getenv("EP_USE_MEDIA_MOCK", "0").strip().lower() in ("1", "true", "yes", "on")
+if EP_USE_MEDIA_MOCK:
+    sys.modules['libmedia_codec'] = MagicMock()
+    sys.modules['libmedia_codec.media_codec'] = MagicMock()
+    write_log("EP: libmedia_codec mock enabled (EP_USE_MEDIA_MOCK=1)")
 
 try:
     from robomaster import robot
@@ -35,6 +54,35 @@ ep_state = {
 }
 ep_node_intent = {"vx": 0.0, "vy": 0.0, "wz": 0.0, "stop": False, "trigger_time": time.monotonic()}
 ep_target_vel = {'vx': 0.0, 'vy': 0.0, 'vz': 0.0} # vz = yaw
+
+ep_camera_state = {
+    "status": "Stopped",
+    "source": "none",
+    "url": "rtsp://192.168.42.2/live",
+}
+
+_ep_cam_lock = threading.Lock()
+_ep_cam_cap = None
+_ep_cam_sdk_started = False
+_ep_cam_last_frame = None
+_ep_flask_app = Flask(__name__) if HAS_FLASK else None
+_ep_flask_latest_jpg = None
+_ep_flask_lock = threading.Lock()
+_ep_flask_thread_started = False
+
+if HAS_FLASK:
+    @_ep_flask_app.route('/ep_video_feed')
+    def _ep_video_feed():
+        def generate():
+            while True:
+                frame = None
+                with _ep_flask_lock:
+                    frame = _ep_flask_latest_jpg
+                if frame is not None:
+                    yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
+                time.sleep(0.03)
+
+        return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 def init_ep_network(ip=EP_IP):
     global EP_IP
@@ -156,6 +204,28 @@ def send_ep_command(cmd_str):
         except Exception:
             pass
     return False
+
+def stop_ep_camera_pipeline():
+    global _ep_cam_cap, _ep_cam_sdk_started, _ep_cam_last_frame
+
+    with _ep_cam_lock:
+        if _ep_cam_cap is not None:
+            try:
+                _ep_cam_cap.release()
+            except Exception:
+                pass
+            _ep_cam_cap = None
+
+        if _ep_cam_sdk_started and ep_robot_inst is not None:
+            try:
+                ep_robot_inst.camera.stop_video_stream()
+            except Exception:
+                pass
+            _ep_cam_sdk_started = False
+
+        _ep_cam_last_frame = None
+        ep_camera_state['status'] = 'Stopped'
+        ep_camera_state['source'] = 'none'
 
 def ep_status_thread():
     ep_comm_thread()
@@ -315,6 +385,129 @@ class EPKeyboardNode(BaseNode):
         self.output_data[self.out_vy] = vy
         self.output_data[self.out_wz] = wz
         return self.out_flow
+
+class EPCameraSourceNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "EP Camera Source", "EP_CAM_SRC")
+        self.out_frame = generate_uuid()
+        self.outputs[self.out_frame] = PortType.DATA
+        self.state['url'] = ep_camera_state.get('url', 'rtsp://192.168.42.2/live')
+        self.state['prefer_sdk'] = True
+
+    def _start_sdk_camera(self):
+        global _ep_cam_sdk_started
+        if ep_robot_inst is None:
+            return False
+        try:
+            if not _ep_cam_sdk_started:
+                ep_robot_inst.camera.start_video_stream(display=False)
+                _ep_cam_sdk_started = True
+            ep_camera_state['status'] = 'Running'
+            ep_camera_state['source'] = 'sdk'
+            return True
+        except Exception as e:
+            write_log(f"EP Camera SDK start failed: {e}")
+            return False
+
+    def _start_cv_camera(self):
+        global _ep_cam_cap
+        if not HAS_CV2:
+            return False
+        url = str(self.state.get('url', ep_camera_state.get('url', 'rtsp://192.168.42.2/live'))).strip()
+        if not url:
+            return False
+        ep_camera_state['url'] = url
+        try:
+            cap = cv2.VideoCapture(url)
+            if cap.isOpened():
+                _ep_cam_cap = cap
+                ep_camera_state['status'] = 'Running'
+                ep_camera_state['source'] = 'cv'
+                return True
+            cap.release()
+        except Exception as e:
+            write_log(f"EP Camera CV open failed: {e}")
+        return False
+
+    def execute(self):
+        global _ep_cam_last_frame
+
+        frame = None
+        prefer_sdk = bool(self.state.get('prefer_sdk', True))
+
+        with _ep_cam_lock:
+            if prefer_sdk and ep_robot_inst is not None:
+                if self._start_sdk_camera():
+                    try:
+                        frame = ep_robot_inst.camera.read_cv2_image(strategy='newest', timeout=0.2)
+                    except Exception:
+                        frame = None
+
+            if frame is None:
+                if _ep_cam_cap is None:
+                    self._start_cv_camera()
+                if _ep_cam_cap is not None:
+                    try:
+                        ok, raw = _ep_cam_cap.read()
+                        if ok:
+                            frame = raw
+                            ep_camera_state['status'] = 'Running'
+                            ep_camera_state['source'] = 'cv'
+                    except Exception:
+                        frame = None
+
+            if frame is not None:
+                _ep_cam_last_frame = frame
+            self.output_data[self.out_frame] = _ep_cam_last_frame
+
+            if _ep_cam_last_frame is None:
+                ep_camera_state['status'] = 'Stopped'
+
+        return None
+
+class EPCameraStreamNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "EP Camera Stream", "EP_CAM_STREAM")
+        self.in_frame = generate_uuid()
+        self.inputs[self.in_frame] = PortType.DATA
+        self.state['port'] = 5050
+        self.state['is_running'] = False
+        self._started_local = False
+
+    def _start_server_once(self):
+        global _ep_flask_thread_started
+        if not HAS_FLASK or _ep_flask_app is None:
+            return
+        if _ep_flask_thread_started:
+            return
+
+        port = int(self.state.get('port', 5050))
+
+        def run_server():
+            _ep_flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+        threading.Thread(target=run_server, daemon=True).start()
+        _ep_flask_thread_started = True
+        write_log(f"EP Flask Stream Started: http://0.0.0.0:{port}/ep_video_feed")
+
+    def execute(self):
+        if not HAS_CV2 or not HAS_FLASK:
+            return None
+
+        if bool(self.state.get('is_running', False)):
+            if not self._started_local:
+                self._start_server_once()
+                self._started_local = True
+
+            frame = self.fetch_input_data(self.in_frame)
+            if frame is not None:
+                ok, buf = cv2.imencode('.jpg', frame)
+                if ok:
+                    with _ep_flask_lock:
+                        global _ep_flask_latest_jpg
+                        _ep_flask_latest_jpg = buf.tobytes()
+
+        return None
 
 class EPActionNode(BaseNode):
     def __init__(self, node_id):

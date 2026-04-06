@@ -12,7 +12,7 @@ from nodes.robots.mt4 import (
 from nodes.robots.go1 import (Go1RobotDriver, Go1ActionNode, VideoSourceNode, Go1KeyboardNode, Go1UnityNode,
                               FisheyeUndistortNode, ArUcoDetectNode, FlaskStreamNode, VideoFrameSaveNode, ServerSenderNode)
 
-from nodes.robots.ep01 import EPRobotDriver, EPActionNode, EPKeyboardNode
+from nodes.robots.ep01 import EPRobotDriver, EPActionNode, EPKeyboardNode, EPCameraSourceNode, EPCameraStreamNode
 
 class NodeFactory:
     @staticmethod
@@ -54,6 +54,8 @@ class NodeFactory:
         elif node_type == "EP_DRIVER": node = UniversalRobotNode(node_id, EPRobotDriver(), "EP Driver", "EP_DRIVER")
         elif node_type == "EP_KEYBOARD": node = EPKeyboardNode(node_id)
         elif node_type == "EP_ACTION": node = EPActionNode(node_id)
+        elif node_type == "EP_CAM_SRC": node = EPCameraSourceNode(node_id)
+        elif node_type == "EP_CAM_STREAM": node = EPCameraStreamNode(node_id)
         
         if node: 
             node_registry[node_id] = node

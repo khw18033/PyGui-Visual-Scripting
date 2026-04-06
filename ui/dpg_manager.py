@@ -34,7 +34,7 @@ except ImportError:
 try:
     from nodes.robots.ep01 import (
         ep_dashboard, ep_state, ep_target_vel, ep_node_intent,
-        btn_connect_ep_sta, btn_connect_ep_ap
+        btn_connect_ep_sta, btn_connect_ep_ap, stop_ep_camera_pipeline
     )
     import nodes.robots.ep01 as ep_module
     HAS_EP = True
@@ -233,6 +233,12 @@ class NodeUIRenderer:
                 node.state['duration'] = dpg.get_value(node.ui_duration)
                 node.state['use_timer'] = dpg.get_value(node.ui_use_timer)
                 node.state['max_frames'] = dpg.get_value(node.ui_max_frames)
+            elif t == "EP_CAM_SRC" and hasattr(node, 'ui_url'):
+                node.state['url'] = dpg.get_value(node.ui_url)
+                node.state['prefer_sdk'] = dpg.get_value(node.chk_sdk)
+            elif t == "EP_CAM_STREAM" and hasattr(node, 'ui_port'):
+                node.state['port'] = dpg.get_value(node.ui_port)
+                node.state['is_running'] = dpg.get_value(node.ui_run)
 
     @staticmethod
     def sync_state_to_ui(node):
@@ -278,6 +284,12 @@ class NodeUIRenderer:
             dpg.set_value(node.ui_duration, node.state.get('duration', 10.0))
             dpg.set_value(node.ui_use_timer, node.state.get('use_timer', False))
             dpg.set_value(node.ui_max_frames, node.state.get('max_frames', 100))
+        elif t == "EP_CAM_SRC" and hasattr(node, 'ui_url'):
+            dpg.set_value(node.ui_url, node.state.get('url', 'rtsp://192.168.42.2/live'))
+            dpg.set_value(node.chk_sdk, node.state.get('prefer_sdk', True))
+        elif t == "EP_CAM_STREAM" and hasattr(node, 'ui_port'):
+            dpg.set_value(node.ui_port, node.state.get('port', 5050))
+            dpg.set_value(node.ui_run, node.state.get('is_running', False))
 
         elif t == "EP_ACTION" and hasattr(node, 'combo_act'): 
             dpg.set_value(node.combo_act, node.state.get('action', 'LED Red'))
@@ -314,6 +326,8 @@ class NodeUIRenderer:
         elif t == "VIS_SAVE": NodeUIRenderer._render_video_save(node)
         # --- EP01 ---
         elif t == "EP_ACTION": NodeUIRenderer._render_ep_action(node)
+        elif t == "EP_CAM_SRC": NodeUIRenderer._render_ep_cam_src(node)
+        elif t == "EP_CAM_STREAM": NodeUIRenderer._render_ep_cam_stream(node)
 
 
     @staticmethod
@@ -604,6 +618,24 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.out_wz, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Wz")
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
+    @staticmethod
+    def _render_ep_cam_src(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="EP Camera Source"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.ui_url = dpg.add_input_text(label="URL", width=220, default_value="rtsp://192.168.42.2/live")
+                node.chk_sdk = dpg.add_checkbox(label="Prefer SDK Camera", default_value=True)
+            with dpg.node_attribute(tag=node.out_frame, attribute_type=dpg.mvNode_Attr_Output):
+                dpg.add_text("Frame Data", color=(255, 255, 0))
+
+    @staticmethod
+    def _render_ep_cam_stream(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="EP Camera Stream"):
+            with dpg.node_attribute(tag=node.in_frame, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Frame In", color=(255, 255, 0))
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.ui_port = dpg.add_input_int(label="Port", width=80, default_value=5050)
+                node.ui_run = dpg.add_checkbox(label="Start Server")
+
 # Callback functions
 def toggle_exec(s, a): 
     engine_module.is_running = not engine_module.is_running
@@ -656,6 +688,11 @@ def toggle_exec(s, a):
         go1_dashboard['unity_link'] = 'Waiting'
         go1_target_vel.update({'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0, 'body_height': 0.0})
         go1_node_intent.update({'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'stop': True})
+    if HAS_EP and not engine_module.is_running:
+        try:
+            stop_ep_camera_pipeline()
+        except Exception:
+            pass
 
 def link_cb(s, a): 
     p1_raw, p2_raw = a[0], a[1]
@@ -909,6 +946,8 @@ def __init_ui__():
                 dpg.add_button(label="EP DRIVER", callback=add_node_cb, user_data="EP_DRIVER")
                 dpg.add_button(label="EP KEY", callback=add_node_cb, user_data="EP_KEYBOARD")
                 dpg.add_button(label="EP ACTION", callback=add_node_cb, user_data="EP_ACTION")
+                dpg.add_button(label="EP CAM", callback=add_node_cb, user_data="EP_CAM_SRC")
+                dpg.add_button(label="EP STREAM", callback=add_node_cb, user_data="EP_CAM_STREAM")
 
         with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 

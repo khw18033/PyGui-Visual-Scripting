@@ -27,3 +27,26 @@
     - `core/factory.py`: `EP_KEYBOARD` 노드 생성 분기 추가
     - `core/engine.py`: `EP_KEYBOARD` 주기 실행 대상 추가
     - `ui/dpg_manager.py`: EP Dashboard를 원본 구성(상태 + Conn STA/AP + Odometry + Commands)으로 재구성, EP 상태 갱신 항목(SN/좌표/속도/가속도/명령값) 반영, EP KEY 버튼 추가
+
+### [2026-04-06 00:00:00] EP 카메라 연결/송출 노드 추가 및 libmedia_codec 우회 기본 비활성화
+- 문제 분석:
+  - EP 카메라 테스트를 위해 기존 제어 중심 구조에서 영상 입력/송출 파이프라인이 필요했음.
+  - 또한 `libmedia_codec` 우회가 항상 활성화되어 있어, 실제 카메라 코덱 동작 검증이 어려웠음.
+- 조치 방안:
+  - `nodes/robots/ep01.py` 개선:
+    - `EP_USE_MEDIA_MOCK` 환경변수 기반으로만 우회 동작하도록 변경(기본은 실제 코덱 경로).
+    - `EPCameraSourceNode(EP_CAM_SRC)` 추가:
+      - SDK 카메라(`ep_robot_inst.camera`) 우선 연결 옵션 제공
+      - 실패 시 OpenCV URL(`rtsp://...`) fallback 캡처 지원
+    - `EPCameraStreamNode(EP_CAM_STREAM)` 추가:
+      - 입력 프레임을 Flask MJPEG로 송출 (`/ep_video_feed`)
+    - 카메라 종료 유틸 `stop_ep_camera_pipeline()` 추가
+  - `core/factory.py` 반영:
+    - `EP_CAM_SRC`, `EP_CAM_STREAM` 노드 등록
+  - `core/engine.py` 반영:
+    - `EP_CAM_SRC`, `EP_CAM_STREAM`를 주기 실행 노드 목록에 추가
+  - `ui/dpg_manager.py` 반영:
+    - EP 카메라 노드 UI 렌더러 추가(주소/SDK 우선 옵션, 포트/서버 시작 옵션)
+    - 상태 동기화(UI <-> node.state) 분기 추가
+    - Node Palette에 `EP CAM`, `EP STREAM` 버튼 추가
+    - 스크립트 정지 시 EP 카메라 파이프라인 정리 호출 추가
