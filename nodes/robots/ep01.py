@@ -284,8 +284,15 @@ def ep_comm_thread():
         if ep_robot_inst is None or ep_dashboard.get("hw_link", "Offline") == "Offline":
             continue
 
-        # ========== [Arm Action Queue Processing] ==========
-        # Only process if no action is currently pending
+        # ========== [Arm Action Queue Processing - Non-blocking with longer timeout] ==========
+        # 진행 중인 액션 체크: 3초 이상 경과 시에만 다음 액션 처리
+        if _ep_pending_arm_action is not None:
+            elapsed = time.monotonic() - _ep_pending_arm_action.get('timestamp', time.monotonic())
+            if elapsed > 3.0:  # 3초 대기 (SDK 작업 충분히 완료 시간)
+                _ep_pending_arm_action = None
+                write_log("EP: Arm action timeout completed, processing next queue item")
+        
+        # 큐에서 다음 액션만 처리 (pending이 None일 때만)
         if _ep_pending_arm_action is None:
             action = None
             with _ep_arm_lock:
@@ -309,12 +316,6 @@ def ep_comm_thread():
                         _ep_pending_arm_action = action
                 except Exception as e:
                     write_log(f"EP Arm Action Error: {e}")
-                    _ep_pending_arm_action = None
-        else:
-            # Check if pending action completed (simple timeout-based check: 1 second)
-            elapsed = time.monotonic() - _ep_pending_arm_action.get('timestamp', time.monotonic())
-            if elapsed > 1.0:
-                _ep_pending_arm_action = None
 
         tnow = time.monotonic()
         active = (tnow - ep_node_intent['trigger_time']) < 0.2
@@ -520,7 +521,7 @@ class EPKeyboardNode(BaseNode):
 
         # Arm movement: queue-based, throttled to prevent command spam
         if arm_dx or arm_dy:
-            if time.monotonic() - self.last_arm_input_time > 0.15:
+            if time.monotonic() - self.last_arm_input_time > 1.0:
                 self.last_arm_input_time = time.monotonic()
                 _ep_move_arm(delta_x=arm_dx, delta_y=arm_dy)
 

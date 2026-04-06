@@ -102,3 +102,19 @@
   - 코드 문법: 정상 (라이브러리 import 오류는 기존 try-except로 처리됨)
   - 로직: GUI와 SDK 호출이 완전히 분리되어 blocking 오류 및 GUI 멈춤 발생 불가
   - 사이드이펙트: None (기존 throttle과 큐 시스템 병합하여 arm movement 속도 제어 유지)
+
+### [2026-04-06 21:20:00] EP 팔 이동 큐 처리 개선 (재시도 및 타임아웃 강화)
+- 문제 분석 (재발):
+  - "Robot is already performing 1 action(s)" 오류가 여전히 발생 중
+  - 원인1: 1초 타임아웃이 SDK 실제 완료 시간보다 짧음 → 다음 액션 처리 시도
+  - 원인2: Exception 발생 후 pending 초기화 → 같은 프레임에서 큐의 다음 항목 처리
+  - 원인3: 0.15초 throttle로 계속 큐에 항목 추가 → 처리 속도 못 따라잡음
+- 조치 방안:
+  - 타임아웃 1초 → 3초로 강화 (SDK 완료 시간 충분히 확보)
+  - Exception 발생 후 pending 유지 (3초 타임아웃으로 자동 처리)
+  - Keyboard throttle 0.15초 → 1.0초 (큐 아이템 증가량 1/6 이상 감소)
+- 파일 변경:
+  - nodes/robots/ep01.py 라인 285~289: 타임아웃 3초 강화
+  - nodes/robots/ep01.py 라인 309~311: exception 시 pending 유지
+  - nodes/robots/ep01.py 라인 523: throttle 1.0초로 변경
+- 결과: 안정적인 arm movement (중복 오류 방지)
