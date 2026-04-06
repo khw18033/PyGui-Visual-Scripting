@@ -1,35 +1,209 @@
 import time
 import socket
 import threading
+import math
+import sys
+from unittest.mock import MagicMock
 from nodes.base import BaseNode, BaseRobotDriver
 from core.engine import generate_uuid, PortType, write_log, HwStatus
 
 # ================= [EP Globals & Network] =================
+sys.modules['libmedia_codec'] = MagicMock()
+sys.modules['libmedia_codec.media_codec'] = MagicMock()
+
+try:
+    from robomaster import robot
+    HAS_ROBOMASTER_SDK = True
+except ImportError as e:
+    HAS_ROBOMASTER_SDK = False
+    write_log(f"Warning: 'robomaster' module not found. ({e})")
+
 ep_cmd_sock = None
+ep_robot_inst = None
 EP_IP = "192.168.42.2" # USB 테더링 기본 IP (라우터 연결 시 해당 IP로 변경 필요)
 EP_PORT = 40924
 
-ep_dashboard = {"hw_link": "Offline", "sn": "Unknown"}
-ep_state = {"pos_x": 0.0, "pos_y": 0.0, "yaw": 0.0, "battery": -1}
+ep_dashboard = {"hw_link": "Offline", "sn": "Unknown", "conn_type": "None"}
+ep_state = {
+    "battery": -1,
+    "pos_x": 0.0,
+    "pos_y": 0.0,
+    "speed": 0.0,
+    "accel_x": 0.0,
+    "accel_y": 0.0,
+    "accel_z": 0.0,
+}
+ep_node_intent = {"vx": 0.0, "vy": 0.0, "wz": 0.0, "stop": False, "trigger_time": time.monotonic()}
 ep_target_vel = {'vx': 0.0, 'vy': 0.0, 'vz': 0.0} # vz = yaw
 
 def init_ep_network(ip=EP_IP):
-    global ep_cmd_sock, EP_IP
+    global EP_IP
     EP_IP = ip
+    if not HAS_ROBOMASTER_SDK:
+        ep_dashboard["hw_link"] = "Simulation"
+        return
+    ep_dashboard["hw_link"] = "Offline"
+
+def ep_sub_pos(info):
+    ep_state['pos_x'], ep_state['pos_y'], _ = info
+
+def ep_sub_vel(info):
+    ep_state['speed'] = math.sqrt(info[0] ** 2 + info[1] ** 2)
+
+def ep_sub_bat(info):
+    ep_state['battery'] = int(info[0]) if isinstance(info, (tuple, list)) else int(info)
+
+def ep_sub_imu(info):
+    ep_state['accel_x'], ep_state['accel_y'], ep_state['accel_z'] = info[:3]
+
+def connect_ep_thread_func(conn_mode):
+    global ep_robot_inst
+
+    if not HAS_ROBOMASTER_SDK:
+        ep_dashboard["hw_link"] = "Simulation"
+        write_log("EP_DEBUG: 'robomaster' SDK not found. Skipping connection.")
+        return
+
+    ep_dashboard["hw_link"] = f"Connecting ({conn_mode.upper()})..."
+    write_log(f"System: Attempting EP Connection via {conn_mode.upper()}...")
+
+    if ep_robot_inst is not None:
+        write_log("EP_DEBUG: Cleaning up previous robot instance...")
+        try:
+            ep_robot_inst.close()
+            write_log("EP_DEBUG: Previous instance closed.")
+        except Exception as e:
+            write_log(f"EP_DEBUG: Error closing previous instance: {e}")
+
     try:
-        ep_cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        ep_cmd_sock.settimeout(0.5)
-        # SDK 모드 진입 명령
-        ep_cmd_sock.sendto(b"command;", (EP_IP, EP_PORT))
-        write_log(f"EP: Network Initialized ({EP_IP})")
-        ep_dashboard["hw_link"] = "Connecting"
+        write_log("EP_DEBUG: Instantiating robot.Robot()...")
+        ep_robot_inst = robot.Robot()
+
+        write_log(f"EP_DEBUG: Calling initialize(conn_type='{conn_mode}')...")
+        ep_robot_inst.initialize(conn_type=conn_mode)
+        write_log("EP_DEBUG: Initialize completed successfully.")
+
+        write_log("EP_DEBUG: Getting Serial Number...")
+        ep_dashboard["sn"] = ep_robot_inst.get_sn()
+
+        ep_dashboard["hw_link"] = f"Online ({conn_mode.upper()})"
+        ep_dashboard["conn_type"] = conn_mode.upper()
+        write_log(f"System: EP Connected! (SN: {ep_dashboard['sn']})")
+
+        write_log("EP_DEBUG: Subscribing to telemetry (Pos, Vel, Bat, IMU)...")
+        ep_robot_inst.chassis.sub_position(freq=1, callback=ep_sub_pos)
+        ep_robot_inst.chassis.sub_velocity(freq=5, callback=ep_sub_vel)
+        ep_robot_inst.battery.sub_battery_info(freq=1, callback=ep_sub_bat)
+        ep_robot_inst.chassis.sub_imu(freq=10, callback=ep_sub_imu)
+        write_log("EP_DEBUG: All subscriptions active.")
+
     except Exception as e:
+        ep_robot_inst = None
         ep_dashboard["hw_link"] = "Offline"
-        write_log(f"EP Net Error: {e}")
+        import traceback
+        error_details = traceback.format_exc()
+        write_log(f"EP Connect Error (Detailed): {e}")
+        print(f"\n[EP_CRITICAL_ERROR_TRACE]\n{error_details}\n")
+
+def btn_connect_ep_sta(sender=None, app_data=None):
+    threading.Thread(target=connect_ep_thread_func, args=("sta",), daemon=True).start()
+
+def btn_connect_ep_ap(sender=None, app_data=None):
+    threading.Thread(target=connect_ep_thread_func, args=("ap",), daemon=True).start()
+
+def send_ep_command(cmd_str):
+    global ep_cmd_sock
+
+    if ep_robot_inst is not None:
+        try:
+            if cmd_str == "led_red":
+                ep_robot_inst.led.set_led(comp="all", r=255, g=0, b=0, effect="on")
+                return True
+            if cmd_str == "led_blue":
+                ep_robot_inst.led.set_led(comp="all", r=0, g=0, b=255, effect="on")
+                return True
+            if cmd_str == "blaster_fire":
+                ep_robot_inst.blaster.fire(times=1)
+                return True
+            if cmd_str == "arm_center":
+                ep_robot_inst.robotic_arm.moveto(x=100, y=100)
+                return True
+            if cmd_str == "grip_open":
+                ep_robot_inst.robotic_gripper.open(power=50)
+                return True
+            if cmd_str == "grip_close":
+                ep_robot_inst.robotic_gripper.close(power=50)
+                return True
+        except Exception:
+            pass
+
+    udp_map = {
+        "led_red": "led control comp all r 255 g 0 b 0 effect solid;",
+        "led_blue": "led control comp all r 0 g 0 b 255 effect solid;",
+        "blaster_fire": "blaster fire;",
+        "arm_center": "robotic_arm moveto x 100 y 100;",
+        "grip_open": "robotic_gripper open 1;",
+        "grip_close": "robotic_gripper close 1;",
+    }
+    raw = udp_map.get(cmd_str)
+    if raw:
+        try:
+            if ep_cmd_sock is None:
+                ep_cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                ep_cmd_sock.settimeout(0.5)
+            ep_cmd_sock.sendto(raw.encode(), (EP_IP, EP_PORT))
+            return True
+        except Exception:
+            pass
+    return False
 
 def ep_status_thread():
-    global ep_cmd_sock
+    ep_comm_thread()
+
+def ep_comm_thread():
+    global ep_node_intent, ep_robot_inst
+    is_moving = False
+
     while True:
+        time.sleep(0.05)
+        if ep_robot_inst is None or ep_dashboard.get("hw_link", "Offline") == "Offline":
+            continue
+
+        tnow = time.monotonic()
+        active = (tnow - ep_node_intent['trigger_time']) < 0.2
+
+        if ep_node_intent['stop'] or not active:
+            if is_moving:
+                write_log("EP: stop sequence start (Active Brake -> Wheel Lock)")
+                try:
+                    ep_robot_inst.chassis.drive_speed(x=0, y=0, z=0, timeout=0.1)
+                    time.sleep(0.05)
+                    for _ in range(3):
+                        ep_robot_inst.chassis.drive_wheels(w1=0, w2=0, w3=0, w4=0)
+                        time.sleep(0.1)
+                except Exception as e:
+                    write_log(f"EP Brake Error: {e}")
+                is_moving = False
+                ep_node_intent['stop'] = False
+            ep_target_vel['vx'] = 0.0
+            ep_target_vel['vy'] = 0.0
+            ep_target_vel['vz'] = 0.0
+            continue
+
+        try:
+            ep_robot_inst.chassis.drive_speed(
+                x=ep_node_intent['vx'],
+                y=ep_node_intent['vy'],
+                z=ep_node_intent['wz'],
+                timeout=0.5,
+            )
+            is_moving = True
+            ep_target_vel['vx'] = ep_node_intent['vx']
+            ep_target_vel['vy'] = ep_node_intent['vy']
+            ep_target_vel['vz'] = ep_node_intent['wz']
+        except Exception:
+            pass
+
         if ep_cmd_sock:
             try:
                 # 배터리 정보 폴링 (기본 SDK 명세)
@@ -47,50 +221,100 @@ def ep_status_thread():
                 if len(pos_res) >= 3:
                     ep_state['pos_x'] = float(pos_res[0])
                     ep_state['pos_y'] = float(pos_res[1])
-            except:
+            except Exception:
                 pass
-        time.sleep(2.0)
 
 # ================= [EP Hardware Nodes] =================
 
 class EPRobotDriver(BaseRobotDriver):
-    def __init__(self):
-        self.last_write_time = 0
-        self.write_interval = 0.05 # 20Hz
-        self.current_sent_vel = {'vx': 0.0, 'vy': 0.0, 'vz': 0.0}
-
     def get_ui_schema(self):
-        return [('vx', "Vx (F/B)", 0.0), ('vy', "Vy (L/R)", 0.0), ('vz', "Yaw (Turn)", 0.0)]
+        return [('vx', "Vx(m/s)", 0.0), ('vy', "Vy(m/s)", 0.0), ('wz', "Wz(deg/s)", 0.0)]
         
     def get_settings_schema(self):
-        return [('speed_scale', "Speed Max", 1.0)]
+        return []
 
     def execute_command(self, inputs, settings):
-        global ep_target_vel, ep_cmd_sock
-        
-        for key, _, _ in self.get_ui_schema():
-            val = inputs.get(key)
-            if val is not None: ep_target_vel[key] = float(val)
+        global ep_node_intent
 
-        scale = float(settings.get('speed_scale', 1.0))
-        
-        if time.time() - self.last_write_time >= self.write_interval:
-            if ep_cmd_sock and ep_dashboard["hw_link"] == "Online":
-                tx = ep_target_vel['vx'] * scale
-                ty = ep_target_vel['vy'] * scale
-                tz = ep_target_vel['vz'] * 100.0 * scale # EP SDK Yaw requires larger scale
-                
-                # 변동이 있거나 0이 아닐 때만 명령 전송
-                if abs(tx) > 0.01 or abs(ty) > 0.01 or abs(tz) > 0.1 or sum(abs(v) for v in self.current_sent_vel.values()) > 0:
-                    cmd_str = f"chassis speed x {tx:.2f} y {ty:.2f} z {tz:.1f};"
-                    try:
-                        ep_cmd_sock.sendto(cmd_str.encode(), (EP_IP, EP_PORT))
-                        self.current_sent_vel = {'vx': tx, 'vy': ty, 'vz': tz}
-                    except:
-                        pass
-            self.last_write_time = time.time()
-            
+        vx_val = inputs.get('vx')
+        vy_val = inputs.get('vy')
+        wz_val = inputs.get('wz')
+        if wz_val is None:
+            wz_val = inputs.get('vz')
+
+        if vx_val is not None or vy_val is not None or wz_val is not None:
+            ep_node_intent['vx'] = float(vx_val or 0.0)
+            ep_node_intent['vy'] = float(vy_val or 0.0)
+            ep_node_intent['wz'] = float(wz_val or 0.0)
+            ep_node_intent['trigger_time'] = time.monotonic()
+
+        ep_target_vel['vx'] = ep_node_intent['vx']
+        ep_target_vel['vy'] = ep_node_intent['vy']
+        ep_target_vel['vz'] = ep_node_intent['wz']
+
         return ep_target_vel
+
+class EPKeyboardNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Keyboard (EP)", "EP_KEYBOARD")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_vx = generate_uuid()
+        self.outputs[self.out_vx] = PortType.DATA
+        self.out_vy = generate_uuid()
+        self.outputs[self.out_vy] = PortType.DATA
+        self.out_wz = generate_uuid()
+        self.outputs[self.out_wz] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+    def execute(self):
+        if self.state.get('is_focused', False):
+            return self.out_flow
+
+        vx = 0.0
+        vy = 0.0
+        wz = 0.0
+        ep_v_max = 0.5
+        ep_w_max = 60.0
+
+        key_mode = self.state.get('keys', 'WASD')
+        if key_mode == 'WASD':
+            if self.state.get('W'):
+                vx = ep_v_max
+            if self.state.get('S'):
+                vx = -ep_v_max
+            if self.state.get('A'):
+                vy = -ep_v_max
+            if self.state.get('D'):
+                vy = ep_v_max
+        else:
+            if self.state.get('UP'):
+                vx = ep_v_max
+            if self.state.get('DOWN'):
+                vx = -ep_v_max
+            if self.state.get('LEFT'):
+                vy = -ep_v_max
+            if self.state.get('RIGHT'):
+                vy = ep_v_max
+
+        if self.state.get('Q'):
+            wz = -ep_w_max
+        if self.state.get('E'):
+            wz = ep_w_max
+        if self.state.get('SPACE'):
+            ep_node_intent['stop'] = True
+
+        if vx or vy or wz:
+            ep_node_intent['vx'] = vx
+            ep_node_intent['vy'] = vy
+            ep_node_intent['wz'] = wz
+            ep_node_intent['trigger_time'] = time.monotonic()
+
+        self.output_data[self.out_vx] = vx
+        self.output_data[self.out_vy] = vy
+        self.output_data[self.out_wz] = wz
+        return self.out_flow
 
 class EPActionNode(BaseNode):
     def __init__(self, node_id):
@@ -100,20 +324,24 @@ class EPActionNode(BaseNode):
         self.state['action'] = "LED Red"
 
     def execute(self):
-        global ep_cmd_sock
         action = self.state.get("action", "LED Red")
-        
-        cmd_str = ""
-        if action == "LED Red": cmd_str = "led control comp all r 255 g 0 b 0 effect solid;"
-        elif action == "LED Blue": cmd_str = "led control comp all r 0 g 0 b 255 effect solid;"
-        elif action == "Blaster Fire": cmd_str = "blaster fire;"
-        elif action == "Arm Center": cmd_str = "robotic_arm moveto x 100 y 100;"
-        elif action == "Grip Open": cmd_str = "robotic_gripper open 1;"
-        elif action == "Grip Close": cmd_str = "robotic_gripper close 1;"
-        
-        if cmd_str and ep_cmd_sock:
-            try: ep_cmd_sock.sendto(cmd_str.encode(), (EP_IP, EP_PORT))
-            except: pass
+
+        cmd_name = ""
+        if action == "LED Red":
+            cmd_name = "led_red"
+        elif action == "LED Blue":
+            cmd_name = "led_blue"
+        elif action == "Blaster Fire":
+            cmd_name = "blaster_fire"
+        elif action == "Arm Center":
+            cmd_name = "arm_center"
+        elif action == "Grip Open":
+            cmd_name = "grip_open"
+        elif action == "Grip Close":
+            cmd_name = "grip_close"
+
+        if cmd_name:
+            send_ep_command(cmd_name)
             write_log(f"EP Action: {action}")
             
         return self.out_flow

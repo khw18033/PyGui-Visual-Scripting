@@ -32,7 +32,11 @@ except ImportError:
 
 # --- [추가] RoboMaster EP 연동 ---
 try:
-    from nodes.robots.ep01 import ep_dashboard, ep_state, ep_target_vel, EP_IP, EP_PORT, ep_cmd_sock
+    from nodes.robots.ep01 import (
+        ep_dashboard, ep_state, ep_target_vel, ep_node_intent,
+        btn_connect_ep_sta, btn_connect_ep_ap
+    )
+    import nodes.robots.ep01 as ep_module
     HAS_EP = True
 except ImportError:
     HAS_EP = False
@@ -92,12 +96,19 @@ def go1_action_callback(sender, app_data, user_data):
 def ep_manual_control_callback(sender, app_data, user_data):
     if not HAS_EP: return
     axis, step = user_data
-    ep_target_vel[axis] = ep_target_vel.get(axis, 0.0) + step
+    if axis in ("vx", "vy"):
+        ep_node_intent[axis] = ep_node_intent.get(axis, 0.0) + step
+        ep_node_intent['trigger_time'] = time.monotonic()
+    elif axis == "wz":
+        ep_node_intent['wz'] = ep_node_intent.get('wz', 0.0) + step
+        ep_node_intent['trigger_time'] = time.monotonic()
+    ep_target_vel['vx'] = ep_node_intent.get('vx', 0.0)
+    ep_target_vel['vy'] = ep_node_intent.get('vy', 0.0)
+    ep_target_vel['vz'] = ep_node_intent.get('wz', 0.0)
 
 def ep_action_callback(sender, app_data, user_data):
-    if not HAS_EP or not ep_cmd_sock: return
-    try: ep_cmd_sock.sendto(user_data.encode(), (EP_IP, EP_PORT))
-    except: pass
+    if not HAS_EP: return
+    ep_module.send_ep_command(user_data)
 
 class NodeUIRenderer:
     key_map = {"A": 65, "B": 66, "C": 67, "S": 83, "W": 87, "SPACE": 32}
@@ -168,6 +179,15 @@ class NodeUIRenderer:
                 node.state['SPACE'] = dpg.is_key_down(dpg.mvKey_Spacebar)
                 node.state['R_pressed'] = dpg.is_key_pressed(dpg.mvKey_R)
                 node.state['C_pressed'] = dpg.is_key_pressed(dpg.mvKey_C)
+            elif t == "EP_KEYBOARD" and hasattr(node, 'combo_keys'):
+                node.state['is_focused'] = is_focused
+                node.state['keys'] = dpg.get_value(node.combo_keys)
+                node.state['W'] = dpg.is_key_down(dpg.mvKey_W); node.state['S'] = dpg.is_key_down(dpg.mvKey_S)
+                node.state['A'] = dpg.is_key_down(dpg.mvKey_A); node.state['D'] = dpg.is_key_down(dpg.mvKey_D)
+                node.state['UP'] = dpg.is_key_down(dpg.mvKey_Up); node.state['DOWN'] = dpg.is_key_down(dpg.mvKey_Down)
+                node.state['LEFT'] = dpg.is_key_down(dpg.mvKey_Left); node.state['RIGHT'] = dpg.is_key_down(dpg.mvKey_Right)
+                node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)
+                node.state['SPACE'] = dpg.is_key_down(dpg.mvKey_Spacebar)
             elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER"]:
                 for k, fid in getattr(node, 'ui_fields', {}).items():
                     pin_id = node.in_pins[k]
@@ -233,6 +253,8 @@ class NodeUIRenderer:
         # --- [Vision & Go1] State -> UI ---
         elif t == "GO1_KEYBOARD" and hasattr(node, 'combo_keys'): 
             dpg.set_value(node.combo_keys, node.state.get('keys', 'WASD'))
+        elif t == "EP_KEYBOARD" and hasattr(node, 'combo_keys'):
+            dpg.set_value(node.combo_keys, node.state.get('keys', 'WASD'))
         elif t == "GO1_ACTION" and hasattr(node, 'combo_id'):
             dpg.set_value(node.combo_id, node.state.get('mode', 'Stand'))
             dpg.set_value(node.field_v1, node.state.get('v1', 0.2))
@@ -281,6 +303,7 @@ class NodeUIRenderer:
         elif t == "MT4_BACKLASH": NodeUIRenderer._render_backlash(node)
         # --- Go1 & Vision ---
         elif t == "GO1_KEYBOARD": NodeUIRenderer._render_go1_keyboard(node)
+        elif t == "EP_KEYBOARD": NodeUIRenderer._render_ep_keyboard(node)
         elif t == "GO1_UNITY": NodeUIRenderer._render_go1_unity(node)
         elif t == "GO1_ACTION": NodeUIRenderer._render_go1_action(node)
         elif t == "GO1_SERVER_SENDER": NodeUIRenderer._render_go1_server_sender(node)
@@ -569,6 +592,18 @@ class NodeUIRenderer:
                 node.combo_act = dpg.add_combo(["LED Red", "LED Blue", "Blaster Fire", "Arm Center", "Grip Open", "Grip Close"], default_value="LED Red", width=120)
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
+    @staticmethod
+    def _render_ep_keyboard(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Keyboard (EP)"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
+                dpg.add_text("Move / QE: Turn\nSpace: Stop", color=(100,255,100))
+            with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vx")
+            with dpg.node_attribute(tag=node.out_vy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vy")
+            with dpg.node_attribute(tag=node.out_wz, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Wz")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
 # Callback functions
 def toggle_exec(s, a): 
     engine_module.is_running = not engine_module.is_running
@@ -797,34 +832,28 @@ def __init_ui__():
             # ================= [EP Dashboard Tab] =================
             with dpg.tab(label="EP Dashboard"):
                 with dpg.group(horizontal=True):
-                    with dpg.child_window(width=250, height=140, border=True):
+                    with dpg.child_window(width=250, height=150, border=True):
                         dpg.add_text("EP Status", color=(150,150,150))
-                        dpg.add_text("HW: Offline", tag="ep_dash_link", color=(255,0,0))
-                        dpg.add_text("Battery: -%", tag="ep_dash_battery", color=(0,255,0))
+                        dpg.add_text("HW: Offline", tag="ep_dash_link", color=(0,255,0))
+                        dpg.add_text("Battery: -%", tag="ep_dash_battery", color=(100,255,100))
                         dpg.add_text("SN: Unknown", tag="ep_dash_sn", color=(200,200,200))
-                    
-                    with dpg.child_window(width=300, height=140, border=True):
-                        dpg.add_text("Manual Control", color=(255,200,0))
+                        dpg.add_spacer(height=5)
                         with dpg.group(horizontal=True):
-                            dpg.add_button(label="Vx+", width=60, callback=ep_manual_control_callback, user_data=('vx', 0.5))
-                            dpg.add_button(label="Vx-", width=60, callback=ep_manual_control_callback, user_data=('vx', -0.5))
-                            dpg.add_text("|")
-                            dpg.add_button(label="Vy+", width=60, callback=ep_manual_control_callback, user_data=('vy', 0.5))
-                            dpg.add_button(label="Vy-", width=60, callback=ep_manual_control_callback, user_data=('vy', -0.5))
-                        with dpg.group(horizontal=True):
-                            dpg.add_button(label="Yaw+", width=60, callback=ep_manual_control_callback, user_data=('vz', 0.5))
-                            dpg.add_button(label="Yaw-", width=60, callback=ep_manual_control_callback, user_data=('vz', -0.5))
-                            dpg.add_text("|")
-                            dpg.add_button(label="STOP", width=130, callback=lambda s,a,u: ep_target_vel.update({'vx':0.0, 'vy':0.0, 'vz':0.0}) if HAS_EP else None)
+                            dpg.add_button(label="Conn STA", callback=btn_connect_ep_sta, width=80)
+                            dpg.add_button(label="Conn AP", callback=btn_connect_ep_ap, width=80)
 
-                    with dpg.child_window(width=200, height=140, border=True):
-                        dpg.add_text("Actions", color=(0,255,255))
-                        with dpg.group(horizontal=True):
-                            dpg.add_button(label="Fire", width=60, callback=ep_action_callback, user_data="blaster fire;")
-                            dpg.add_button(label="Grip Open", width=80, callback=ep_action_callback, user_data="robotic_gripper open 1;")
-                        with dpg.group(horizontal=True):
-                            dpg.add_button(label="Red", width=60, callback=ep_action_callback, user_data="led control comp all r 255 g 0 b 0 effect solid;")
-                            dpg.add_button(label="Grip Close", width=80, callback=ep_action_callback, user_data="robotic_gripper close 1;")
+                    with dpg.child_window(width=300, height=150, border=True):
+                        dpg.add_text("Odometry", color=(0,255,255))
+                        dpg.add_text("Pos X: 0.000", tag="ep_dash_px")
+                        dpg.add_text("Pos Y: 0.000", tag="ep_dash_py")
+                        dpg.add_text("Speed: 0.000", tag="ep_dash_spd")
+                        dpg.add_text("Accel Z: 0.000", tag="ep_dash_acc")
+
+                    with dpg.child_window(width=250, height=150, border=True):
+                        dpg.add_text("Commands", color=(255,200,0))
+                        dpg.add_text("Vx Cmd: 0.00", tag="ep_dash_vx")
+                        dpg.add_text("Vy Cmd: 0.00", tag="ep_dash_vy")
+                        dpg.add_text("Wz Cmd: 0.00", tag="ep_dash_wz")
 
             # ================= [Files & System Tab] =================
             with dpg.tab(label="Files & System"):
@@ -878,6 +907,7 @@ def __init_ui__():
             with dpg.group(horizontal=True):
                 dpg.add_text("EP01 Tools:", color=(100,200,255))
                 dpg.add_button(label="EP DRIVER", callback=add_node_cb, user_data="EP_DRIVER")
+                dpg.add_button(label="EP KEY", callback=add_node_cb, user_data="EP_KEYBOARD")
                 dpg.add_button(label="EP ACTION", callback=add_node_cb, user_data="EP_ACTION")
 
         with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
@@ -981,6 +1011,14 @@ def start_gui():
             
             bat = ep_state.get('battery', -1)
             dpg.set_value("ep_dash_battery", f"Battery: {bat}%" if bat >= 0 else "Battery: -%")
+            dpg.set_value("ep_dash_sn", f"SN: {ep_dashboard.get('sn', 'Unknown')}")
+            dpg.set_value("ep_dash_px", f"Pos X: {ep_state.get('pos_x', 0.0):.3f}")
+            dpg.set_value("ep_dash_py", f"Pos Y: {ep_state.get('pos_y', 0.0):.3f}")
+            dpg.set_value("ep_dash_spd", f"Speed: {ep_state.get('speed', 0.0):.3f}")
+            dpg.set_value("ep_dash_acc", f"Accel Z: {ep_state.get('accel_z', 0.0):.3f}")
+            dpg.set_value("ep_dash_vx", f"Vx Cmd: {ep_node_intent.get('vx', 0.0):.2f}")
+            dpg.set_value("ep_dash_vy", f"Vy Cmd: {ep_node_intent.get('vy', 0.0):.2f}")
+            dpg.set_value("ep_dash_wz", f"Wz Cmd: {ep_node_intent.get('wz', 0.0):.2f}")
 
         # --- Node Engine Tick ---
         if engine_module.is_running and (time.time() - last_logic_time > LOGIC_RATE):
