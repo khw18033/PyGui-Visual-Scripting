@@ -367,13 +367,17 @@ def ep_comm_thread():
 
         if ep_node_intent['stop'] or not active:
             if is_moving:
-                write_log("EP: stop sequence start (Active Brake -> Wheel Lock)")
+                write_log("EP: stop sequence start (Clean Brake)")
                 try:
+                    # 💡 수정: 0 명령을 무한 반복하지 않고 딱 한 번만 깔끔하게 전송
                     ep_robot_inst.chassis.drive_speed(x=0, y=0, z=0, timeout=0.1)
                 except Exception as e:
                     write_log(f"EP Brake Error: {e}")
+                
+                # is_moving을 즉시 False로 바꾸어 다음 루프에서 정지 명령이 다시 호출되지 않게 함
                 is_moving = False
                 ep_node_intent['stop'] = False
+                
             ep_target_vel['vx'] = 0.0
             ep_target_vel['vy'] = 0.0
             ep_target_vel['vz'] = 0.0
@@ -498,7 +502,15 @@ class EPKeyboardNode(BaseNode):
         self.out_flow = generate_uuid()
         self.outputs[self.out_flow] = PortType.FLOW
         self.arm_step = EP_ARM_STEP
+        self.prev_keys = {}
         self.last_arm_input_time = 0.0
+
+    def is_just_pressed(self, key):
+        """키를 꾹 누르고 있을 때의 중복 실행을 막기 위해, 방금 눌린 순간만 True 반환"""
+        current = bool(self.state.get(key))
+        prev = self.prev_keys.get(key, False)
+        self.prev_keys[key] = current
+        return current and not prev
 
     def execute(self):
         if self.state.get('is_focused', False):
@@ -541,17 +553,14 @@ class EPKeyboardNode(BaseNode):
         if self.state.get('SPACE'):
             ep_node_intent['stop'] = True
 
-        if self.state.get('Z'):
-            arm_dy = self.arm_step
-        if self.state.get('X'):
-            arm_dy = -self.arm_step
-        if self.state.get('C'):
-            arm_dx = -self.arm_step
-        if self.state.get('V'):
-            arm_dx = self.arm_step
-        if self.state.get('U_pressed'):
+        if self.is_just_pressed('Z'): arm_dy = self.arm_step
+        if self.is_just_pressed('X'): arm_dy = -self.arm_step
+        if self.is_just_pressed('C'): arm_dx = -self.arm_step
+        if self.is_just_pressed('V'): arm_dx = self.arm_step
+        
+        if self.is_just_pressed('U_pressed') or self.is_just_pressed('U'):
             grip_open = True
-        if self.state.get('J_pressed'):
+        if self.is_just_pressed('J_pressed') or self.is_just_pressed('J'):
             grip_close = True
 
         if vx or vy or wz:
@@ -560,11 +569,8 @@ class EPKeyboardNode(BaseNode):
             ep_node_intent['wz'] = wz
             ep_node_intent['trigger_time'] = time.monotonic()
 
-        # Arm movement: queue-based, throttled to prevent command spam
         if arm_dx or arm_dy:
-            if time.monotonic() - self.last_arm_input_time > 1.0:
-                self.last_arm_input_time = time.monotonic()
-                _ep_move_arm(delta_x=arm_dx, delta_y=arm_dy)
+            _ep_move_arm(delta_x=arm_dx, delta_y=arm_dy)
 
         # Gripper: queue-based (each frame if pressed)
         if grip_open:
