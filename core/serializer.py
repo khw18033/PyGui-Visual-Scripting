@@ -56,6 +56,8 @@ def _resolve_port_with_fallback(node, io_kind, saved_name=None, saved_idx=None, 
     return None
 
 def get_save_files(): 
+    if not os.path.exists(SAVE_DIR):
+        return []
     return [f for f in os.listdir(SAVE_DIR) if f.endswith(".json")]
 
 def save_graph(filename):
@@ -111,10 +113,21 @@ def save_graph(filename):
 
 def load_graph(filename):
     from ui.dpg_manager import clear_editor, NodeUIRenderer, set_item_pos_safe, add_dpg_link
-    
-    if not filename.endswith(".json"): filename += ".json"
+
+    if not isinstance(filename, str):
+        write_log("Load Err: 선택된 파일이 없습니다.")
+        return
+    filename = filename.strip()
+    if not filename:
+        write_log("Load Err: 선택된 파일이 없습니다.")
+        return
+
+    if not filename.endswith(".json"):
+        filename += ".json"
     filepath = os.path.join(SAVE_DIR, filename)
-    if not os.path.exists(filepath): return
+    if not os.path.exists(filepath):
+        write_log(f"Load Err: 파일을 찾을 수 없습니다. ({filename})")
+        return
     
     clear_editor()
     
@@ -123,8 +136,13 @@ def load_graph(filename):
             data = json.load(f)
             
         id_map = {}
-        for n_data in data["nodes"]:
-            node_type = n_data["type"]
+        for n_data in data.get("nodes", []):
+            if not isinstance(n_data, dict):
+                continue
+            node_type = n_data.get("type")
+            if not node_type:
+                write_log("Load Warn: type 정보가 없는 노드를 건너뜁니다.")
+                continue
             settings = n_data.get("settings", {})
 
             # 과거 버그로 GO1_DRIVER가 MT4_DRIVER로 저장된 파일을 자동 보정한다.
@@ -133,16 +151,25 @@ def load_graph(filename):
 
             node = NodeFactory.create_node(node_type, n_data.get("id"))
             if node:
-                id_map[n_data["id"]] = node.node_id
+                old_id = n_data.get("id")
+                if old_id is None:
+                    write_log("Load Warn: id 정보가 없는 노드를 건너뜁니다.")
+                    continue
+                id_map[old_id] = node.node_id
                 NodeUIRenderer.render(node)
-                set_item_pos_safe(node.node_id, n_data["pos"] if n_data["pos"] else [0,0])
+                pos = n_data.get("pos")
+                set_item_pos_safe(node.node_id, pos if pos else [0,0])
                 node.load_settings(settings)
                 NodeUIRenderer.sync_state_to_ui(node)
                 
-        for l_data in data["links"]:
-            if l_data["src_node"] in id_map and l_data["dst_node"] in id_map:
-                src_node = node_registry[id_map[l_data["src_node"]]]
-                dst_node = node_registry[id_map[l_data["dst_node"]]]
+        for l_data in data.get("links", []):
+            if not isinstance(l_data, dict):
+                continue
+            src_old = l_data.get("src_node")
+            dst_old = l_data.get("dst_node")
+            if src_old in id_map and dst_old in id_map:
+                src_node = node_registry[id_map[src_old]]
+                dst_node = node_registry[id_map[dst_old]]
                 src_attr = _resolve_port_with_fallback(
                     src_node,
                     "output",
@@ -159,7 +186,7 @@ def load_graph(filename):
                 )
 
                 if src_attr and dst_attr:
-                    add_dpg_link(src_attr, dst_attr, id_map[l_data["src_node"]], id_map[l_data["dst_node"]])
+                    add_dpg_link(src_attr, dst_attr, id_map[src_old], id_map[dst_old])
                 else:
                     write_log(
                         f"Load Warn: Skipped incompatible link src={l_data.get('src_node')} dst={l_data.get('dst_node')}"

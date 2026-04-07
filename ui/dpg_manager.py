@@ -733,7 +733,12 @@ def add_node_cb(s, a, u):
     if node: NodeUIRenderer.render(node)
 
 def save_cb(s, a): save_graph(dpg.get_value("file_name_input"))
-def load_cb(s, a): load_graph(dpg.get_value("file_list_combo"))
+def load_cb(s, a):
+    selected = dpg.get_value("file_list_combo")
+    if not selected:
+        engine_module.write_log("Load Err: 파일 목록에서 먼저 선택하세요.")
+        return
+    load_graph(selected)
 def update_file_list_ui(): update_ui_file_list()
 
 def update_ui_file_list(): 
