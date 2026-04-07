@@ -193,7 +193,7 @@ def ep_arm_action_worker():
                 y = float(action['target_y'])
                 write_log(f"EP: Arm moving to ({x}, {y})")
                 action_obj = ep_robot_inst.robotic_arm.moveto(x=x, y=y)
-                _wait_for_action_completion(action_obj)
+                # _wait_for_action_completion(action_obj)
             elif action['type'] == 'grip':
                 opening = bool(action['open'])
                 write_log(f"EP: Gripper {'opening' if opening else 'closing'}")
@@ -241,6 +241,12 @@ def connect_ep_thread_func(conn_mode):
         write_log(f"EP_DEBUG: Calling initialize(conn_type='{conn_mode}')...")
         ep_robot_inst.initialize(conn_type=conn_mode)
         write_log("EP_DEBUG: Initialize completed successfully.")
+
+        try:
+            ep_robot_inst.set_robot_mode(mode="free")
+            write_log("EP_DEBUG: Robot mode set to FREE.")
+        except Exception as e:
+            write_log(f"EP_DEBUG: Could not set FREE mode: {e}")
 
         write_log("EP_DEBUG: Getting Serial Number...")
         ep_dashboard["sn"] = ep_robot_inst.get_sn()
