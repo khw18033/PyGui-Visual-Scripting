@@ -146,10 +146,14 @@ def _ep_set_gripper(open_gripper):
     """큐에 그리퍼 액션 추가 (non-blocking)"""
     with _ep_arm_lock:
         # 동일한 그리퍼 명령 연속 입력은 중복 enqueue를 막는다.
-        if ep_arm_action_queue:
-            last = ep_arm_action_queue[-1]
-            if last.get('type') == 'grip' and bool(last.get('open')) == bool(open_gripper):
-                return True
+        # 수정 후 (기존 대기 중인 그립 명령을 덮어씌움)
+        ep_arm_action_queue[:] = [a for a in ep_arm_action_queue if a.get('type') != 'grip']
+        ep_arm_action_queue.append({
+            'type': 'grip',
+            'open': open_gripper,
+            'timestamp': time.monotonic(),
+            'retry': 0,
+        })
         ep_arm_action_queue.append({
             'type': 'grip',
             'open': open_gripper,
@@ -366,10 +370,6 @@ def ep_comm_thread():
                 write_log("EP: stop sequence start (Active Brake -> Wheel Lock)")
                 try:
                     ep_robot_inst.chassis.drive_speed(x=0, y=0, z=0, timeout=0.1)
-                    time.sleep(0.05)
-                    for _ in range(3):
-                        ep_robot_inst.chassis.drive_wheels(w1=0, w2=0, w3=0, w4=0)
-                        time.sleep(0.1)
                 except Exception as e:
                     write_log(f"EP Brake Error: {e}")
                 is_moving = False
