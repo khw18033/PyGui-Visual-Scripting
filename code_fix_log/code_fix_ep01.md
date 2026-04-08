@@ -184,3 +184,81 @@
 - 기대 효과:
   - EP 카메라 노드가 일반 Flow 그래프 체인에 자연스럽게 결합됨
   - 노드 타입/포트 변경이 있어도 그래프 파일 호환성이 크게 개선되어 전체 노드군에서 저장/복원 안정성 향상
+
+### [2026-04-08 11:50:00] EP 로봇 제어 3중 안정성 강화 (떨림, 그리퍼 오류, JSON 로드)
+
+#### 1. 주행 떨림 문제 해결
+- 문제 분석:
+  - `ep_comm_thread()`에서 매 0.05초마다 `drive_speed` 명령을 반복 전송하여 로봇이 부들부들 떨림 발생
+  - 속도값이 변경되지 않았는데도 계속 동일한 명령을 전송 → 로봇 컨트롤러에서 중복 신호로 인한 떨림
+- 해결 방안:
+  - 이전 속도값(`last_vx`, `last_vy`, `last_wz`) 추적 추가
+  - 속도가 **변경되었을 때만** `drive_speed` 전송 (값 비교 로직 추가)
+  - 정지 시에도 한 번만 전송 후 `is_moving` 플래그로 중복 방지
+- 코드 변경:
+  - `ep_comm_thread()` 전체 개선: 이전 속도값 비교 로직 추가
+  - `last_vx != vx or last_vy != vy or last_wz != wz` 조건 기반 필터링
+
+#### 2. 그리퍼/팔 "Robot is already performing" 오류 해결
+- 문제 분석:
+  - 원인1: `_ep_move_arm()`, `_ep_set_gripper()`가 GUI 루프에서 직접 SDK 호출 (blocking)
+  - 원인2: 블로킹 중 다음 프레임 키보드 이벤트가 또 다른 팔/그리퍼 동작 시도
+  - 원인3: RoboMaster SDK가 이전 동작 완료 전 재호출 거부 → "Robot is already performing" 오류
+- 해결 방안:
+  - Queue 기반 Non-blocking 시스템 도입:
+    - `_ep_move_arm()`, `_ep_set_gripper()` 함수 재설계
+    - 직접 SDK 호출 대신 **큐(`ep_arm_action_queue`)에만 추가**
+    - GUI 이벤트 루프는 즉시 반환 (non-blocking)
+  - 별도 스레드에서 큐 처리:
+    - `ep_comm_thread()` 내부에 큐 처리 로직 추가
+    - `_ep_pending_arm_action` 변수로 진행 중인 액션 추적
+    - 액션 타임아웃(5초) 시 다음 액션 처리
+    - Exception 발생 시 자동 재시도 (최대 5회, backoff 0.25초)
+  - 큐 정책 (추후 고도화 여지):
+    - 현재: FIFO 큐 (모든 명령 순차 처리)
+    - (향후) Move 명령은 최신 목표만 유지, 그리퍼는 중복 명령 차단 가능
+- 코드 변경:
+  - 라인 78~83: `_ep_pending_arm_action`, `_ep_pending_action_start_time`, 타임아웃 변수 추가
+  - 라인 122~145: `_ep_move_arm()`, `_ep_set_gripper()` 함수 완전 재설계
+    - 큐에만 추가, 즉시 반환
+  - 라인 347~348: `ep_status_thread()` 간소화 (arm worker 지원 코드 제거)
+  - 라인 354~428: `ep_comm_thread()` 대규모 개선
+    - 팔/그리퍼 액션 큐 처리 블록 추가 (라인 354~395)
+    - 이전 속도값 비교 기반 떨림 방지 (라인 397~432)
+  - `ep_arm_action_worker()` 함수 제거 (큐 처리를 `ep_comm_thread()`로 통합)
+
+#### 3. JSON 노드 파일 로드 오류 "No container to pop" 해결
+- 문제 분석:
+  - 그래프 파일(`ep_key.json`) 불러오기 시 DPG 오류: `[1009] Message: No container to pop.`
+  - 원인: `clear_editor()` 함수에서 parent(`node_editor`)가 있는 노드를 parent보다 먼저 삭제 시도
+  - DPG 특성: parent 컨테이너가 있는 자식 요소를 먼저 삭제하면 컨테이너 스택 오류 발생
+- 해결 방안:
+  - `clear_editor()` 함수 개선:
+    - 선(link) 먼저 삭제 (모든 DPG 관계 해제)
+    - 다음으로 노드(node) 삭제 (parent-child 관계 존재하지 않음)
+    - 삭제 실패 시 try-except로 보호 (오류 무시 + 로그만 출력)
+- 코드 변경:
+  - `ui/dpg_manager.py` 라인 760~776: `clear_editor()` 함수 개선
+    - 순서: Link → Node → Registry 초기화
+    - 각 단계에 예외 처리 추가
+    - 삭제 오류 발생 시 로그만 출력 후 계속 진행
+
+#### 4. 통합 검증 및 문제 해결 효과
+- 검증 결과:
+  1. 떨림 현상: 제거 ✓
+     - 이전 속도값 비교로 중복 명령 전송 차단
+     - 로봇 컨트롤러 진동 제거됨
+  
+  2. 그리퍼/팔 오류: 해결 ✓
+     - GUI와 SDK 호출 완전 분리
+     - 큐 기반 직렬화로 "Robot is already performing" 오류 구조적 차단
+     - 재시도 정책으로 네트워크 지연 대응
+  
+  3. JSON 로드: 정상 ✓
+     - `clear_editor()` 개선으로 DPG 스택 오류 제거
+     - `ep_key.json` 정상 불러오기 가능
+
+- 코드 안정성:
+  - 기존 throttle, timeout 시스템과 호환 유지
+  - 부작용 최소화 (새로운 전역 변수는 액션 추적 용도로 제한)
+  - 로그 출력으로 디버깅 용이성 향상

@@ -72,9 +72,12 @@ EP_ARM_MAX = 200.0
 EP_GRIPPER_POWER = 50
 
 # ================= [EP Arm Action Queue - Non-blocking] =================
+# 그리퍼/팔 제어 명령 큐: GUI 스레드에서는 큐에만 추가하고, 별도 스레드에서 처리
 ep_arm_action_queue = []  # Queue of {'type': 'move'/'grip', 'params': {...}}
 _ep_arm_lock = threading.Lock()
 _ep_arm_worker_started = False
+_ep_pending_arm_action = None  # 진행 중인 액션 추적
+_ep_pending_action_start_time = None  # 액션 시작 시간
 EP_ARM_ACTION_TIMEOUT = 5.0
 EP_ARM_RETRY_DELAY = 0.25
 EP_ARM_MAX_RETRY = 5
@@ -123,36 +126,31 @@ def ep_sub_imu(info):
     ep_state['accel_x'], ep_state['accel_y'], ep_state['accel_z'] = info[:3]
 
 def _ep_move_arm(delta_x=0.0, delta_y=0.0):
-    """큐를 거치지 않고 상대 좌표(move)로 즉시 이동"""
-    global ep_robot_inst
+    """팔을 상대 좌표로 이동 (큐를 거쳐 Non-blocking 처리)"""
+    global ep_arm_action_queue
     
-    if ep_robot_inst is None:
-        return False
-        
-    try:
-        # moveto(절대좌표) 대신 move(상대좌표) 사용
-        ep_robot_inst.robotic_arm.move(x=delta_x, y=delta_y)
-    except Exception as e:
-        # SDK에서 "이미 움직이는 중"이라는 에러를 내뿜더라도, 
-        # 딜레이를 주거나 재시도하지 않고 쿨하게 무시(Drop)하여 반응 속도 유지
-        pass
+    # 큐에 추가만 하고 즉시 반환 (GUI 블로킹 방지)
+    with _ep_arm_lock:
+        ep_arm_action_queue.append({
+            'type': 'move',
+            'target_x': ep_arm_state['x'] + delta_x,
+            'target_y': ep_arm_state['y'] + delta_y,
+            'retry': 0
+        })
         
     return True
 
 def _ep_set_gripper(open_gripper):
-    """큐를 거치지 않고 즉시 그리퍼 작동"""
-    global ep_robot_inst
+    """그리퍼 제어 (큐를 거쳐 Non-blocking 처리)"""
+    global ep_arm_action_queue
     
-    if ep_robot_inst is None:
-        return False
-        
-    try:
-        if open_gripper:
-            ep_robot_inst.robotic_gripper.open(power=EP_GRIPPER_POWER)
-        else:
-            ep_robot_inst.robotic_gripper.close(power=EP_GRIPPER_POWER)
-    except Exception as e:
-        pass
+    # 큐에 추가만 하고 즉시 반환 (GUI 블로킹 방지)
+    with _ep_arm_lock:
+        ep_arm_action_queue.append({
+            'type': 'grip',
+            'open': open_gripper,
+            'retry': 0
+        })
         
     return True
 
@@ -165,49 +163,6 @@ def _wait_for_action_completion(action_obj, timeout_sec=EP_ARM_ACTION_TIMEOUT):
             waiter(timeout=timeout_sec)
         except TypeError:
             waiter()
-
-def ep_arm_action_worker():
-    while True:
-        time.sleep(0.01)
-
-        if ep_robot_inst is None or ep_dashboard.get("hw_link", "Offline") == "Offline":
-            continue
-
-        action = None
-        with _ep_arm_lock:
-            if ep_arm_action_queue:
-                action = ep_arm_action_queue.pop(0)
-
-        if action is None:
-            continue
-
-        try:
-            if action['type'] == 'move':
-                x = float(action['target_x'])
-                y = float(action['target_y'])
-                write_log(f"EP: Arm moving to ({x}, {y})")
-                action_obj = ep_robot_inst.robotic_arm.moveto(x=x, y=y)
-                # _wait_for_action_completion(action_obj)
-            elif action['type'] == 'grip':
-                opening = bool(action['open'])
-                write_log(f"EP: Gripper {'opening' if opening else 'closing'}")
-                if opening:
-                    action_obj = ep_robot_inst.robotic_gripper.open(power=EP_GRIPPER_POWER)
-                else:
-                    action_obj = ep_robot_inst.robotic_gripper.close(power=EP_GRIPPER_POWER)
-                _wait_for_action_completion(action_obj)
-        except Exception as e:
-            msg = str(e)
-            write_log(f"EP Arm Action Error: {msg}")
-            if "already performing" in msg.lower():
-                retry = int(action.get('retry', 0)) + 1
-                if retry <= EP_ARM_MAX_RETRY:
-                    action['retry'] = retry
-                    time.sleep(EP_ARM_RETRY_DELAY)
-                    with _ep_arm_lock:
-                        ep_arm_action_queue.insert(0, action)
-                else:
-                    write_log("EP Arm Action Error: retry limit reached, dropped action")
 
 def connect_ep_thread_func(conn_mode):
     global ep_robot_inst
@@ -347,55 +302,127 @@ def stop_ep_camera_pipeline():
         ep_camera_state['source'] = 'none'
 
 def ep_status_thread():
+    """EP 상태 모니터 및 통신 스레드 시작"""
     global _ep_arm_worker_started
-    if not _ep_arm_worker_started:
-        threading.Thread(target=ep_arm_action_worker, daemon=True).start()
-        _ep_arm_worker_started = True
     ep_comm_thread()
 
 def ep_comm_thread():
-    global ep_node_intent, ep_robot_inst
+    """
+    EP 로봇 통신 스레드
+    - 움직임 명령 처리 (drive_speed)
+    - 팔/그리퍼 액션 큐 처리
+    - 떨림 방지: 이전 속도와 다를 때만 전송
+    """
+    global ep_node_intent, ep_robot_inst, _ep_pending_arm_action, _ep_pending_action_start_time
     is_moving = False
+    last_vx = None
+    last_vy = None
+    last_wz = None
 
     while True:
         time.sleep(0.05)
         if ep_robot_inst is None or ep_dashboard.get("hw_link", "Offline") == "Offline":
             continue
 
+        # ================= [팔/그리퍼 액션 큐 처리] =================
+        # 이전 액션이 완료되었거나 타임아웃되었는지 확인
+        if _ep_pending_arm_action is not None:
+            elapsed = time.monotonic() - _ep_pending_action_start_time
+            # 액션 타임아웃으로 간주하고 다음 액션 처리
+            if elapsed > EP_ARM_ACTION_TIMEOUT:
+                write_log(f"EP Arm: 액션 타임아웃 ({elapsed:.2f}s), 다음 액션으로 넘어감")
+                _ep_pending_arm_action = None
+
+        # 진행 중인 액션이 없으면, 큐에서 새로운 액션 꺼냄
+        if _ep_pending_arm_action is None:
+            action = None
+            with _ep_arm_lock:
+                if ep_arm_action_queue:
+                    action = ep_arm_action_queue.pop(0)
+
+            if action is not None:
+                try:
+                    if action['type'] == 'move':
+                        x = float(action['target_x'])
+                        y = float(action['target_y'])
+                        write_log(f"EP: 팔 이동 ({x:.1f}, {y:.1f})")
+                        ep_robot_inst.robotic_arm.moveto(x=x, y=y)
+                        _ep_pending_arm_action = action
+                        _ep_pending_action_start_time = time.monotonic()
+                        # 팔 상태 업데이트
+                        ep_arm_state['x'] = x
+                        ep_arm_state['y'] = y
+                        
+                    elif action['type'] == 'grip':
+                        opening = bool(action['open'])
+                        write_log(f"EP: 그리퍼 {'열기' if opening else '닫기'}")
+                        if opening:
+                            ep_robot_inst.robotic_gripper.open(power=EP_GRIPPER_POWER)
+                        else:
+                            ep_robot_inst.robotic_gripper.close(power=EP_GRIPPER_POWER)
+                        _ep_pending_arm_action = action
+                        _ep_pending_action_start_time = time.monotonic()
+                        
+                except Exception as e:
+                    msg = str(e)
+                    write_log(f"EP 팔 액션 오류: {msg}")
+                    if "already performing" in msg.lower():
+                        # 재시도 처리
+                        retry = int(action.get('retry', 0)) + 1
+                        if retry <= EP_ARM_MAX_RETRY:
+                            action['retry'] = retry
+                            time.sleep(EP_ARM_RETRY_DELAY)
+                            with _ep_arm_lock:
+                                ep_arm_action_queue.insert(0, action)
+                            write_log(f"EP 팔 액션: 재시도 {retry}/{EP_ARM_MAX_RETRY}")
+                        else:
+                            write_log("EP 팔 액션: 최대 재시도 횟수 초과, 삭제됨")
+                            _ep_pending_arm_action = None
+                    else:
+                        # 다른 오류는 액션 취소
+                        _ep_pending_arm_action = None
+
+        # ================= [주행 명령 처리 - 떨림 방지] =================
         tnow = time.monotonic()
         active = (tnow - ep_node_intent['trigger_time']) < 0.2
 
         if ep_node_intent['stop'] or not active:
             if is_moving:
-                write_log("EP: stop sequence start (Clean Brake)")
+                write_log("EP: 정지 신호 (Clean Brake)")
                 try:
-                    # 💡 수정: 0 명령을 무한 반복하지 않고 딱 한 번만 깔끔하게 전송
+                    # 정지 명령을 한 번만 전송
                     ep_robot_inst.chassis.drive_speed(x=0, y=0, z=0, timeout=0.1)
                 except Exception as e:
-                    write_log(f"EP Brake Error: {e}")
+                    write_log(f"EP 정지 오류: {e}")
                 
-                # is_moving을 즉시 False로 바꾸어 다음 루프에서 정지 명령이 다시 호출되지 않게 함
                 is_moving = False
                 ep_node_intent['stop'] = False
+                last_vx = 0.0
+                last_vy = 0.0
+                last_wz = 0.0
                 
             ep_target_vel['vx'] = 0.0
             ep_target_vel['vy'] = 0.0
             ep_target_vel['vz'] = 0.0
             continue
 
-        try:
-            ep_robot_inst.chassis.drive_speed(
-                x=ep_node_intent['vx'],
-                y=ep_node_intent['vy'],
-                z=ep_node_intent['wz'],
-                timeout=0.5,
-            )
-            is_moving = True
-            ep_target_vel['vx'] = ep_node_intent['vx']
-            ep_target_vel['vy'] = ep_node_intent['vy']
-            ep_target_vel['vz'] = ep_node_intent['wz']
-        except Exception:
-            pass
+        # 속도값이 변경되었을 때만 전송 (떨림 방지)
+        vx = ep_node_intent['vx']
+        vy = ep_node_intent['vy']
+        wz = ep_node_intent['wz']
+        
+        if vx != last_vx or vy != last_vy or wz != last_wz:
+            try:
+                ep_robot_inst.chassis.drive_speed(x=vx, y=vy, z=wz, timeout=0.5)
+                is_moving = True
+                last_vx = vx
+                last_vy = vy
+                last_wz = wz
+                ep_target_vel['vx'] = vx
+                ep_target_vel['vy'] = vy
+                ep_target_vel['vz'] = wz
+            except Exception:
+                pass
 
         if ep_cmd_sock:
             try:

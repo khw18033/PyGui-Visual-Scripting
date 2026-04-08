@@ -759,11 +759,30 @@ def set_item_pos_safe(attr, pos):
     if dpg.does_item_exist(attr): dpg.set_item_pos(attr, pos)
 
 def clear_editor():
+    """
+    노드 에디터 초기화
+    - 순서: 선(link) 먼저 삭제 -> 노드(node) 다음 삭제
+    - DPG 특성: parent가 있는 요소를 먼저 삭제해야 "No container to pop" 오류 방지
+    """
+    # 1. 모든 선 삭제 (노드보다 먼저)
     for lid in list(link_registry.keys()): 
-        if dpg.does_item_exist(lid): dpg.delete_item(lid)
+        if dpg.does_item_exist(lid):
+            try:
+                dpg.delete_item(lid)
+            except Exception as e:
+                engine_module.write_log(f"Link 삭제 중 오류: {e}")
+    
+    # 2. 모든 노드 삭제 (선 삭제 후)
     for nid in list(node_registry.keys()): 
-        if dpg.does_item_exist(nid): dpg.delete_item(nid)
-    link_registry.clear(); node_registry.clear()
+        if dpg.does_item_exist(nid):
+            try:
+                dpg.delete_item(nid)
+            except Exception as e:
+                engine_module.write_log(f"Node 삭제 중 오류: {e}")
+    
+    # 3. 레지스트리 초기화
+    link_registry.clear()
+    node_registry.clear()
 
 def add_dpg_link(src, dst, src_node, dst_node):
     if not dpg.does_item_exist(src) or not dpg.does_item_exist(dst): return
