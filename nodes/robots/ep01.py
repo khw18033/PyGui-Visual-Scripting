@@ -123,43 +123,37 @@ def ep_sub_imu(info):
     ep_state['accel_x'], ep_state['accel_y'], ep_state['accel_z'] = info[:3]
 
 def _ep_move_arm(delta_x=0.0, delta_y=0.0):
-    """큐에 팔 이동 액션 추가 (non-blocking)"""
-    target_x = max(EP_ARM_MIN, min(ep_arm_state['x'] + float(delta_x), EP_ARM_MAX))
-    target_y = max(EP_ARM_MIN, min(ep_arm_state['y'] + float(delta_y), EP_ARM_MAX))
-
-    ep_arm_state['x'] = target_x
-    ep_arm_state['y'] = target_y
-
-    with _ep_arm_lock:
-        # 이동 명령은 마지막 목표만 유지해 backlog를 방지한다.
-        ep_arm_action_queue[:] = [a for a in ep_arm_action_queue if a.get('type') != 'move']
-        ep_arm_action_queue.append({
-            'type': 'move',
-            'target_x': target_x,
-            'target_y': target_y,
-            'timestamp': time.monotonic(),
-            'retry': 0,
-        })
+    """큐를 거치지 않고 상대 좌표(move)로 즉시 이동"""
+    global ep_robot_inst
+    
+    if ep_robot_inst is None:
+        return False
+        
+    try:
+        # moveto(절대좌표) 대신 move(상대좌표) 사용
+        ep_robot_inst.robotic_arm.move(x=delta_x, y=delta_y)
+    except Exception as e:
+        # SDK에서 "이미 움직이는 중"이라는 에러를 내뿜더라도, 
+        # 딜레이를 주거나 재시도하지 않고 쿨하게 무시(Drop)하여 반응 속도 유지
+        pass
+        
     return True
 
 def _ep_set_gripper(open_gripper):
-    """큐에 그리퍼 액션 추가 (non-blocking)"""
-    with _ep_arm_lock:
-        # 동일한 그리퍼 명령 연속 입력은 중복 enqueue를 막는다.
-        # 수정 후 (기존 대기 중인 그립 명령을 덮어씌움)
-        ep_arm_action_queue[:] = [a for a in ep_arm_action_queue if a.get('type') != 'grip']
-        ep_arm_action_queue.append({
-            'type': 'grip',
-            'open': open_gripper,
-            'timestamp': time.monotonic(),
-            'retry': 0,
-        })
-        ep_arm_action_queue.append({
-            'type': 'grip',
-            'open': open_gripper,
-            'timestamp': time.monotonic(),
-            'retry': 0,
-        })
+    """큐를 거치지 않고 즉시 그리퍼 작동"""
+    global ep_robot_inst
+    
+    if ep_robot_inst is None:
+        return False
+        
+    try:
+        if open_gripper:
+            ep_robot_inst.robotic_gripper.open(power=EP_GRIPPER_POWER)
+        else:
+            ep_robot_inst.robotic_gripper.close(power=EP_GRIPPER_POWER)
+    except Exception as e:
+        pass
+        
     return True
 
 def _wait_for_action_completion(action_obj, timeout_sec=EP_ARM_ACTION_TIMEOUT):
