@@ -1336,7 +1336,7 @@ class ArUcoDetectNode(BaseNode):
                     except Exception:
                         pass
 
-        if go1_node_intent.get('send_aruco', False) and len(detected) > 0:
+        if len(detected) > 0:
             payload = {
                 'camera': camera_id,
                 'timestamp': round(time.time(), 3),
@@ -1344,17 +1344,21 @@ class ArUcoDetectNode(BaseNode):
             }
             payload_json = json.dumps(payload)
 
-            try:
-                go1_sock.sendto(payload_json.encode('utf-8'), (GO1_UNITY_IP, 5008))
-            except Exception:
-                pass
+            if go1_node_intent.get('send_aruco', False):
+                try:
+                    go1_sock.sendto(payload_json.encode('utf-8'), (GO1_UNITY_IP, 5008))
+                except Exception as e:
+                    write_log(f"[VIS_ARUCO] UDP 전송 실패: {e}")
 
             json_path = str(self.state.get('json_path', 'aruco_data.json')).strip() or 'aruco_data.json'
             try:
+                json_dir = os.path.dirname(json_path)
+                if json_dir:
+                    os.makedirs(json_dir, exist_ok=True)
                 with open(json_path, 'w', encoding='utf-8') as f:
                     f.write(payload_json)
-            except Exception:
-                pass
+            except Exception as e:
+                write_log(f"[VIS_ARUCO] JSON 저장 실패: {e} | path={json_path}")
 
         self.output_data[self.out_frame] = draw
         self.output_data[self.out_data] = detected
