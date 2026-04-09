@@ -693,3 +693,36 @@ odes/robots/go1.py (함수/클래스 추가)
   - 본 점검 결과를 최하단에 append하여 최신 상태 기준점을 명시.
 - 관련 파일:
   - `code_fix_log/code_fix_go1.md`
+
+### [2026-04-09 20:35:20] ArUco/Fisheye 노드 최근 수정 이력 보강 (누락분 반영)
+- 문제 분석:
+  - `code_fix_go1.md`에 ArUco/보정 노드의 "초기 이식" 이력은 있었으나, 최근 실제 동작 보정(자세 추정, JSON 저장, 반화면 crop 조건) 관련 상세 변경 이력이 별도 섹션으로 누락되어 추적성이 떨어졌음.
+
+- 조치 방안:
+  - `nodes/robots/go1.py`
+    - `ArUcoDetectNode` 보강:
+      - `cv2.solvePnP()` 기반으로 마커 pose(`x/y/z`)를 산출하도록 정리.
+      - `marker_size_m` 상태값을 반영해 object points 생성 크기 동기화.
+      - `input_undistorted` 옵션을 추가해, 보정 입력 사용 시 왜곡계수 0(`zero_dist_coeffs`)으로 pose 계산하도록 분기.
+      - `draw_axes`, `draw_overlay_text` 옵션으로 축/텍스트 오버레이 표시 제어.
+      - `json_path` 상태값 기반 JSON 파일 저장(상위 경로 자동 생성) + 저장 실패 로그 추가.
+    - `FisheyeUndistortNode` 보강:
+      - `crop_enabled`, `crop_mode(left_half/custom_ratio)`, `crop_ratio` 상태를 추가.
+      - 반화면 crop은 "보정 enabled(use_calib=True)"일 때만 적용되도록 조건화하여, 보정 OFF 상태 원본 프레임이 의도치 않게 잘리지 않도록 수정.
+  - `ui/dpg_manager.py`
+    - ArUco UI/동기화 항목 반영:
+      - `Marker Size (m)`, `Input Already Undistorted`, `Draw Axes`, `Draw Overlay Text`, `JSON Path`.
+      - `sync_ui_to_state()` / `sync_state_to_ui()` 양방향 동기화 보강.
+    - Fisheye UI/동기화 항목 반영:
+      - `Crop Enabled`, `Crop Mode`, `Crop Ratio`.
+      - `sync_ui_to_state()` / `sync_state_to_ui()` 양방향 동기화 보강.
+
+- 기대 효과:
+  1. ArUco 결과가 픽셀 중심점 기반이 아닌 실제 pose(`x/y/z`) 기준으로 일관되게 산출됨.
+  2. Undistort 파이프라인 사용 여부에 따라 pose 계산 왜곡계수가 맞게 적용되어 정확도 편차를 완화.
+  3. 보정 OFF 시 반화면 crop이 자동 비적용되어 원본 시야가 유지됨.
+  4. ArUco JSON 산출물 경로를 UI에서 직접 관리 가능하고, 저장 실패 시 즉시 원인 추적 가능.
+
+- 수정 파일:
+  - `nodes/robots/go1.py`
+  - `ui/dpg_manager.py`
