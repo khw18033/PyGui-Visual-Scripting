@@ -681,3 +681,15 @@ odes/robots/go1.py (함수/클래스 추가)
   3. 폴더 불일치/상태 불일치 원인을 로그에서 즉시 확인 가능.
 - 수정 파일:
   - `nodes/robots/go1.py`
+
+### [2026-04-09 20:12:30] Fix Log 누락 점검 및 동기화 확인
+- 점검 범위(금일 반영분):
+  - Video Source/Save UI 상태 매칭 + 기본 경로 분리
+  - DPG alias 중복 방지 + 렌더 실패 롤백
+  - Server Sender 미송출 수정(VIS_SAVE 경로 연동 + Start 재트리거)
+- 점검 결과:
+  - 위 3건 모두 `code_fix_go1.md`에 기록되어 있으며, 추가 누락 항목 없음.
+- 추가 조치:
+  - 본 점검 결과를 최하단에 append하여 최신 상태 기준점을 명시.
+- 관련 파일:
+  - `code_fix_log/code_fix_go1.md`
