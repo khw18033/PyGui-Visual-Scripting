@@ -780,9 +780,30 @@ def link_cb(s, a):
     
 def del_link_cb(s, a): 
     dpg.delete_item(a); link_registry.pop(a, None)
-def add_node_cb(s, a, u): 
+def add_node_cb(s, a, u):
     node = NodeFactory.create_node(u)
-    if node: NodeUIRenderer.render(node)
+    if not node:
+        return
+
+    # DPG tag(alias) 충돌 방지: 이미 존재하면 새 uid로 재할당
+    if dpg.does_item_exist(node.node_id):
+        old_id = node.node_id
+        new_id = generate_uuid()
+        while dpg.does_item_exist(new_id) or (new_id in node_registry):
+            new_id = generate_uuid()
+        node.node_id = new_id
+        node_registry.pop(old_id, None)
+        node_registry[new_id] = node
+        engine_module.write_log(f"[UI] duplicate node tag 감지: {old_id} -> {new_id}")
+
+    try:
+        NodeUIRenderer.render(node)
+    except Exception as e:
+        # 렌더 실패 시 레지스트리 오염 방지
+        if node_registry.get(node.node_id) is node:
+            node_registry.pop(node.node_id, None)
+        engine_module.write_log(f"[UI] 노드 렌더 실패: type={u}, id={node.node_id}, err={e}")
+        raise
 
 def save_cb(s, a): save_graph(dpg.get_value("file_name_input"))
 def load_cb(s, a):

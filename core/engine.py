@@ -24,8 +24,11 @@ _id_counter = 1000000
 
 def generate_uuid():
     global _id_counter
-    _id_counter += 1
-    return f"uid_{_id_counter}"
+    while True:
+        _id_counter += 1
+        uid = f"uid_{_id_counter}"
+        if uid not in node_registry and uid not in link_registry:
+            return uid
 
 def write_log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")

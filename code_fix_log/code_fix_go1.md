@@ -639,3 +639,25 @@ odes/robots/go1.py (함수/클래스 추가)
 - 수정 파일:
   - `ui/dpg_manager.py`
   - `nodes/robots/go1.py`
+
+### [2026-04-09 20:00:11] DPG Alias 충돌 방지 및 노드 렌더 실패 롤백 보강 (Alias already exists / No container to pop 대응)
+- 문제 분석:
+  - 노드 추가 시 `dpg.node(tag=node.node_id)`에서 기존 alias(tag)와 충돌하면 `Alias already exists`가 먼저 발생하고, context manager 정리 단계에서 `No container to pop` 예외가 연쇄 발생함.
+  - 기존 `add_node_cb`는 `NodeFactory.create_node()` 후 즉시 렌더하여, 충돌/렌더 실패 시 `node_registry`가 오염될 수 있었음.
+  - `generate_uuid()`는 단순 증가값 반환이라, 특정 복원/충돌 시나리오에서 기존 레지스트리 키와 중복될 여지가 있었음.
+- 조치 방안:
+  - `ui/dpg_manager.py`
+    - `add_node_cb()` 보강:
+      - 노드 생성 직후 `dpg.does_item_exist(node.node_id)`로 alias 충돌 선검사.
+      - 충돌 시 새 uid 재생성 후 `node.node_id` 재할당 + `node_registry` 키 재매핑.
+      - 렌더 예외 발생 시 해당 노드 레지스트리 롤백(pop) 후 로그 출력.
+  - `core/engine.py`
+    - `generate_uuid()` 보강:
+      - 생성 uid가 `node_registry`, `link_registry`에 없는지 확인 후 반환하도록 변경.
+- 기대 효과:
+  1. 노드 추가 시 alias 중복으로 인한 즉시 실패 예방.
+  2. 렌더 실패 후 레지스트리 일관성 유지.
+  3. `Alias already exists` -> `No container to pop` 연쇄 오류 재발 가능성 감소.
+- 수정 파일:
+  - `ui/dpg_manager.py`
+  - `core/engine.py`
