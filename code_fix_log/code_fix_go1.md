@@ -661,3 +661,23 @@ odes/robots/go1.py (함수/클래스 추가)
 - 수정 파일:
   - `ui/dpg_manager.py`
   - `core/engine.py`
+
+### [2026-04-09 20:08:42] Go1 Server Sender 미송출 수정 (VIS_SAVE 경로 연동 + Start 재트리거 보강)
+- 문제 분석:
+  - 이미지 보정/저장은 정상인데 서버 송출이 멈추는 현상은 송신 워커가 실제 저장 결과 폴더와 다른 경로를 감시할 때 발생 가능.
+  - 기존 `ServerSenderNode.execute()`는 액션 값 변경시에만 START/STOP 큐를 넣어, `Start Sender` 상태 고정 후 재실행/재시작 시 송신이 재개되지 않을 수 있었음.
+- 조치 방안:
+  - `nodes/robots/go1.py`
+    - `sender_manager_thread()` START 처리 시 업로드 원본 폴더를 `VIS_SAVE.folder` 우선으로 동기화.
+    - `VIS_SAVE`가 없을 경우 `camera_save_state['folder']` 또는 `Captured_Images/go1_saved` fallback 사용.
+    - START 로그에 실제 감시 폴더를 함께 출력해 진단성 향상.
+    - `ServerSenderNode.execute()`를 의도상태 기반으로 보강:
+      - 토글 변경이 없어도 `Start Sender` + 비활성 상태면 START 재요청.
+      - `Stop Sender` + 활성 상태면 STOP 재요청.
+      - 0.5초 쿨다운으로 중복 큐 삽입 방지.
+- 기대 효과:
+  1. 보정/저장 결과 폴더 기준으로 서버 송출이 일관되게 동작.
+  2. 재실행/재시작 시 액션 콤보를 다시 바꾸지 않아도 송신 자동 복구.
+  3. 폴더 불일치/상태 불일치 원인을 로그에서 즉시 확인 가능.
+- 수정 파일:
+  - `nodes/robots/go1.py`

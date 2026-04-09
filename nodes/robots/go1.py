@@ -597,7 +597,7 @@ def start_async_loop(config, server_url):
 
 def sender_manager_thread():
     """송신 명령 처리 및 워커 스레드 관리"""
-    global multi_sender_active, sender_state
+    global multi_sender_active, sender_state, CAMERA_CONFIG
     sender_threads = []
     
     while True:
@@ -605,9 +605,29 @@ def sender_manager_thread():
             cmd, url = sender_command_queue.popleft()
             
             if cmd == 'START' and not multi_sender_active:
+                # 송신 원본 폴더는 VIS_SAVE 설정을 우선 사용 (보정/오버레이 결과 업로드)
+                upload_folder = None
+                try:
+                    for node in node_registry.values():
+                        if getattr(node, 'type_str', '') == 'VIS_SAVE':
+                            upload_folder = str(node.state.get('folder', '')).strip()
+                            if upload_folder:
+                                break
+                except Exception:
+                    upload_folder = None
+
+                if not upload_folder:
+                    upload_folder = str(camera_save_state.get('folder', '')).strip() or 'Captured_Images/go1_saved'
+
+                try:
+                    CAMERA_CONFIG.clear()
+                    CAMERA_CONFIG.append({"folder": upload_folder, "id": "go1_front"})
+                except Exception:
+                    pass
+
                 multi_sender_active = True
                 sender_state['status'] = 'Running'
-                write_log(f"[Server Sender] 연결: {url}")
+                write_log(f"[Server Sender] 연결: {url} | folder={upload_folder}")
                 
                 for config in CAMERA_CONFIG:
                     s_thread = threading.Thread(
@@ -1612,24 +1632,32 @@ class ServerSenderNode(BaseNode):
         self.state['server_url'] = "http://192.168.1.100:5001/upload"
         
         self._last_action = None
+        self._last_request_ts = 0.0
 
     def execute(self):
-        global sender_state
+        global sender_state, multi_sender_active
         
         action = self.state.get('action', 'Start Sender')
         url = self.state.get('server_url', "http://192.168.1.100:5001/upload")
+        now = time.monotonic()
+        cooldown_ok = (now - self._last_request_ts) > 0.5
         
-        # 액션 변경 감지
+        # 액션 변경 기록(디버깅/상태 추적용)
         if action != self._last_action:
             self._last_action = action
-            
-            if action == "Start Sender" and sender_state['status'] == 'Stopped':
+
+        # 토글 변경이 없어도 현재 의도 상태를 유지하도록 재요청 가능하게 처리
+        if action == "Start Sender":
+            if (not multi_sender_active) and sender_state['status'] in ['Stopped', 'Stopping...'] and cooldown_ok:
                 sender_state['status'] = 'Starting...'
                 sender_command_queue.append(('START', url))
-            
-            elif action == "Stop Sender" and sender_state['status'] == 'Running':
+                self._last_request_ts = now
+
+        elif action == "Stop Sender":
+            if multi_sender_active and sender_state['status'] in ['Running', 'Starting...'] and cooldown_ok:
                 sender_state['status'] = 'Stopping...'
                 sender_command_queue.append(('STOP', url))
+                self._last_request_ts = now
         
         return self.out_flow
 
