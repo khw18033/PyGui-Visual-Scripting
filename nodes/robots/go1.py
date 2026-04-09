@@ -1255,15 +1255,11 @@ class ArUcoDetectNode(BaseNode):
         self.outputs[self.out_json] = PortType.DATA
 
         self.state['camera_id'] = 'go1_front'
-        self.state['marker_size_cm'] = 3.0
+        self.state['marker_size_m'] = 0.03
         self.state['input_undistorted'] = False
-        self.state['save_json'] = True
-        self.state['json_path'] = 'Captured_Images/go1_aruco/aruco_data.json'
-        self.state['udp_enabled'] = False
-        self.state['udp_target_ip'] = GO1_UNITY_IP
-        self.state['udp_target_port'] = 5008
+        self.state['json_path'] = 'aruco_data.json'
         self.state['draw_axes'] = True
-        self.state['draw_corners'] = True
+        self.state['draw_overlay_text'] = True
 
     def execute(self):
         frame = self.fetch_input_data(self.in_frame)
@@ -1278,10 +1274,10 @@ class ArUcoDetectNode(BaseNode):
 
         detected = []
         draw = frame.copy()
-        marker_size_cm = max(0.0, _coerce_float(self.state.get('marker_size_cm', 3.0), 3.0))
-        marker_size_m = _marker_size_cm_to_m(marker_size_cm)
+        marker_size_m = max(0.0, _coerce_float(self.state.get('marker_size_m', 0.03), 0.03))
         if marker_size_m <= 0.0:
             marker_size_m = 0.03
+        aruco_settings['marker_size'] = marker_size_m
 
         camera_matrix = _default_camera_matrix if _default_camera_matrix is not None else np.array(
             [[640.0, 0.0, 320.0], [0.0, 640.0, 240.0], [0.0, 0.0, 1.0]],
@@ -1293,90 +1289,72 @@ class ArUcoDetectNode(BaseNode):
             dist_coeffs = np.zeros((4, 1), dtype=np.float32)
 
         marker_points = _build_marker_object_points(marker_size_m)
-        axis_length = max(marker_size_m * 0.5, 0.01)
+        camera_id = str(self.state.get('camera_id', 'go1_front')).strip() or 'go1_front'
+        payload_json = ""
 
         if ids is not None and len(ids) > 0:
-            try:
-                cv2.aruco.drawDetectedMarkers(draw, corners, ids)
-            except Exception:
-                pass
-
             for i, marker_id in enumerate(ids.flatten()):
-                image_points = _normalize_marker_image_points(corners[i])
-                marker_info = {
-                    'id': int(marker_id),
-                    'size_cm': round(marker_size_cm, 3),
-                    'size_m': round(marker_size_m, 4),
-                    'cx': round(float(image_points[:, 0].mean()), 2),
-                    'cy': round(float(image_points[:, 1].mean()), 2),
-                    'pose_valid': False,
-                    'x': None,
-                    'y': None,
-                    'z': None,
-                    'corners_px': [[round(float(pt[0]), 2), round(float(pt[1]), 2)] for pt in image_points],
-                }
-
                 try:
-                    ret, rvec, tvec = cv2.solvePnP(marker_points, image_points, camera_matrix, dist_coeffs)
+                    ret, rvec, tvec = cv2.solvePnP(marker_points, corners[i], camera_matrix, dist_coeffs)
                 except Exception:
                     ret = False
                     rvec = None
                     tvec = None
 
-                if ret and rvec is not None and tvec is not None:
-                    marker_info.update(_serialize_marker_pose(rvec, tvec))
-                    marker_info['pose_valid'] = True
-                    marker_info['x'] = round(float(tvec[0][0]), 4)
-                    marker_info['y'] = round(float(tvec[1][0]), 4)
-                    marker_info['z'] = round(float(tvec[2][0]), 4)
+                if not ret or rvec is None or tvec is None:
+                    continue
 
-                    if _coerce_bool(self.state.get('draw_axes', True), True):
-                        try:
-                            cv2.drawFrameAxes(draw, camera_matrix, dist_coeffs, rvec, tvec, axis_length)
-                        except Exception:
-                            pass
-
-                if _coerce_bool(self.state.get('draw_corners', True), True):
+                if _coerce_bool(self.state.get('draw_axes', True), True):
                     try:
-                        cv2.putText(
-                            draw,
-                            f"ID:{marker_info['id']} X:{marker_info['x']} Y:{marker_info['y']} Z:{marker_info['z']}",
-                            (int(marker_info['cx']), max(0, int(marker_info['cy']) - 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (0, 255, 0),
-                            2,
-                        )
+                        cv2.drawFrameAxes(draw, camera_matrix, dist_coeffs, rvec, tvec, 0.03)
                     except Exception:
                         pass
 
-                detected.append(marker_info)
-
-        payload = {
-            'camera': str(self.state.get('camera_id', 'go1_front')).strip() or 'go1_front',
-            'timestamp': round(time.time(), 3),
-            'marker_size_cm': round(marker_size_cm, 3),
-            'marker_size_m': round(marker_size_m, 4),
-            'marker_count': len(detected),
-            'markers': detected,
-        }
-        payload_json = json.dumps(payload, ensure_ascii=False)
-
-        if _coerce_bool(self.state.get('save_json', True), True):
-            json_path = str(self.state.get('json_path', 'Captured_Images/go1_aruco/aruco_data.json')).strip()
-            if json_path:
                 try:
-                    _safe_json_dump(json_path, payload)
-                except Exception as e:
-                    write_log(f"[VIS_ARUCO] JSON 저장 실패: {e}")
+                    cv2.aruco.drawDetectedMarkers(draw, corners)
+                except Exception:
+                    pass
 
-        if _coerce_bool(self.state.get('udp_enabled', False), False) and detected:
-            udp_ip = str(self.state.get('udp_target_ip', GO1_UNITY_IP)).strip() or GO1_UNITY_IP
-            udp_port = _coerce_int(self.state.get('udp_target_port', 5008), 5008)
+                tx = float(tvec[0][0])
+                ty = float(tvec[1][0])
+                tz = float(tvec[2][0])
+                marker_data = {
+                    'id': int(marker_id),
+                    'x': round(tx, 4),
+                    'y': round(ty, 4),
+                    'z': round(tz, 4),
+                    'cam': camera_id,
+                }
+                detected.append(marker_data)
+
+                if _coerce_bool(self.state.get('draw_overlay_text', True), True):
+                    try:
+                        text = f"[{camera_id}] ID:{int(marker_id)} X:{tx:.2f} Y:{ty:.2f} Z:{tz:.2f}"
+                        cx = int(corners[i][0][0][0])
+                        cy = int(corners[i][0][0][1])
+                        cv2.putText(draw, text, (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    except Exception:
+                        pass
+
+        if go1_node_intent.get('send_aruco', False) and len(detected) > 0:
+            payload = {
+                'camera': camera_id,
+                'timestamp': round(time.time(), 3),
+                'markers': detected,
+            }
+            payload_json = json.dumps(payload)
+
             try:
-                go1_sock.sendto(payload_json.encode('utf-8'), (udp_ip, udp_port))
-            except Exception as e:
-                write_log(f"[VIS_ARUCO] UDP 전송 실패: {e}")
+                go1_sock.sendto(payload_json.encode('utf-8'), (GO1_UNITY_IP, 5008))
+            except Exception:
+                pass
+
+            json_path = str(self.state.get('json_path', 'aruco_data.json')).strip() or 'aruco_data.json'
+            try:
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    f.write(payload_json)
+            except Exception:
+                pass
 
         self.output_data[self.out_frame] = draw
         self.output_data[self.out_data] = detected
