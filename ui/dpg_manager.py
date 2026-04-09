@@ -238,6 +238,11 @@ class NodeUIRenderer:
             elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
                 node.state['port'] = dpg.get_value(node.ui_port)
                 node.state['is_running'] = dpg.get_value(node.ui_run)
+            elif t == "VIS_FISHEYE" and hasattr(node, 'ui_enabled'):
+                node.state['enabled'] = dpg.get_value(node.ui_enabled)
+                node.state['crop_enabled'] = dpg.get_value(node.ui_crop_enabled)
+                node.state['crop_mode'] = dpg.get_value(node.ui_crop_mode)
+                node.state['crop_ratio'] = dpg.get_value(node.ui_crop_ratio)
             elif t == "VIS_SAVE" and hasattr(node, 'ui_folder'):
                 node.state['folder'] = dpg.get_value(node.ui_folder)
                 node.state['duration'] = dpg.get_value(node.ui_duration)
@@ -296,6 +301,11 @@ class NodeUIRenderer:
         elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
             dpg.set_value(node.ui_port, node.state.get('port', 5000))
             dpg.set_value(node.ui_run, node.state.get('is_running', False))
+        elif t == "VIS_FISHEYE" and hasattr(node, 'ui_enabled'):
+            dpg.set_value(node.ui_enabled, node.state.get('enabled', True))
+            dpg.set_value(node.ui_crop_enabled, node.state.get('crop_enabled', True))
+            dpg.set_value(node.ui_crop_mode, node.state.get('crop_mode', 'left_half'))
+            dpg.set_value(node.ui_crop_ratio, node.state.get('crop_ratio', 0.5))
         elif t == "VIS_SAVE" and hasattr(node, 'ui_folder'):
             dpg.set_value(node.ui_folder, node.state.get('folder', 'Captured_Images/go1_front'))
             dpg.set_value(node.ui_duration, node.state.get('duration', 10.0))
@@ -586,6 +596,11 @@ class NodeUIRenderer:
     def _render_fisheye(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="Fisheye Undistort"):
             with dpg.node_attribute(tag=node.in_frame, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Frame In", color=(255,255,0))
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.ui_enabled = dpg.add_checkbox(label="Enable Calibration", default_value=bool(node.state.get('enabled', True)))
+                node.ui_crop_enabled = dpg.add_checkbox(label="Crop After Calibration", default_value=bool(node.state.get('crop_enabled', True)))
+                node.ui_crop_mode = dpg.add_combo(["left_half", "custom_ratio"], default_value=str(node.state.get('crop_mode', 'left_half')), width=120)
+                node.ui_crop_ratio = dpg.add_input_float(label="Crop Ratio", width=100, default_value=float(node.state.get('crop_ratio', 0.5)), step=0.05)
             with dpg.node_attribute(tag=node.out_frame, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Frame Out", color=(255,255,0))
 
     @staticmethod
