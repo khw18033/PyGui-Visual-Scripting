@@ -1467,7 +1467,7 @@ class VideoFrameSaveNode(BaseNode):
         self.out_flow = generate_uuid()
         self.outputs[self.out_flow] = PortType.FLOW
 
-        self.state['folder'] = 'Captured_Images/go1_front'
+        self.state['folder'] = 'Captured_Images/go1_saved'
         self.state['duration'] = 10.0
         self.state['use_timer'] = False
         self.state['max_frames'] = 100

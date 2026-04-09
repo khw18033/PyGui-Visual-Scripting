@@ -617,3 +617,25 @@ odes/robots/go1.py (함수/클래스 추가)
 
 - 수정 파일:
   - `nodes/robots/go1.py`
+
+### [2026-04-09 19:54:39] Video Source/Save UI 상태 매칭 및 기본 경로 분리 (no container to pop 대응 점검 포함)
+- 문제 분석:
+  - 최근 기능 변경으로 `VideoSourceNode`에 `receiver_folder` 상태가 추가되었으나, UI(`dpg_manager.py`)에 입력 필드/동기화가 없어 코드-UI 상태 불일치가 발생할 수 있었음.
+  - `VIDEO_SRC` 기본 수신 폴더와 `VIS_SAVE` 기본 저장 폴더가 모두 `Captured_Images/go1_front`로 같아, 기본 설정에서 프레임 입력/저장 루프(폭 축소 -> 1px 이미지)가 재발할 수 있었음.
+  - 사용자 보고의 `no container to pop`은 DPG 컨테이너 스택 문제 신호로, 렌더 분기 누락/불일치 점검이 필요했음.
+- 조치 방안:
+  - `ui/dpg_manager.py`
+    - `VIDEO_SRC` UI에 `Receiver Folder` 입력 필드 추가.
+    - `sync_ui_to_state()`에 `receiver_folder` 동기화 추가.
+    - `sync_state_to_ui()`에 `receiver_folder` 역동기화 추가.
+    - `VIS_SAVE` UI 기본 폴더를 `Captured_Images/go1_saved`로 변경.
+    - `VIS_SAVE` state->UI 기본값도 `Captured_Images/go1_saved`로 변경.
+  - `nodes/robots/go1.py`
+    - `VideoFrameSaveNode` 기본 저장 폴더를 `Captured_Images/go1_saved`로 변경.
+- 기대 효과:
+  1. 기능 변경 시 UI/state 불일치로 인한 오동작 가능성 감소.
+  2. 기본 설정 상태에서 입력/출력 경로가 분리되어 프레임 재귀 축소 문제 재발 방지.
+  3. VIDEO_SRC 관련 상태가 UI에서 명시적으로 관리되어 원인 추적이 쉬워짐.
+- 수정 파일:
+  - `ui/dpg_manager.py`
+  - `nodes/robots/go1.py`
