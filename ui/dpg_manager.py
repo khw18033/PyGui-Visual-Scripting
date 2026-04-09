@@ -224,6 +224,17 @@ class NodeUIRenderer:
                 node.state['unity_ip'] = dpg.get_value(node.field_ip)
                 node.state['enable_teleop_rx'] = dpg.get_value(node.chk_enable)
                 node.state['send_aruco'] = dpg.get_value(node.chk_aruco)
+            elif t == "VIS_ARUCO" and hasattr(node, 'ui_camera_id'):
+                node.state['camera_id'] = dpg.get_value(node.ui_camera_id)
+                node.state['marker_size_cm'] = dpg.get_value(node.ui_marker_size_cm)
+                node.state['input_undistorted'] = dpg.get_value(node.ui_input_undistorted)
+                node.state['draw_axes'] = dpg.get_value(node.ui_draw_axes)
+                node.state['draw_corners'] = dpg.get_value(node.ui_draw_corners)
+                node.state['save_json'] = dpg.get_value(node.ui_save_json)
+                node.state['json_path'] = dpg.get_value(node.ui_json_path)
+                node.state['udp_enabled'] = dpg.get_value(node.ui_udp_enabled)
+                node.state['udp_target_ip'] = dpg.get_value(node.ui_udp_ip)
+                node.state['udp_target_port'] = dpg.get_value(node.ui_udp_port)
             elif t == "EP_ACTION" and hasattr(node, 'combo_act'):
                 node.state['action'] = dpg.get_value(node.combo_act)
             elif t == "VIDEO_SRC" and hasattr(node, 'ui_target_ip'):
@@ -274,6 +285,17 @@ class NodeUIRenderer:
             dpg.set_value(node.field_ip, node.state.get('unity_ip', getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246')))
             dpg.set_value(node.chk_enable, node.state.get('enable_teleop_rx', True))
             dpg.set_value(node.chk_aruco, node.state.get('send_aruco', False))
+        elif t == "VIS_ARUCO" and hasattr(node, 'ui_camera_id'):
+            dpg.set_value(node.ui_camera_id, node.state.get('camera_id', 'go1_front'))
+            dpg.set_value(node.ui_marker_size_cm, node.state.get('marker_size_cm', 3.0))
+            dpg.set_value(node.ui_input_undistorted, node.state.get('input_undistorted', False))
+            dpg.set_value(node.ui_draw_axes, node.state.get('draw_axes', True))
+            dpg.set_value(node.ui_draw_corners, node.state.get('draw_corners', True))
+            dpg.set_value(node.ui_save_json, node.state.get('save_json', True))
+            dpg.set_value(node.ui_json_path, node.state.get('json_path', 'Captured_Images/go1_aruco/aruco_data.json'))
+            dpg.set_value(node.ui_udp_enabled, node.state.get('udp_enabled', False))
+            dpg.set_value(node.ui_udp_ip, node.state.get('udp_target_ip', getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246')))
+            dpg.set_value(node.ui_udp_port, node.state.get('udp_target_port', 5008))
         elif t == "VIDEO_SRC" and hasattr(node, 'ui_target_ip'):
             default_target_ip = '127.0.0.1'
             if HAS_GO1 and hasattr(go1_module, 'get_local_ip'):
@@ -580,6 +602,23 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.in_frame, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Frame In", color=(255,255,0))
             with dpg.node_attribute(tag=node.out_frame, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Draw Frame", color=(255,255,0))
             with dpg.node_attribute(tag=node.out_data, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Marker Info", color=(100,200,255))
+            if hasattr(node, 'out_json'):
+                with dpg.node_attribute(tag=node.out_json, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("JSON Payload", color=(255,200,0))
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_separator()
+                dpg.add_text("ArUco Settings", color=(0,255,255))
+                node.ui_camera_id = dpg.add_input_text(label="Camera ID", width=160, default_value=node.state.get('camera_id', 'go1_front'))
+                node.ui_marker_size_cm = dpg.add_input_float(label="Marker Size (cm)", width=120, default_value=float(node.state.get('marker_size_cm', 3.0)), step=0.5)
+                node.ui_input_undistorted = dpg.add_checkbox(label="Input Already Undistorted", default_value=bool(node.state.get('input_undistorted', False)))
+                node.ui_draw_axes = dpg.add_checkbox(label="Draw 3D Axes", default_value=bool(node.state.get('draw_axes', True)))
+                node.ui_draw_corners = dpg.add_checkbox(label="Draw Marker Corners", default_value=bool(node.state.get('draw_corners', True)))
+                dpg.add_separator()
+                dpg.add_text("Output & Logging", color=(255,200,0))
+                node.ui_save_json = dpg.add_checkbox(label="Save JSON", default_value=bool(node.state.get('save_json', True)))
+                node.ui_json_path = dpg.add_input_text(label="JSON Path", width=220, default_value=node.state.get('json_path', 'Captured_Images/go1_aruco/aruco_data.json'))
+                node.ui_udp_enabled = dpg.add_checkbox(label="Send UDP", default_value=bool(node.state.get('udp_enabled', False)))
+                node.ui_udp_ip = dpg.add_input_text(label="UDP Target IP", width=140, default_value=node.state.get('udp_target_ip', getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246')))
+                node.ui_udp_port = dpg.add_input_int(label="UDP Target Port", width=100, default_value=int(node.state.get('udp_target_port', 5008)), step=1)
 
     @staticmethod
     def _render_flask(node):
@@ -1049,9 +1088,17 @@ def start_gui():
             else:
                 dpg.configure_item("go1_dash_cam", color=(200,200,200))
 
-            is_aruco_on = bool(aruco_settings.get('enabled', False)) and cam_state == "Running"
-            if is_aruco_on:
-                dpg.configure_item("go1_dash_aruco", default_value="ArUco: ON (Port 5000)", color=(0,255,255))
+            aruco_node = next((n for n in node_registry.values() if getattr(n, 'type_str', '') == 'VIS_ARUCO'), None)
+            if aruco_node is not None:
+                marker_size = aruco_node.state.get('marker_size_cm', 3.0)
+                udp_enabled = bool(aruco_node.state.get('udp_enabled', False))
+                save_json = bool(aruco_node.state.get('save_json', True))
+                status_text = f"ArUco: Ready | {float(marker_size):.1f}cm"
+                if udp_enabled:
+                    status_text += " | UDP"
+                if save_json:
+                    status_text += " | JSON"
+                dpg.configure_item("go1_dash_aruco", default_value=status_text, color=(0,255,255))
             else:
                 dpg.configure_item("go1_dash_aruco", default_value="ArUco: OFF", color=(200,200,200))
 
