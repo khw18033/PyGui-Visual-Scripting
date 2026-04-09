@@ -1147,6 +1147,7 @@ class VideoSourceNode(BaseNode):
         self.out_frame = generate_uuid()
         self.outputs[self.out_frame] = PortType.DATA
         self.state['target_ip'] = get_local_ip()
+        self.state['receiver_folder'] = 'Captured_Images/go1_front'
         self._started = False
         self._last_frame = None
         self._auto_stopped_by_timer = False
@@ -1164,11 +1165,10 @@ class VideoSourceNode(BaseNode):
         
         if run_flag:
             if not self._started and camera_state['status'] in ['Stopped', 'Stopping...']:
-                receiver_folder = 'Captured_Images/go1_front'
+                receiver_folder = str(self.state.get('receiver_folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
                 start_duration = 0.0
                 for node in node_registry.values():
                     if node.type_str == 'VIS_SAVE':
-                        receiver_folder = str(node.state.get('folder', receiver_folder)).strip() or receiver_folder
                         raw_use_timer = node.state.get('use_timer', False)
                         if isinstance(raw_use_timer, str):
                             use_timer = raw_use_timer.strip().lower() in ['1', 'true', 'yes', 'on']
@@ -1190,25 +1190,23 @@ class VideoSourceNode(BaseNode):
             self.output_data[self.out_frame] = None
             return None
 
-        # VideoSaveNode에서 저장한 사용자 지정 폴더에서 프레임 읽기
+        # 수신 전용 폴더에서 최신 안정 프레임 읽기 (VIS_SAVE 출력 폴더와 분리)
         frame = self._last_frame
         try:
-            # 모든 노드를 순회하여 VideoSaveNode의 save_folder 찾기
-            save_folder = 'Captured_Images/go1_front'  # 기본값
-            for node in node_registry.values():
-                if node.type_str == 'VIS_SAVE':
-                    save_folder = str(node.state.get('folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
-                    break
-            
-            files = glob.glob(os.path.join(save_folder, "front_*.jpg"))
-
+            source_folder = str(self.state.get('receiver_folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
+            files = glob.glob(os.path.join(source_folder, "front_*.jpg"))
             if len(files) >= 2:
                 files.sort(key=os.path.getctime)
-                target_file = files[-2]  # 가장 최신 두 번째 파일
-                loaded = cv2.imread(target_file)
-                if loaded is not None:
-                    self._last_frame = loaded
-                    frame = loaded
+                # 최신 파일은 쓰기 중일 수 있으므로 직전 파일부터 역순 탐색
+                candidates = files[:-1][-5:]
+                for target_file in reversed(candidates):
+                    if not _is_file_stable(target_file):
+                        continue
+                    loaded = cv2.imread(target_file)
+                    if loaded is not None and len(loaded.shape) >= 2 and loaded.shape[1] > 1:
+                        self._last_frame = loaded
+                        frame = loaded
+                        break
         except Exception:
             frame = self._last_frame
 
