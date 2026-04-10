@@ -341,13 +341,37 @@ def _prompt_go1_ip(default_ip):
         current = candidate
 
 
+def _prompt_go1_ap_mode(default_ip="192.168.123.161"):
+    print("\n" + "=" * 56)
+    print("[System] Go1 AP 모드로 접속합니까? (y/n)")
+    print("=" * 56)
+    while True:
+        try:
+            answer = input("AP 모드 사용? (y/n): ").strip().lower()
+        except EOFError:
+            return False, default_ip
+
+        if answer in ["y", "yes"]:
+            return True, default_ip
+        if answer in ["n", "no", ""]:
+            return False, default_ip
+
+        print("[System] y 또는 n으로 입력해 주세요.")
+
+
 def init_go1_connection():
     global GO1_IP, _GO1_IP_INITIALIZED, _CAMERA_WORKER_STARTED, _SENDER_MANAGER_STARTED
     if _GO1_IP_INITIALIZED:
         return
     _GO1_IP_INITIALIZED = True
 
-    GO1_IP = _prompt_go1_ip(GO1_IP)
+    use_ap_mode, ap_default_ip = _prompt_go1_ap_mode("192.168.123.161")
+    if use_ap_mode:
+        GO1_IP = ap_default_ip
+        write_log(f"Go1 AP Mode Selected: {GO1_IP}")
+    else:
+        GO1_IP = _prompt_go1_ip(GO1_IP)
+
     write_log(f"Go1 Target IP: {GO1_IP}")
     if HAS_UNITREE_SDK:
         write_log(f"Go1 SDK Ready: {sdk_path}")
