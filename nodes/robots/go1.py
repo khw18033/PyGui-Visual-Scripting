@@ -702,8 +702,6 @@ def go1_keepalive_thread():
     yaw_align_tol_rad = 2.0 * math.pi / 180.0
 
     last_go1_recv_time = now
-    last_go1_tick = 0
-    last_imu_val = 0.0
 
     def reset_cmd_base():
         if not cmd:
@@ -733,13 +731,8 @@ def go1_keepalive_thread():
                 udp.GetRecv(state)
                 raw_yaw = float(state.imu.rpy[2])
 
-                current_tick = getattr(state, 'tick', 0)
-                current_imu = float(state.imu.rpy[0]) + float(state.imu.rpy[1]) + float(state.imu.rpy[2])
-
-                if current_tick != last_go1_tick or current_imu != last_imu_val:
-                    last_go1_recv_time = tnow
-                    last_go1_tick = current_tick
-                    last_imu_val = current_imu
+                # AP/STA 환경 차이로 상태값 변화가 작더라도 수신 성공 자체를 연결 유지로 본다.
+                last_go1_recv_time = tnow
 
                 if (tnow - last_go1_recv_time) < 1.0:
                     go1_in_use = bool(engine_module.is_running) and _has_go1_nodes()
@@ -756,6 +749,7 @@ def go1_keepalive_thread():
                     go1_state['battery'] = -1
             except Exception:
                 go1_dashboard["hw_link"] = "Offline"
+                go1_state['battery'] = -1
 
         if not yaw0_initialized:
             yaw0 = raw_yaw

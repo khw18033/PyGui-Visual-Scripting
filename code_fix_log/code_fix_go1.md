@@ -726,3 +726,24 @@ odes/robots/go1.py (함수/클래스 추가)
 - 수정 파일:
   - `nodes/robots/go1.py`
   - `ui/dpg_manager.py`
+
+### [2026-04-10 00:00:00] AP 모드 HW Online/배터리 미연동 판정 로직 수정
+- 문제 분석:
+  - 기존 `go1_keepalive_thread()`는 `udp.Recv()/GetRecv()` 성공만으로 Online을 판단하지 않고,
+    `tick` 또는 IMU 합계값 변화가 있을 때만 수신 시각(`last_go1_recv_time`)을 갱신하고 있었음.
+  - AP 모드에서는 패킷 수신이 유지되어도 값 변화가 미미한 구간이 발생할 수 있어,
+    실제 연결 상태와 무관하게 Dashboard가 `Offline`으로 떨어지고 배터리가 `-1`로 유지되는 현상이 발생.
+
+- 조치 방안:
+  - `nodes/robots/go1.py`
+    - `udp.GetRecv(state)` 성공 시점마다 `last_go1_recv_time = tnow`로 갱신하도록 수정.
+    - `tick/imu 변화 기반` 수신 판정 코드를 제거.
+    - 수신 예외(`except`)에서도 `go1_state['battery'] = -1`로 명시해 상태 일관성 보강.
+
+- 기대 효과:
+  1. AP/STA 환경과 무관하게 실제 수신 성공 기준으로 HW Online 판정이 안정화됨.
+  2. Dashboard `HW`가 불필요하게 Offline으로 흔들리는 현상이 완화됨.
+  3. 배터리 값이 연결 상태와 동기화되어 정상 갱신/리셋 흐름이 명확해짐.
+
+- 수정 파일:
+  - `nodes/robots/go1.py`
