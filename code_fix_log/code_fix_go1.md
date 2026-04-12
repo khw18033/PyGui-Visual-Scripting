@@ -857,3 +857,33 @@ odes/robots/go1.py (함수/클래스 추가)
 - 수정 파일:
   - `nodes/robots/go1.py`
   - `code_fix_log/code_fix_go1.md`
+
+### [2026-04-12 00:35:00] 특수동작 안정화 2차 보정 (wait_done 송신 억제 + Backflip 트리거 보강)
+- 문제 분석:
+  - 사용자 실측 결과:
+    - Backflip: 미동작
+    - JumpYaw: 점프 후 눕는 증상
+    - StraightHand: 정상
+    - Dance1/2: 코드 변경 후 비정상
+  - 원인 추정:
+    - C++ 원본은 특수모드 트리거 후 `waitUntilDone` 동안 추가 송신을 하지 않음.
+    - Python 루프는 주기 송신 구조라, 대기 중 명령이 동작을 간섭할 수 있음.
+    - Backflip은 트리거 민감도가 높아 20Hz 루프 기준 0.2초(약 10패킷)가 부족할 가능성 존재.
+
+- 조치 방안:
+  - `nodes/robots/go1.py`
+    - 액션별 트리거 시간 파라미터 추가:
+      - `backflip.trigger_sec = 0.4`
+      - 나머지 특수동작은 `0.2` 유지
+    - `wait_done` 단계 송신 억제:
+      - `special_runtime.active and phase == 'wait_done'`일 때 `udp.Send()` 스킵
+      - C++의 "트리거 후 대기(무송신)" 흐름에 가깝게 정렬
+
+- 기대 효과:
+  1. Backflip 트리거 인식률 향상.
+  2. Dance1/2 및 JumpYaw 대기 구간에서 명령 간섭 감소.
+  3. 특수동작 완료 감지와 복귀 시퀀스 안정성 개선.
+
+- 수정 파일:
+  - `nodes/robots/go1.py`
+  - `code_fix_log/code_fix_go1.md`

@@ -149,11 +149,11 @@ go1_dashboard = {
 }
 
 GO1_SPECIAL_ACTIONS = {
-    'backflip': {'mode': 9, 'wait_timeout': 5.0, 'recovery': 'stand'},
-    'jumpyaw': {'mode': 10, 'wait_timeout': 4.0, 'recovery': 'stand'},
-    'straighthand': {'mode': 11, 'wait_timeout': 5.0, 'recovery': 'stand'},
-    'dance1': {'mode': 12, 'wait_timeout': 8.0, 'recovery': 'idle'},
-    'dance2': {'mode': 13, 'wait_timeout': 8.0, 'recovery': 'idle'},
+    'backflip': {'mode': 9, 'trigger_sec': 0.4, 'wait_timeout': 5.0, 'recovery': 'stand'},
+    'jumpyaw': {'mode': 10, 'trigger_sec': 0.2, 'wait_timeout': 4.0, 'recovery': 'stand'},
+    'straighthand': {'mode': 11, 'trigger_sec': 0.2, 'wait_timeout': 5.0, 'recovery': 'stand'},
+    'dance1': {'mode': 12, 'trigger_sec': 0.2, 'wait_timeout': 8.0, 'recovery': 'idle'},
+    'dance2': {'mode': 13, 'trigger_sec': 0.2, 'wait_timeout': 8.0, 'recovery': 'idle'},
 }
 
 go1_special_queue = deque()
@@ -882,6 +882,7 @@ def go1_keepalive_thread():
                 special_runtime['mode'] = int(cfg['mode'])
                 special_runtime['phase'] = 'prep_stand'
                 special_runtime['phase_until'] = tnow + 1.5
+                special_runtime['trigger_sec'] = float(cfg.get('trigger_sec', 0.2))
                 special_runtime['wait_timeout'] = float(cfg['wait_timeout'])
                 special_runtime['recovery'] = str(cfg['recovery'])
                 special_runtime['wait_started_at'] = 0.0
@@ -950,7 +951,7 @@ def go1_keepalive_thread():
                 go1_state['reason'] = "SPECIAL_PREP"
                 if tnow >= special_runtime['phase_until']:
                     special_runtime['phase'] = 'trigger'
-                    special_runtime['phase_until'] = tnow + 0.2
+                    special_runtime['phase_until'] = tnow + special_runtime.get('trigger_sec', 0.2)
 
             elif phase == 'trigger':
                 target_mode = special_runtime['mode']
@@ -1033,11 +1034,13 @@ def go1_keepalive_thread():
 
         go1_in_use = bool(engine_module.is_running) and (_has_go1_nodes() or special_runtime['active'])
 
+        suppress_send = bool(special_runtime['active'] and special_runtime['phase'] == 'wait_done')
+
         if cmd:
             cmd.mode = target_mode
             cmd.velocity = [out_vx, out_vy]
             cmd.yawSpeed = out_wz
-            if go1_in_use:
+            if go1_in_use and not suppress_send:
                 try:
                     udp.SetSend(cmd)
                     udp.Send()
