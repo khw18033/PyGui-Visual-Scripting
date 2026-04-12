@@ -88,7 +88,15 @@ def go1_move_to_coord_callback(sender, app_data, user_data):
 
 def go1_action_callback(sender, app_data, user_data):
     if not HAS_GO1: return
-    cmd_str = user_data
+    cmd_str = str(user_data or "").strip()
+    if not cmd_str:
+        return
+
+    if cmd_str.startswith("SPECIAL_") and hasattr(go1_module, 'request_go1_special_action'):
+        action_name = cmd_str.split("_", 1)[1].lower()
+        go1_module.request_go1_special_action(action_name)
+        return
+
     if go1_module.go1_sock:
         try: go1_module.go1_sock.sendto(cmd_str.encode(), (go1_module.GO1_IP, go1_module.GO1_PORT))
         except: pass
@@ -562,7 +570,11 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.combo_id = dpg.add_combo(
-                    ["Stand", "Reset Yaw0", "Walk Fwd/Back", "Walk Strafe", "Turn", "Sit Down", "Stand Tall", "Set Body Height"],
+                    [
+                        "Stand", "Reset Yaw0", "Walk Fwd/Back", "Walk Strafe", "Turn",
+                        "Sit Down", "Stand Tall", "Set Body Height",
+                        "Backflip", "Jump Yaw", "Straight Hand", "Dance 1", "Dance 2"
+                    ],
                     default_value="Stand",
                     width=150
                 )
@@ -753,6 +765,9 @@ def toggle_exec(s, a):
         go1_dashboard['status'] = 'Idle'
         go1_dashboard['hw_link'] = 'Offline'
         go1_dashboard['unity_link'] = 'Waiting'
+        go1_dashboard['special'] = 'Idle'
+        if hasattr(go1_module, 'go1_special_queue'):
+            go1_module.go1_special_queue.clear()
         go1_target_vel.update({'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0, 'body_height': 0.0})
         go1_node_intent.update({'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'stop': True})
     if HAS_EP and not engine_module.is_running:
@@ -942,13 +957,14 @@ def __init_ui__():
             # ================= [Go1 Dashboard Tab] =================
             with dpg.tab(label="Go1 Dashboard"):
                 with dpg.group(horizontal=True):
-                    with dpg.child_window(width=250, height=160, border=True):
+                    with dpg.child_window(width=250, height=190, border=True):
                         dpg.add_text("Go1 Status", color=(150,150,150))
                         dpg.add_text("Status: Idle", tag="go1_dash_status", color=(0,255,0))
                         dpg.add_text("HW: Offline", tag="go1_dash_link", color=(255,0,0))
                         dpg.add_text("Unity: Waiting", tag="go1_dash_unity", color=(255,255,0))
                         dpg.add_text("File Cam: Stopped", tag="go1_dash_cam", color=(200,200,200))
                         dpg.add_text("ArUco: OFF", tag="go1_dash_aruco", color=(200,200,200))
+                        dpg.add_text("Special: Idle", tag="go1_dash_special", color=(255,200,0))
                         dpg.add_text("Battery: -%", tag="go1_dash_battery", color=(100,255,100))
                         dpg.add_button(label="[ EMERGENCY STOP ]", width=-1, callback=lambda s,a,u: go1_estop_callback() if HAS_GO1 else None)
                     
@@ -976,7 +992,16 @@ def __init_ui__():
                         dpg.add_text("Interfaces: Loading...", tag="dash_net_if", color=(170,170,170))
 
                 with dpg.group(horizontal=True):
-                    pass
+                    with dpg.child_window(width=420, height=110, border=True):
+                        dpg.add_text("Special Motions", color=(255,150,150))
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="Backflip", width=80, callback=go1_action_callback, user_data="SPECIAL_backflip")
+                            dpg.add_button(label="JumpYaw", width=80, callback=go1_action_callback, user_data="SPECIAL_jumpyaw")
+                            dpg.add_button(label="StraightHand", width=100, callback=go1_action_callback, user_data="SPECIAL_straighthand")
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="Dance1", width=80, callback=go1_action_callback, user_data="SPECIAL_dance1")
+                            dpg.add_button(label="Dance2", width=80, callback=go1_action_callback, user_data="SPECIAL_dance2")
+                        dpg.add_text("주의: 충분한 안전 공간에서만 실행", color=(200,180,180))
 
             # ================= [EP Dashboard Tab] =================
             with dpg.tab(label="EP Dashboard"):
@@ -1114,6 +1139,7 @@ def start_gui():
                 dpg.configure_item("go1_dash_link", color=(255,0,0))
 
             dpg.set_value("go1_dash_unity", f"Unity: {go1_dashboard.get('unity_link', 'Waiting')}")
+            dpg.set_value("go1_dash_special", f"Special: {go1_dashboard.get('special', 'Idle')}")
 
             cam_state = camera_state.get('status', 'Stopped')
             dpg.set_value("go1_dash_cam", f"File Cam: {cam_state}")

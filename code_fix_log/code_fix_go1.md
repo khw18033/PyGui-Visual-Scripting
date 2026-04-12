@@ -151,8 +151,6 @@
     - `VIS_SAVE`를 flowless 실행 목록에 추가하여 데이터 노드로 주기 실행되도록 보완.
 - 수정 파일:
   - `nodes/robots/go1.py`
-  - `ui/dpg_manager.py`
-  - `core/engine.py`
 
 ### [2026-03-31 21:42:44] 그래프 저장/불러오기 Go1·EP01 호환성 수정
 - 문제 분석:
@@ -786,3 +784,51 @@ odes/robots/go1.py (함수/클래스 추가)
 
 - 수정 파일:
   - `nodes/robots/go1.py`
+
+### [2026-04-12 00:00:00] mode_Test.cpp 특수동작(9~13) Go1 모듈 이식 + Dashboard 버튼 연동
+- 문제 분석:
+  - `mode_Test.cpp`의 특수 퍼포먼스 동작(backflip/jumpYaw/straightHand/dance1/dance2)은 C++ 테스트 코드에만 있고,
+    현재 Python 모듈(`nodes/robots/go1.py`)과 Dashboard(`ui/dpg_manager.py`)에서는 직접 실행 경로가 없었음.
+  - Dashboard에서 버튼으로 실행하려면, 단순 UDP 문자열 전송이 아니라 Go1 keepalive 제어 루프 내부에서
+    `mode1 선행 → mode 9~13 트리거 → 완료 감지/타임아웃 → 복귀` 시퀀스를 상태머신으로 운용해야 함.
+
+- 조치 방안:
+  - `nodes/robots/go1.py`
+    - 전역 상태 추가:
+      - `GO1_SPECIAL_ACTIONS` (동작명↔모드번호/타임아웃/복귀전략)
+      - `go1_special_queue`, `go1_special_state`
+      - `go1_dashboard['special']` 상태 문자열
+    - API 추가:
+      - `request_go1_special_action(action_name)`
+      - Dashboard/노드에서 호출 시 큐에 적재하고 로그 남김
+    - `go1_keepalive_thread()` 확장:
+      - 특수동작 상태머신(`prep_stand → trigger → wait_done → recover`) 추가
+      - 완료 감지는 수신 `state.mode` 기준으로 수행, 타임아웃 시 복구 경로 강제 진행
+      - 복귀 규칙:
+        - mode 9/10/11: 착지 대기 → mode8(Recovery) → mode1(Stand)
+        - mode 12/13: 착지 대기 → mode0(Idle)
+      - 특수동작 중에는 일반 주행 명령(vx/vy/wz)을 0으로 고정해 충돌 방지
+    - `Go1ActionNode` 모드 확장:
+      - `Backflip`, `Jump Yaw`, `Straight Hand`, `Dance 1`, `Dance 2` 추가
+
+  - `ui/dpg_manager.py`
+    - `go1_action_callback()` 확장:
+      - `SPECIAL_*` user_data를 받으면 `request_go1_special_action()` 호출
+    - Go1 Dashboard UI 확장:
+      - `Special: ...` 상태 텍스트 추가
+      - 특수동작 버튼 5개 추가:
+        - `Backflip`, `JumpYaw`, `StraightHand`, `Dance1`, `Dance2`
+    - Run Script STOP 시 정리 보강:
+      - `go1_dashboard['special'] = 'Idle'`
+      - `go1_special_queue.clear()`
+    - Go1 Action 노드 콤보 목록에도 특수동작 5종 추가
+
+- 기대 효과:
+  1. Dashboard 버튼만으로 mode 9~13 특수동작을 즉시 실행 가능.
+  2. C++ 테스트 코드와 유사한 안전 시퀀스(선행 자세/완료 감지/복귀)를 Python 런타임에서 재현.
+  3. 특수동작 실행 중 일반 주행 명령 간섭을 차단해 동작 안정성 향상.
+
+- 수정 파일:
+  - `nodes/robots/go1.py`
+  - `ui/dpg_manager.py`
+  - `code_fix_log/code_fix_go1.md`

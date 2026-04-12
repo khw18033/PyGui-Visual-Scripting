@@ -145,6 +145,24 @@ go1_dashboard = {
     "status": "Idle",
     "hw_link": "Offline",
     "unity_link": "Waiting",
+    "special": "Idle",
+}
+
+GO1_SPECIAL_ACTIONS = {
+    'backflip': {'mode': 9, 'wait_timeout': 5.0, 'recovery': 'stand'},
+    'jumpyaw': {'mode': 10, 'wait_timeout': 4.0, 'recovery': 'stand'},
+    'straighthand': {'mode': 11, 'wait_timeout': 5.0, 'recovery': 'stand'},
+    'dance1': {'mode': 12, 'wait_timeout': 8.0, 'recovery': 'idle'},
+    'dance2': {'mode': 13, 'wait_timeout': 8.0, 'recovery': 'idle'},
+}
+
+go1_special_queue = deque()
+go1_special_state = {
+    'active': False,
+    'name': '',
+    'mode': 0,
+    'phase': 'idle',
+    'queue_size': 0,
 }
 
 aruco_settings = {
@@ -288,6 +306,18 @@ def _serialize_marker_pose(rvec, tvec):
 
 def _has_go1_nodes():
     return any(n.type_str.startswith("GO1_") for n in node_registry.values())
+
+
+def request_go1_special_action(action_name):
+    key = str(action_name or '').strip().lower().replace('_', '')
+    if key not in GO1_SPECIAL_ACTIONS:
+        return False, f"Unknown action: {action_name}"
+
+    go1_special_queue.append(key)
+    go1_special_state['queue_size'] = len(go1_special_queue)
+    go1_dashboard['special'] = f"Queued: {key}"
+    write_log(f"[Go1 Special] queued: {key} (queue={len(go1_special_queue)})")
+    return True, key
 
 
 def get_go1_rtsp_url():
@@ -712,6 +742,18 @@ def go1_keepalive_thread():
 
     last_go1_recv_time = now
 
+    special_runtime = {
+        'active': False,
+        'name': '',
+        'mode': 0,
+        'phase': 'idle',
+        'phase_until': 0.0,
+        'wait_timeout': 0.0,
+        'recovery': 'stand',
+        'wait_started_at': 0.0,
+        'wait_mode_seen': False,
+    }
+
     def reset_cmd_base():
         if not cmd:
             return
@@ -744,7 +786,7 @@ def go1_keepalive_thread():
                 last_go1_recv_time = tnow
 
                 if (tnow - last_go1_recv_time) < 1.0:
-                    go1_in_use = bool(engine_module.is_running) and _has_go1_nodes()
+                    go1_in_use = bool(engine_module.is_running) and (_has_go1_nodes() or special_runtime['active'])
                     go1_dashboard["hw_link"] = "Online (Active)" if go1_in_use else "Online (Listen)"
                     try:
                         if hasattr(state.bms, 'SOC'):
@@ -830,6 +872,33 @@ def go1_keepalive_thread():
             or ((not stand_only) and (since_move <= min_move_sec))
         )
 
+        # Dashboard/노드에서 요청한 특수동작 큐 시작.
+        if (not special_runtime['active']) and go1_special_queue:
+            next_name = go1_special_queue.popleft()
+            cfg = GO1_SPECIAL_ACTIONS.get(next_name)
+            if cfg and cmd:
+                special_runtime['active'] = True
+                special_runtime['name'] = next_name
+                special_runtime['mode'] = int(cfg['mode'])
+                special_runtime['phase'] = 'prep_stand'
+                special_runtime['phase_until'] = tnow + 1.5
+                special_runtime['wait_timeout'] = float(cfg['wait_timeout'])
+                special_runtime['recovery'] = str(cfg['recovery'])
+                special_runtime['wait_started_at'] = 0.0
+                special_runtime['wait_mode_seen'] = False
+                go1_node_intent['stop'] = True
+                go1_dashboard['special'] = f"Running: {next_name}"
+                write_log(f"[Go1 Special] start: {next_name}")
+            elif cfg and not cmd:
+                go1_dashboard['special'] = "Skipped: SDK unavailable"
+                write_log(f"[Go1 Special] skipped(no SDK): {next_name}")
+
+        go1_special_state['active'] = bool(special_runtime['active'])
+        go1_special_state['name'] = special_runtime['name']
+        go1_special_state['mode'] = special_runtime['mode']
+        go1_special_state['phase'] = special_runtime['phase']
+        go1_special_state['queue_size'] = len(go1_special_queue)
+
         reset_cmd_base()
         target_mode = 1
         out_vx = 0.0
@@ -873,7 +942,88 @@ def go1_keepalive_thread():
                 use_grace = True
                 go1_state['reason'] = "STAND"
 
-        go1_in_use = bool(engine_module.is_running) and _has_go1_nodes()
+        if special_runtime['active']:
+            phase = special_runtime['phase']
+
+            if phase == 'prep_stand':
+                target_mode = 1
+                go1_state['reason'] = "SPECIAL_PREP"
+                if tnow >= special_runtime['phase_until']:
+                    special_runtime['phase'] = 'trigger'
+                    special_runtime['phase_until'] = tnow + 0.2
+
+            elif phase == 'trigger':
+                target_mode = special_runtime['mode']
+                go1_state['reason'] = f"SPECIAL_TRIG_{special_runtime['mode']}"
+                if tnow >= special_runtime['phase_until']:
+                    special_runtime['phase'] = 'wait_done'
+                    special_runtime['wait_started_at'] = tnow
+
+            elif phase == 'wait_done':
+                target_mode = special_runtime['mode']
+                go1_state['reason'] = f"SPECIAL_WAIT_{special_runtime['mode']}"
+                hw_mode = int(getattr(state, 'mode', special_runtime['mode'])) if state is not None else int(go1_state.get('mode', special_runtime['mode']))
+                if hw_mode == special_runtime['mode']:
+                    special_runtime['wait_mode_seen'] = True
+
+                elapsed = tnow - special_runtime['wait_started_at']
+                done = special_runtime['wait_mode_seen'] and hw_mode != special_runtime['mode']
+                timeout = elapsed >= special_runtime['wait_timeout']
+                if done or timeout:
+                    special_runtime['phase'] = 'post_wait'
+                    special_runtime['phase_until'] = tnow + 0.3
+                    if timeout:
+                        write_log(f"[Go1 Special] timeout: {special_runtime['name']}")
+
+            elif phase == 'post_wait':
+                target_mode = 1
+                go1_state['reason'] = "SPECIAL_POST_WAIT"
+                if tnow >= special_runtime['phase_until']:
+                    if special_runtime['recovery'] == 'stand':
+                        special_runtime['phase'] = 'recover8'
+                        special_runtime['phase_until'] = tnow + 1.5
+                    else:
+                        special_runtime['phase'] = 'recover0'
+                        special_runtime['phase_until'] = tnow + 0.5
+
+            elif phase == 'recover8':
+                target_mode = 8
+                go1_state['reason'] = "SPECIAL_RECOVER8"
+                if tnow >= special_runtime['phase_until']:
+                    special_runtime['phase'] = 'recover1'
+                    special_runtime['phase_until'] = tnow + 1.5
+
+            elif phase == 'recover1':
+                target_mode = 1
+                go1_state['reason'] = "SPECIAL_RECOVER1"
+                if tnow >= special_runtime['phase_until']:
+                    finished = special_runtime['name']
+                    special_runtime['active'] = False
+                    special_runtime['name'] = ''
+                    special_runtime['mode'] = 0
+                    special_runtime['phase'] = 'idle'
+                    go1_dashboard['special'] = "Idle"
+                    write_log(f"[Go1 Special] done: {finished}")
+
+            elif phase == 'recover0':
+                target_mode = 0
+                go1_state['reason'] = "SPECIAL_RECOVER0"
+                if tnow >= special_runtime['phase_until']:
+                    finished = special_runtime['name']
+                    special_runtime['active'] = False
+                    special_runtime['name'] = ''
+                    special_runtime['mode'] = 0
+                    special_runtime['phase'] = 'idle'
+                    go1_dashboard['special'] = "Idle"
+                    write_log(f"[Go1 Special] done: {finished}")
+
+            out_vx = 0.0
+            out_vy = 0.0
+            out_wz = 0.0
+            if cmd:
+                cmd.gaitType = 0
+
+        go1_in_use = bool(engine_module.is_running) and (_has_go1_nodes() or special_runtime['active'])
 
         if cmd:
             cmd.mode = target_mode
@@ -921,7 +1071,10 @@ def go1_keepalive_thread():
         go1_target_vel['vyaw'] = out_wz
         go1_target_vel['body_height'] = go1_state['body_height_cmd']
 
-        go1_dashboard['status'] = "Running" if (go1_in_use and target_mode == 2) else "Idle"
+        if special_runtime['active']:
+            go1_dashboard['status'] = f"Special ({special_runtime['name']})"
+        else:
+            go1_dashboard['status'] = "Running" if (go1_in_use and target_mode == 2) else "Idle"
 
         estop = 1 if target_mode == 1 else 0
         seq += 1
@@ -999,6 +1152,16 @@ class Go1ActionNode(BaseNode):
             go1_node_intent['body_height'] = BODY_HEIGHT_MAX
         elif mode == "Set Body Height":
             go1_node_intent['body_height'] = _clamp(v1, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+        elif mode == "Backflip":
+            request_go1_special_action('backflip')
+        elif mode == "Jump Yaw":
+            request_go1_special_action('jumpyaw')
+        elif mode == "Straight Hand":
+            request_go1_special_action('straighthand')
+        elif mode == "Dance 1":
+            request_go1_special_action('dance1')
+        elif mode == "Dance 2":
+            request_go1_special_action('dance2')
         else:
             go1_node_intent['vx'] = v1 if mode == "Walk Fwd/Back" else 0.0
             go1_node_intent['vy'] = v1 if mode == "Walk Strafe" else 0.0
