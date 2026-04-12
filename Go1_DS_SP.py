@@ -1,0 +1,1572 @@
+import sys
+import time
+import math
+import socket
+import select
+import threading
+import json
+import os
+import subprocess
+import glob
+import asyncio
+import aiohttp
+import serial 
+import platform 
+import dearpygui.dearpygui as dpg
+import csv
+from collections import deque
+from abc import ABC, abstractmethod
+from datetime import datetime
+
+latest_processed_frames = {}
+
+# ================= [OpenCV & Flask Import (V4/V5 ArUco)] =================
+try:
+    import cv2
+    import numpy as np
+    from flask import Flask, Response
+    import logging
+    
+    HAS_CV2_FLASK = True
+    
+    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    parameters = cv2.aruco.DetectorParameters()
+    aruco_detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
+    
+    calib_dir = "Calib_data"
+    try:
+        orig_camera_matrix = np.load(os.path.join(calib_dir, "K1.npy"))
+        orig_dist_coeffs = np.load(os.path.join(calib_dir, "D1.npy"))
+        HAS_CALIB_FILES = True
+        print(f"[System] Fisheye Calibration files loaded successfully from '{calib_dir}' folder!")
+    except Exception as e:
+        orig_camera_matrix = np.array([[640.0, 0, 320.0], [0, 640.0, 240.0], [0, 0, 1]], dtype=np.float32)
+        orig_dist_coeffs = np.zeros((4, 1)) # Fisheye는 4개
+        HAS_CALIB_FILES = False
+        print(f"[System] Calibration files not found in '{calib_dir}'. Using defaults. ({e})")
+    
+    zero_dist_coeffs = np.zeros((4, 1))
+    
+    app = Flask(__name__)
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.ERROR)
+except ImportError as e:
+    HAS_CV2_FLASK = False
+    print(f"Warning: OpenCV or Flask not found. ArUco features will be disabled. ({e})")
+
+# ================= [Unitree SDK Import (Go1)] =================
+current_dir = os.path.dirname(os.path.abspath(__file__))
+arch = platform.machine().lower()
+if arch in ['aarch64', 'arm64']: sdk_arch = 'arm64'
+elif arch in ['x86_64', 'amd64']: sdk_arch = 'amd64'
+else: sdk_arch = 'amd64'
+sdk_path = os.path.join(current_dir, 'unitree_legged_sdk', 'lib', 'python', sdk_arch)
+sys.path.append(sdk_path)
+
+try:
+    import robot_interface as sdk
+    HAS_UNITREE_SDK = True
+except ImportError as e:
+    HAS_UNITREE_SDK = False
+    print(f"Warning: 'robot_interface' module not found. ({e})")
+
+# ================= [Global Core Settings] =================
+node_registry = {}
+link_registry = {}
+is_running = False
+go1_camera_started_flag = False
+SAVE_DIR = "Node_File_Integrated"
+if not os.path.exists(SAVE_DIR): os.makedirs(SAVE_DIR)
+system_log_buffer = deque(maxlen=50)
+
+def resolve_hostname(hostname):
+    try:
+        return socket.gethostbyname(hostname)
+    except socket.gaierror:
+        write_log(f"System: Failed to resolve {hostname}. Check if device is on network.")
+        return None
+
+def write_log(msg):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"[{timestamp}] {msg}"); system_log_buffer.append(f"[{timestamp}] {msg}")
+
+def get_local_ip():
+    try: s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(('8.8.8.8', 80)); ip = s.getsockname()[0]; s.close(); return ip
+    except: return "127.0.0.1"
+
+def get_wifi_ssid():
+    try: return subprocess.check_output(['iwgetid','-r']).decode('utf-8').strip() or "Unknown"
+    except: return "Unknown"
+
+def safe_resolve_hostname(hostname):
+    try:
+        return socket.gethostbyname(hostname)
+    except socket.gaierror:
+        return None
+
+def extract_ip_from_target(target):
+    if "@" in target:
+        return target.split("@", 1)[1]
+    return target
+
+sys_net_str = "Loading Network..."
+def network_monitor_thread():
+    global sys_net_str
+    while True:
+        try:
+            out = subprocess.check_output("ip -o -4 addr show", shell=True).decode('utf-8')
+            info = []
+            for line in out.strip().split('\n'):
+                if ' lo ' in line: continue
+                p = line.split()
+                if len(p) >= 4:
+                    dev, ip = p[1], p[3].split('/')[0]
+                    ssid = ""
+                    if dev.startswith('wl'):
+                        try: ssid = subprocess.check_output(['iwgetid', dev, '-r']).decode('utf-8').strip()
+                        except: pass
+                    info.append(f"[{dev}] {ip} ({ssid})" if ssid else f"[{dev}] {ip}")
+            sys_net_str = "\n".join(info) if info else "Offline"
+        except: pass
+        time.sleep(2)
+
+def get_save_files():
+    if not os.path.exists(SAVE_DIR): return []
+    return [f for f in os.listdir(SAVE_DIR) if f.endswith(".json")]
+
+def prompt_go1_ip(default_ip):
+    print("\n" + "=" * 60)
+    print("[System] Go1 본체/릴레이 IP 확인")
+    print("[System] 엔터 입력 시 기본값을 사용합니다.")
+    print("=" * 60)
+    current_default = default_ip
+    while True:
+        try:
+            entered = input(f"Go1 IP 입력 [{current_default}]: ").strip()
+        except EOFError:
+            print(f"[System] 콘솔 입력 불가 환경입니다. 기본값({current_default})으로 진행합니다.")
+            return current_default
+
+        candidate = entered if entered else current_default
+        try:
+            socket.inet_aton(candidate)
+        except OSError:
+            print("[System] 잘못된 IP 형식입니다. 예: 192.168.50.42")
+            continue
+
+        confirm = input(f"현재 Go1 본체 IP가 {candidate}가 맞습니까? (y/n): ").strip().lower()
+        if confirm in ['y', 'yes', '']:
+            return candidate
+        print("[System] 다시 입력해주세요.")
+        current_default = candidate
+
+# ================= [Go1 State & Config] =================
+HIGHLEVEL = 0xee; LOCAL_PORT = 8090; ROBOT_IP = "192.168.50.42"; ROBOT_PORT = 8082
+GO1_UNITY_IP = "192.168.50.246"; UNITY_STATE_PORT = 15101; UNITY_CMD_PORT = 15102; UNITY_RX_PORT = 15100
+dt = 0.002; V_MAX, S_MAX, W_MAX = 0.4, 0.4, 2.0; VX_CMD, VY_CMD, WZ_CMD = 0.20, 0.20, 1.00
+hold_timeout_sec = 0.1; repeat_grace_sec = 0.4; min_move_sec = 0.4; stop_brake_sec = 0.0
+BODY_HEIGHT_MIN = -0.12; BODY_HEIGHT_MAX = 0.12
+BODY_HEIGHT_KEY_STEP = 0.005
+
+go1_node_intent = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'body_height': 0.0, 'yaw_align': False, 'reset_yaw': False, 'stop': False, 'use_unity_cmd': True, 'send_aruco': False, 'trigger_time': time.monotonic()}
+go1_state = {'world_x': 0.0, 'world_z': 0.0, 'yaw_unity': 0.0, 'vx_cmd': 0.0, 'vy_cmd': 0.0, 'wz_cmd': 0.0, 'body_height_cmd': 0.0, 'mode': 1, 'reason': "NONE", 'battery': -1, 'control_latency_ms': 0.0}
+go1_unity_data = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'estop': 0, 'active': False} 
+go1_dashboard = {"status": "Idle", "hw_link": "Offline", "unity_link": "Waiting", "special": "Idle"}
+
+GO1_SPECIAL_ACTIONS = {
+    'backflip': {'mode': 9, 'trigger_sec': 0.4, 'wait_timeout': 5.0, 'recovery': 'stand'},
+    'jumpyaw': {'mode': 10, 'trigger_sec': 0.2, 'wait_timeout': 4.0, 'recovery': 'stand'},
+    'straighthand': {'mode': 11, 'trigger_sec': 0.2, 'wait_timeout': 5.0, 'recovery': 'stand'},
+    'dance1': {'mode': 12, 'trigger_sec': 0.2, 'wait_timeout': 8.0, 'recovery': 'idle'},
+    'dance2': {'mode': 13, 'trigger_sec': 0.2, 'wait_timeout': 8.0, 'recovery': 'idle'},
+}
+
+go1_special_queue = deque()
+go1_special_state = {
+    'active': False,
+    'name': '',
+    'mode': 0,
+    'phase': 'idle',
+    'queue_size': 0,
+}
+
+aruco_settings = {'enabled': False, 'marker_size': 0.03}
+calib_settings = {'enabled': True}
+latest_display_frame = None
+
+# V4 File-based Camera
+camera_state = {'status': 'Stopped', 'target_ip': ''}; camera_command_queue = deque()
+sender_state = {'status': 'Stopped'}; sender_command_queue = deque(); multi_sender_active = False
+TARGET_FPS = 10; INTERVAL = 1.0 / TARGET_FPS; KEEP_COUNT = -1
+GO1_CAMERA_NANOS = ["unitree@192.168.123.13"]
+CAMERA_CONFIG = [
+    {"folder": "Go1_Images/test1", "id": "go1_front"}
+]
+
+def clamp(x, lo, hi): return lo if x < lo else hi if x > hi else x
+def wrap_pi(a):
+    while a > math.pi: a -= 2.0 * math.pi
+    while a < -math.pi: a += 2.0 * math.pi
+    return a
+
+def go1_estop_callback():
+    global go1_node_intent
+    go1_node_intent['stop'] = True; go1_node_intent['vx'] = 0.0; go1_node_intent['vy'] = 0.0; go1_node_intent['wz'] = 0.0
+    write_log("Go1 EMERGENCY STOP Activated!")
+
+
+def request_go1_special_action(action_name):
+    key = str(action_name or '').strip().lower().replace('_', '')
+    if key not in GO1_SPECIAL_ACTIONS:
+        write_log(f"[Go1 Special] unknown action: {action_name}")
+        return False
+    go1_special_queue.append(key)
+    go1_special_state['queue_size'] = len(go1_special_queue)
+    go1_dashboard['special'] = f"Queued: {key}"
+    write_log(f"[Go1 Special] queued: {key} (queue={len(go1_special_queue)})")
+    return True
+
+
+def go1_special_button_callback(sender, app_data, user_data):
+    request_go1_special_action(user_data)
+
+# ================= [Architecture: Base & Universal Node] =================
+class BaseRobotDriver(ABC):
+    @abstractmethod
+    def get_ui_schema(self): pass
+    @abstractmethod
+    def get_settings_schema(self): pass
+    @abstractmethod
+    def execute_command(self, inputs, settings): pass
+
+class Go1RobotDriver(BaseRobotDriver):
+    def get_ui_schema(self): return {'vx': ("Vx In", 0.0), 'vy': ("Vy In", 0.0), 'wz': ("Wz In", 0.0)}
+    
+    def get_settings_schema(self): return {}
+    
+    def execute_command(self, inputs, settings):
+        global go1_node_intent
+        if inputs.get('vx') is not None or inputs.get('vy') is not None or inputs.get('wz') is not None:
+            go1_node_intent['vx'] = float(inputs.get('vx') or 0)
+            go1_node_intent['vy'] = float(inputs.get('vy') or 0)
+            go1_node_intent['wz'] = float(inputs.get('wz') or 0)
+            go1_node_intent['trigger_time'] = time.monotonic()
+        return None
+
+class BaseNode(ABC):
+    def __init__(self, node_id, label, type_str):
+        self.node_id = node_id; self.label = label; self.type_str = type_str; self.inputs = {}; self.outputs = {}; self.output_data = {} 
+    @abstractmethod
+    def build_ui(self): pass
+    @abstractmethod
+    def execute(self): return None 
+    def fetch_input_data(self, input_attr_id):
+        target_link = None
+        for link in link_registry.values():
+            if link['target'] == input_attr_id: target_link = link; break
+        if not target_link: return None 
+        source_node = node_registry.get(dpg.get_item_parent(target_link['source']))
+        if source_node: return source_node.output_data.get(target_link['source'])
+        return None
+    def get_settings(self): return {}
+    def load_settings(self, data): pass
+
+class UniversalRobotNode(BaseNode):
+    def __init__(self, node_id, driver_instance):
+        super().__init__(node_id, "Universal Robot Driver", "ROBOT_CONTROL")
+        self.driver = driver_instance
+        self.schema = self.driver.get_ui_schema()
+        self.settings_schema = self.driver.get_settings_schema()
+        self.in_pins = {}; self.ui_fields = {}; self.setting_pins = {}; self.setting_fields = {}
+        self.cache_ui = {k: 0.0 for k in self.schema.keys()}
+        if isinstance(self.driver, Go1RobotDriver): self.label = "Go1 Driver"; self.type_str = "GO1_DRIVER"
+
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label=self.label):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow]="Flow"
+            for key, (label, default_val) in self.schema.items():
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as aid:
+                    with dpg.group(horizontal=True): dpg.add_text(label, color=(255,255,0)); self.ui_fields[key] = dpg.add_input_float(width=80, default_value=default_val, step=0)
+                    self.inputs[aid] = "Data"; self.in_pins[key] = aid
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_spacer(height=5) 
+            for key, (label, default_val) in self.settings_schema.items():
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as aid:
+                    with dpg.group(horizontal=True): dpg.add_text(label); self.setting_fields[key] = dpg.add_input_float(width=60, default_value=default_val, step=0)
+                    self.inputs[aid] = "Data"; self.setting_pins[key] = aid
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as fout: dpg.add_text("Flow Out"); self.outputs[fout]="Flow"
+
+    def execute(self):
+        fetched_inputs = {key: self.fetch_input_data(aid) for key, aid in self.in_pins.items()}
+        fetched_settings = {}
+        for key, aid in self.setting_pins.items():
+            val = self.fetch_input_data(aid)
+            if val is not None: dpg.set_value(self.setting_fields[key], float(val))
+            fetched_settings[key] = dpg.get_value(self.setting_fields[key])
+        new_state = self.driver.execute_command(fetched_inputs, fetched_settings)
+        if new_state:
+            for key in self.schema.keys():
+                if key in new_state and abs(self.cache_ui[key] - new_state[key]) > 0.1:
+                    dpg.set_value(self.ui_fields[key], new_state[key]); self.cache_ui[key] = new_state[key]
+        for k, v in self.outputs.items():
+            if v == "Flow": return k
+        return None
+    def get_settings(self): return {k: dpg.get_value(v) for k, v in self.setting_fields.items()}
+    def load_settings(self, data): 
+        for k, v in self.setting_fields.items():
+            if k in data: dpg.set_value(v, data[k])
+
+
+
+# ================= [V8 File-based Vision (All Cameras Calibration & ArUco)] =================
+def go1_vision_worker_thread():
+    global latest_display_frame
+    sock_aruco = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    
+    last_processed_files = {cfg["id"]: None for cfg in CAMERA_CONFIG}
+    
+    while True:
+        if camera_state['status'] == 'Running':
+            for config in CAMERA_CONFIG:
+                folder = config["folder"]
+                camera_id = config["id"]
+                
+                try:
+                    if not os.path.exists(folder): continue
+                    
+                    files = glob.glob(os.path.join(folder, "*.jpg"))
+                    if len(files) >= 2:
+                        files.sort(key=os.path.getctime)
+                        target_file = files[-2]
+                        
+                        if target_file != last_processed_files[camera_id]:
+                            last_processed_files[camera_id] = target_file
+                            frame = cv2.imread(target_file)
+                            
+                            if frame is not None:
+                                is_calibrated = HAS_CALIB_FILES and calib_settings['enabled']
+                                if is_calibrated:
+                                    frame = cv2.fisheye.undistortImage(frame, orig_camera_matrix, orig_dist_coeffs, Knew=orig_camera_matrix)
+                                
+                                if aruco_settings['enabled'] and HAS_CV2_FLASK:
+                                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                                    corners, ids, rejected = aruco_detector.detectMarkers(gray)
+                                    if ids is not None:
+                                        msize = aruco_settings['marker_size']
+                                        marker_points = np.array([
+                                            [-msize / 2, msize / 2, 0], [msize / 2, msize / 2, 0],
+                                            [msize / 2, -msize / 2, 0], [-msize / 2, -msize / 2, 0]
+                                        ], dtype=np.float32)
+                                        
+                                        detected_markers = []
+                                        
+                                        for i in range(len(ids)):
+                                            use_dist = zero_dist_coeffs if is_calibrated else orig_dist_coeffs
+                                            ret, rvec, tvec = cv2.solvePnP(marker_points, corners[i], orig_camera_matrix, use_dist)
+                                            if ret:
+                                                cv2.drawFrameAxes(frame, orig_camera_matrix, use_dist, rvec, tvec, 0.03)
+                                                cv2.aruco.drawDetectedMarkers(frame, corners)
+                                                
+                                                marker_id = int(ids[i][0])
+                                                tx, ty, tz = float(tvec[0][0]), float(tvec[1][0]), float(tvec[2][0])
+                                                
+                                                data = {"id": marker_id, "x": round(tx, 4), "y": round(ty, 4), "z": round(tz, 4), "cam": camera_id}
+                                                detected_markers.append(data)
+                                                
+                                                text = f"[{camera_id}] ID:{marker_id} X:{tx:.2f} Y:{ty:.2f} Z:{tz:.2f}"
+                                                cx, cy = int(corners[i][0][0][0]), int(corners[i][0][0][1])
+                                                cv2.putText(frame, text, (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                                
+                                        if go1_node_intent.get('send_aruco', False) and len(detected_markers) > 0:
+                                            payload_dict = {
+                                                "camera": camera_id,
+                                                "timestamp": round(time.time(), 3),
+                                                "markers": detected_markers
+                                            }
+                                            payload_json = json.dumps(payload_dict)
+                                            
+                                            try:
+                                                sock_aruco.sendto(payload_json.encode(), (GO1_UNITY_IP, 5008))
+                                                
+                                                with open("aruco_data.json", "w", encoding="utf-8") as f:
+                                                    f.write(payload_json)
+                                            except Exception as e: 
+                                                pass
+                                
+                                if is_calibrated:
+                                    height, width = frame.shape[:2]
+                                    cropped_frame = frame[:, :width//2]
+                                else:
+                                    cropped_frame = frame
+
+                                ret_enc, buffer = cv2.imencode('.jpg', cropped_frame)
+                                if ret_enc:
+                                    processed_bytes = buffer.tobytes()
+                                    global latest_processed_frames
+                                    latest_processed_frames[camera_id] = processed_bytes
+                                    
+                                    if camera_id == 'go1_front':
+                                        latest_display_frame = processed_bytes
+                except Exception as e: pass
+        time.sleep(0.01)
+
+if HAS_CV2_FLASK:
+    @app.route('/')
+    def index(): return "<h1>Multi-Robot Integrated Visual Scripting Framework (9)</h1><img src='/video_feed' width='640'>"
+
+    @app.route('/video_feed')
+    def video_feed():
+        def generate():
+            while True:
+                if latest_display_frame is not None: yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + latest_display_frame + b'\r\n')
+                time.sleep(0.05)
+        return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+def start_flask_app():
+    if HAS_CV2_FLASK: app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
+# ================= [Go1 Background Threads] =================
+def camera_worker_thread():
+    global camera_state, CAMERA_CONFIG
+    nanos = GO1_CAMERA_NANOS
+    
+    while True:
+        if camera_command_queue:
+            cmd_data = camera_command_queue.popleft()
+            cmd = cmd_data[0]
+            
+            if cmd == 'START_CMD':
+                _, pc_ip, target_folder, duration = cmd_data
+                camera_state['status'] = 'Starting...'
+                camera_state['duration'] = duration
+                
+                CAMERA_CONFIG.clear()
+                CAMERA_CONFIG.append({"folder": target_folder, "id": "go1_front"})
+                
+                write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                
+                write_log("[Cam START] Step 1: Sending kill & start SSH commands to Nano...")
+                for nano in nanos:
+                    import os
+                    key_path = os.path.expanduser("~/.ssh/id_rsa")
+                    
+                    kill_cmd = (
+                        "bash -lc '"
+                        "echo 123 | sudo -S fuser -k /dev/video0 /dev/video1 2>/dev/null ; "
+                        "cd /home/unitree ; "
+                        "./kill_camera.sh || true ; "
+                        "pkill -f go1_send_both || true ; "
+                        "pkill -f gst-launch-1.0 || true'"
+                    )
+                    
+                    start_cmd = (
+                        f"bash -lc '"
+                        f"cd /home/unitree ; "
+                        f"nohup ./go1_send_both.sh {pc_ip} > send_both_py.log 2>&1 < /dev/null & "
+                        f"sleep 1'"
+                    )
+                    
+                    base_ssh = [
+                        "ssh", "-i", key_path,
+                        "-o", "StrictHostKeyChecking=accept-new",
+                        "-o", "ConnectTimeout=5",
+                        "-J", f"pi@{ROBOT_IP}", nano
+                    ]
+                    
+                    try:
+                        write_log(f"[Cam START] Executing kill command on {nano}...")
+                        subprocess.run(base_ssh + [kill_cmd], capture_output=True, text=True, timeout=30)  # ★ 타임아웃 연장 (10 → 30초)
+                        
+                        write_log(f"[Cam START] Executing start command on {nano}...")
+                        subprocess.run(base_ssh + [start_cmd], capture_output=True, text=True, timeout=30)  # ★ 타임아웃 연장
+                        
+                        write_log(f"[Cam START] SSH commands sent successfully to {nano}")
+                    except Exception as e:
+                        write_log(f"[Cam START ERROR] SSH execution failed: {e}")
+                
+                write_log("[Cam START] Step 2: Cleaning up existing local GStreamer processes...")
+                try: subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
+                except: pass
+                time.sleep(0.5)
+                
+                write_log("[Cam START] Step 3: Setting up local GStreamer receiver...")
+                try:
+                    os.makedirs(target_folder, exist_ok=True)
+                    gst_cmd = f"gst-launch-1.0 -q udpsrc port=9400 caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" ! rtpjpegdepay ! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
+                    
+                    subprocess.Popen(gst_cmd, shell=True)
+                    write_log(f"[Cam START] Receiver listening on port 9400 -> {target_folder}")
+                except Exception as e:
+                    write_log(f"[Cam START ERROR] Failed to start receiver: {e}")
+                
+                time.sleep(2)
+                camera_state['status'] = 'Running'
+                camera_state['start_time'] = time.time()
+                camera_state['timer_started_logged'] = False
+                camera_state['last_interval_count'] = 0
+                write_log("[Cam START] Front camera stream is now Running.")
+                
+            elif cmd == 'STOP':
+                if camera_state['status'] == 'Running':
+                    write_log("[Cam Timer] 카메라 타이머 종료")
+                camera_state['status'] = 'Stopping...'
+                camera_state['duration'] = 0
+                write_log("[Cam STOP] Initiating stream shutdown...")
+
+                
+                write_log("[Cam STOP] Step 2: Terminating local GStreamer receivers...")
+                try: subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
+                except: pass
+                    
+                time.sleep(1)
+                camera_state['status'] = 'Stopped'
+                write_log("[Cam STOP] Stream completely stopped.")
+                
+        if camera_state['status'] == 'Running' and camera_state.get('duration', 0) > 0:
+            elapsed = time.time() - camera_state.get('start_time', 0)
+            
+            if not camera_state.get('timer_started_logged', False):
+                write_log("[Cam Timer] 카메라 타이머 시작")
+                camera_state['timer_started_logged'] = True
+            
+            interval_count = int(elapsed // 10)
+            if interval_count > camera_state.get('last_interval_count', 0) and interval_count > 0:
+                write_log(f"[Cam Timer] {interval_count * 10}초 경과")
+                camera_state['last_interval_count'] = interval_count
+            
+            if elapsed >= camera_state['duration']:
+                write_log("[Cam Timer] 카메라 타이머 종료")
+                camera_state['status'] = 'Stopping...'
+                camera_state['duration'] = 0
+                camera_command_queue.append(('STOP', ''))
+                
+        time.sleep(0.1)
+
+def global_image_cleanup_thread():
+    while True:
+        time.sleep(2)
+
+async def send_image_async(session, filepath, camera_id, server_url):
+    try:
+        global latest_processed_frames
+        file_data = latest_processed_frames.get(camera_id)
+        
+        if file_data is None:
+            if not os.path.exists(filepath): return
+            with open(filepath, 'rb') as f: file_data = f.read()
+
+        form = aiohttp.FormData()
+        form.add_field('camera_id', camera_id)
+        form.add_field('file', file_data, filename=f"{camera_id}_calib.jpg", content_type='image/jpeg')
+        async with session.post(server_url, data=form, timeout=2.0) as response: pass
+    except: pass
+
+async def camera_async_worker(config, server_url):
+    global multi_sender_active
+    folder = config["folder"]; camera_id = config["id"]; last_processed_file = None
+    os.makedirs(folder, exist_ok=True)
+    async with aiohttp.ClientSession() as session:
+        while multi_sender_active:
+            cycle_start = time.time(); files = glob.glob(os.path.join(folder, "*.jpg"))
+            if files:
+                valid_files = []
+                for f in files:
+                    try: valid_files.append((os.path.getctime(f), f))
+                    except OSError: pass
+                if valid_files:
+                    _, latest_file = max(valid_files)
+                    if latest_file != last_processed_file:
+                        last_processed_file = latest_file
+                        await send_image_async(session, latest_file, camera_id, server_url)
+            await asyncio.sleep(max(0, INTERVAL - (time.time() - cycle_start)))
+
+def start_async_loop(config, server_url):
+    loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop); loop.run_until_complete(camera_async_worker(config, server_url))
+
+def sender_manager_thread():
+    global multi_sender_active, sender_state
+    sender_threads = []
+    while True:
+        if sender_command_queue:
+            cmd, url = sender_command_queue.popleft()
+            if cmd == 'START' and not multi_sender_active:
+                    multi_sender_active = True; sender_state['status'] = 'Running'; write_log(f"Sender: Connect to {url}")
+                    for config in CAMERA_CONFIG:
+                        s_thread = threading.Thread(target=start_async_loop, args=(config, url)); s_thread.daemon = True; s_thread.start()
+                        sender_threads.extend([s_thread])
+            elif cmd == 'STOP' and multi_sender_active:
+                multi_sender_active = False; sender_state['status'] = 'Stopped'; write_log("Sender: Disconnected"); sender_threads.clear()
+        time.sleep(0.1)
+
+def go1_v4_comm_thread():
+    global go1_state, GO1_UNITY_IP, go1_unity_data
+    if HAS_UNITREE_SDK:
+        udp = sdk.UDP(HIGHLEVEL, LOCAL_PORT, ROBOT_IP, ROBOT_PORT)
+        cmd = sdk.HighCmd(); state = sdk.HighState()
+        udp.InitCmdData(cmd); go1_dashboard["hw_link"] = "Connecting..."
+    else: 
+        udp = cmd = state = None; go1_dashboard["hw_link"] = "Simulation"
+        
+    sock_tx_state = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); sock_tx_cmd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock_rx_unity = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); sock_rx_unity.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try: sock_rx_unity.bind(("0.0.0.0", UNITY_RX_PORT)); sock_rx_unity.setblocking(False)
+    except: pass
+    
+    stand_only = True; now = time.monotonic(); last_key_time = last_move_cmd_time = grace_deadline = now
+    use_grace = True; last_unity_cmd_time = now; unity_timeout_sec = 0.15
+    yaw0_initialized = False; yaw0 = 0.0; UNITY_YAW_OFFSET_RAD = math.pi / 2.0
+    world_x = world_z = 0.0; last_dr_time = now; seq = 0
+    yaw_align_active = False; yaw_align_target_rel = 0.0; yaw_align_kp = 2.0; yaw_align_tol_rad = 2.0 * math.pi / 180.0
+
+    special_runtime = {
+        'active': False,
+        'name': '',
+        'mode': 0,
+        'phase': 'idle',
+        'phase_until': 0.0,
+        'trigger_sec': 0.2,
+        'wait_timeout': 0.0,
+        'recovery': 'stand',
+        'wait_started_at': 0.0,
+        'wait_mode_seen': False,
+    }
+
+    last_go1_recv_time = now
+    last_go1_tick = 0
+    last_imu_val = 0.0
+
+    def reset_cmd_base():
+        if not cmd: return
+        cmd.mode = 0; cmd.gaitType = 0; cmd.speedLevel = 0; cmd.footRaiseHeight = 0.08; cmd.bodyHeight = 0.0
+        cmd.euler = [0.0, 0.0, 0.0]; cmd.velocity = [0.0, 0.0]; cmd.yawSpeed = 0.0; cmd.reserve = 0
+        cmd.bodyHeight = clamp(go1_node_intent.get('body_height', 0.0), BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+
+    next_t = time.monotonic()
+    while True:
+        tnow = time.monotonic()
+        if tnow < next_t: time.sleep(max(0.0, next_t - tnow))
+        next_t += dt
+
+        raw_yaw = 0.0
+        if udp: 
+            udp.Recv()
+            udp.GetRecv(state)
+            raw_yaw = float(state.imu.rpy[2])
+            
+            current_tick = getattr(state, 'tick', 0)
+            current_imu = float(state.imu.rpy[0]) + float(state.imu.rpy[1]) + float(state.imu.rpy[2])
+            
+            if current_tick != last_go1_tick or current_imu != last_imu_val:
+                last_go1_recv_time = tnow
+                last_go1_tick = current_tick
+                last_imu_val = current_imu
+                
+            if (tnow - last_go1_recv_time) < 1.0:
+                go1_in_use = is_running and (any(n.type_str.startswith("GO1_") for n in node_registry.values()) or special_runtime['active'])
+                go1_dashboard["hw_link"] = "Online (Active)" if go1_in_use else "Online (Listen)"
+
+                try:
+                    if hasattr(state.bms, 'SOC'): go1_state['battery'] = int(state.bms.SOC)
+                    elif hasattr(state.bms, 'soc'): go1_state['battery'] = int(state.bms.soc)
+                    if go1_state['battery'] == 0: go1_state['battery'] = -1 
+                except Exception as e: pass
+            else:
+                go1_dashboard["hw_link"] = "Offline"
+                go1_state['battery'] = -1
+        
+        if not yaw0_initialized: yaw0 = raw_yaw; yaw0_initialized = True; last_dr_time = time.monotonic()
+        if go1_node_intent['reset_yaw']: yaw0 = raw_yaw; last_dr_time = time.monotonic(); go1_node_intent['reset_yaw'] = False; write_log("YAW0 Reset")
+
+        yaw_rel = wrap_pi(raw_yaw - yaw0); yaw_unity = wrap_pi(yaw_rel + UNITY_YAW_OFFSET_RAD); go1_state['yaw_unity'] = yaw_unity
+        is_node_active = (tnow - go1_node_intent['trigger_time']) < 0.1
+        if go1_node_intent['yaw_align']: yaw_align_active = True; stand_only = False; last_key_time = last_move_cmd_time = grace_deadline = tnow; use_grace = True; go1_node_intent['yaw_align'] = False
+        if go1_node_intent['stop']: yaw_align_active = False; stand_only = True; last_key_time = last_move_cmd_time = grace_deadline = tnow; use_grace = True; go1_node_intent['stop'] = False
+        elif is_node_active:
+            yaw_align_active = False; stand_only = False; last_key_time = tnow; grace_deadline = tnow + repeat_grace_sec
+            if abs(go1_node_intent['vx']) > 0 or abs(go1_node_intent['vy']) > 0 or abs(go1_node_intent['wz']) > 0: last_move_cmd_time = tnow
+
+        got = None
+        while True:
+            try:
+                data, _ = sock_rx_unity.recvfrom(256)
+                s = data.decode("utf-8", errors="ignore").strip().split()
+                if len(s) >= 4: got = (float(s[0]), float(s[1]), float(s[2]), int(s[3]))
+            except: 
+                break
+        
+        if got: 
+            last_unity_cmd_time = tnow; go1_dashboard['unity_link'] = "Active"
+            go1_unity_data['vx'], go1_unity_data['vy'], go1_unity_data['wz'], go1_unity_data['estop'] = got
+            
+        unity_active = go1_node_intent['use_unity_cmd'] and ((tnow - last_unity_cmd_time) <= unity_timeout_sec)
+        go1_unity_data['active'] = unity_active
+        if not unity_active: go1_dashboard['unity_link'] = "Waiting"
+
+        since_key = tnow - last_key_time; since_move = tnow - last_move_cmd_time
+        active_walk = ((not stand_only) and (since_key <= hold_timeout_sec)) or ((not stand_only) and use_grace and (tnow <= grace_deadline)) or ((not stand_only) and (since_move <= min_move_sec))
+
+        if (not special_runtime['active']) and go1_special_queue:
+            next_name = go1_special_queue.popleft()
+            cfg = GO1_SPECIAL_ACTIONS.get(next_name)
+            if cfg and cmd:
+                special_runtime['active'] = True
+                special_runtime['name'] = next_name
+                special_runtime['mode'] = int(cfg['mode'])
+                special_runtime['phase'] = 'prep_stand'
+                special_runtime['phase_until'] = tnow + 1.5
+                special_runtime['trigger_sec'] = float(cfg.get('trigger_sec', 0.2))
+                special_runtime['wait_timeout'] = float(cfg['wait_timeout'])
+                special_runtime['recovery'] = str(cfg['recovery'])
+                special_runtime['wait_started_at'] = 0.0
+                special_runtime['wait_mode_seen'] = False
+                go1_node_intent['stop'] = True
+                go1_dashboard['special'] = f"Running: {next_name}"
+                write_log(f"[Go1 Special] start: {next_name}")
+            elif cfg and not cmd:
+                go1_dashboard['special'] = "Skipped: SDK unavailable"
+                write_log(f"[Go1 Special] skipped(no SDK): {next_name}")
+
+        go1_special_state['active'] = bool(special_runtime['active'])
+        go1_special_state['name'] = special_runtime['name']
+        go1_special_state['mode'] = special_runtime['mode']
+        go1_special_state['phase'] = special_runtime['phase']
+        go1_special_state['queue_size'] = len(go1_special_queue)
+
+        reset_cmd_base(); target_mode = 1; out_vx = 0.0; out_vy = 0.0; out_wz = 0.0
+
+        if yaw_align_active:
+            err = wrap_pi(yaw_rel - yaw_align_target_rel)
+            if abs(err) <= yaw_align_tol_rad: yaw_align_active = False; target_mode = 1
+            else: target_mode = 2; out_wz = clamp(-yaw_align_kp * err, -W_MAX, W_MAX)
+            if target_mode == 2 and cmd: cmd.gaitType = 1
+        elif unity_active:
+            target_mode = 2 if not go1_unity_data['estop'] else 1
+            if cmd: cmd.gaitType = 1
+            out_vx = clamp(go1_unity_data['vx'], -V_MAX, V_MAX)
+            out_vy = clamp(go1_unity_data['vy'], -S_MAX, S_MAX)
+            out_wz = clamp(go1_unity_data['wz'], -W_MAX, W_MAX)
+            go1_state['reason'] = "UNITY"
+        elif active_walk:
+            target_mode = 2
+            if cmd: cmd.gaitType = 1
+            out_vx = clamp(go1_node_intent['vx'], -V_MAX, V_MAX); out_vy = clamp(go1_node_intent['vy'], -S_MAX, S_MAX); out_wz = clamp(go1_node_intent['wz'], -W_MAX, W_MAX)
+            go1_state['reason'] = "NODE_WALK"
+        else:
+            if since_move <= (min_move_sec + stop_brake_sec): 
+                target_mode = 2; go1_state['reason'] = "BRAKE"
+                if cmd: cmd.gaitType = 1
+            else: target_mode = 1; use_grace = True; go1_state['reason'] = "STAND"
+
+        if special_runtime['active']:
+            phase = special_runtime['phase']
+
+            if phase == 'prep_stand':
+                target_mode = 1
+                go1_state['reason'] = "SPECIAL_PREP"
+                if tnow >= special_runtime['phase_until']:
+                    special_runtime['phase'] = 'trigger'
+                    special_runtime['phase_until'] = tnow + special_runtime.get('trigger_sec', 0.2)
+
+            elif phase == 'trigger':
+                target_mode = special_runtime['mode']
+                go1_state['reason'] = f"SPECIAL_TRIG_{special_runtime['mode']}"
+                if tnow >= special_runtime['phase_until']:
+                    special_runtime['phase'] = 'wait_done'
+                    special_runtime['wait_started_at'] = tnow
+
+            elif phase == 'wait_done':
+                target_mode = 1
+                go1_state['reason'] = f"SPECIAL_WAIT_{special_runtime['mode']}"
+                hw_mode = int(getattr(state, 'mode', special_runtime['mode'])) if state is not None else int(go1_state.get('mode', special_runtime['mode']))
+                if hw_mode == special_runtime['mode']:
+                    special_runtime['wait_mode_seen'] = True
+                elapsed = tnow - special_runtime['wait_started_at']
+                done = special_runtime['wait_mode_seen'] and hw_mode != special_runtime['mode']
+                timeout = elapsed >= special_runtime['wait_timeout']
+                if done or timeout:
+                    special_runtime['phase'] = 'post_wait'
+                    special_runtime['phase_until'] = tnow + 0.3
+                    if timeout:
+                        write_log(f"[Go1 Special] timeout: {special_runtime['name']}")
+
+            elif phase == 'post_wait':
+                target_mode = 1
+                go1_state['reason'] = "SPECIAL_POST_WAIT"
+                if tnow >= special_runtime['phase_until']:
+                    if special_runtime['recovery'] == 'stand':
+                        special_runtime['phase'] = 'recover8'
+                        special_runtime['phase_until'] = tnow + 1.5
+                    else:
+                        special_runtime['phase'] = 'recover0'
+                        special_runtime['phase_until'] = tnow + 0.5
+
+            elif phase == 'recover8':
+                target_mode = 8
+                go1_state['reason'] = "SPECIAL_RECOVER8"
+                if tnow >= special_runtime['phase_until']:
+                    special_runtime['phase'] = 'recover1'
+                    special_runtime['phase_until'] = tnow + 1.5
+
+            elif phase == 'recover1':
+                target_mode = 1
+                go1_state['reason'] = "SPECIAL_RECOVER1"
+                if tnow >= special_runtime['phase_until']:
+                    finished = special_runtime['name']
+                    special_runtime['active'] = False
+                    special_runtime['name'] = ''
+                    special_runtime['mode'] = 0
+                    special_runtime['phase'] = 'idle'
+                    go1_dashboard['special'] = "Idle"
+                    write_log(f"[Go1 Special] done: {finished}")
+
+            elif phase == 'recover0':
+                target_mode = 0
+                go1_state['reason'] = "SPECIAL_RECOVER0"
+                if tnow >= special_runtime['phase_until']:
+                    finished = special_runtime['name']
+                    special_runtime['active'] = False
+                    special_runtime['name'] = ''
+                    special_runtime['mode'] = 0
+                    special_runtime['phase'] = 'idle'
+                    go1_dashboard['special'] = "Idle"
+                    write_log(f"[Go1 Special] done: {finished}")
+
+            out_vx = 0.0
+            out_vy = 0.0
+            out_wz = 0.0
+            if cmd:
+                cmd.gaitType = 0
+                cmd.speedLevel = 0
+                cmd.footRaiseHeight = 0.0
+                cmd.bodyHeight = 0.0
+                cmd.euler = [0.0, 0.0, 0.0]
+                cmd.velocity = [0.0, 0.0]
+                cmd.yawSpeed = 0.0
+                cmd.reserve = 0
+
+        try:
+            go1_in_use = is_running and (any(n.type_str.startswith("GO1_") for n in list(node_registry.values())) or special_runtime['active'])
+        except:
+            go1_in_use = False
+
+        suppress_send = bool(special_runtime['active'] and special_runtime['phase'] == 'wait_done')
+
+        if cmd: 
+            cmd.mode = target_mode; cmd.velocity = [out_vx, out_vy]; cmd.yawSpeed = out_wz
+            if go1_in_use and not suppress_send:
+                udp.SetSend(cmd); udp.Send()
+
+        # 지연 결함 없이, 최근 입력 기준 제어 반영 시간을 표시
+        if unity_active and (abs(out_vx) > 1e-4 or abs(out_vy) > 1e-4 or abs(out_wz) > 1e-4):
+            go1_state['control_latency_ms'] = max(0.0, (tnow - last_unity_cmd_time) * 1000.0)
+        elif target_mode == 2 and (abs(out_vx) > 1e-4 or abs(out_vy) > 1e-4 or abs(out_wz) > 1e-4):
+            go1_state['control_latency_ms'] = max(0.0, (tnow - go1_node_intent.get('trigger_time', tnow)) * 1000.0)
+        else:
+            go1_state['control_latency_ms'] = 0.0
+            
+        go1_state['vx_cmd'] = out_vx; go1_state['vy_cmd'] = out_vy; go1_state['wz_cmd'] = out_wz; go1_state['mode'] = target_mode
+        go1_state['body_height_cmd'] = clamp(go1_node_intent.get('body_height', 0.0), BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+
+        if special_runtime['active']:
+            go1_dashboard['status'] = f"Special ({special_runtime['name']})"
+        else:
+            go1_dashboard['status'] = "Running" if (go1_in_use and target_mode == 2) else "Idle"
+        dts = tnow - last_dr_time; last_dr_time = tnow
+        cy = math.cos(yaw_unity); sy = math.sin(yaw_unity)
+        world_x += (out_vx * cy - out_vy * sy) * dts; world_z += (out_vx * sy + out_vy * cy) * dts
+        go1_state['world_x'] = world_x; go1_state['world_z'] = world_z
+
+        estop = 1 if target_mode == 1 else 0; seq += 1
+        msg_state = f"{seq} {time.time()*1000.0:.1f} {world_x:.6f} {world_z:.6f} {yaw_unity:.6f} {out_vx:.3f} {out_vy:.3f} {out_wz:.3f} {estop} {target_mode}"
+        msg_cmd = f"{out_vx:.3f} {out_vy:.3f} {out_wz:.3f} {estop}"
+        try: sock_tx_state.sendto(msg_state.encode("utf-8"), (GO1_UNITY_IP, UNITY_STATE_PORT)); sock_tx_cmd.sendto(msg_cmd.encode("utf-8"), (GO1_UNITY_IP, UNITY_CMD_PORT))
+        except: pass
+
+# ================= [Go1 Specific Nodes] =================
+class TargetIpNode(BaseNode):
+    def __init__(self, node_id): super().__init__(node_id, "Target IP Config", "TARGET_IP"); self.field_ip = None; self.out_ip = None
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Target IP (Receiver)"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_text("Save Data To IP:"); self.field_ip = dpg.add_input_text(width=120, default_value=get_local_ip())
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("IP String"); self.outputs[out] = "Data"; self.out_ip = out
+    def execute(self): self.output_data[self.out_ip] = dpg.get_value(self.field_ip); return None
+    def get_settings(self): return {"ip": dpg.get_value(self.field_ip)}
+    def load_settings(self, data): dpg.set_value(self.field_ip, data.get("ip", get_local_ip()))
+    
+class CameraControlNode(BaseNode):
+    def __init__(self, node_id): super().__init__(node_id, "Camera Control", "CAM_CTRL"); self.combo_action = None; self.in_ip = None; self.out_flow = None; self.chk_aruco = None; self.input_size = None; self.chk_calib = None; self.input_folder = None; self.input_duration = None
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="File Save Camera (Go1)"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
+                self.combo_action = dpg.add_combo(["Start Stream", "Stop Stream"], default_value="Start Stream", width=140)
+                dpg.add_spacer(height=3)
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Folder:"); self.input_folder = dpg.add_input_text(width=180, default_value="Captured_Images/go1_front")
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Timer(s):"); self.input_duration = dpg.add_input_float(width=70, default_value=10.0, step=1.0)
+                dpg.add_spacer(height=3)
+                self.chk_calib = dpg.add_checkbox(label="Enable Calibration", default_value=True)
+                self.chk_aruco = dpg.add_checkbox(label="Enable ArUco Tracking", default_value=False)
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Size(m):")
+                    self.input_size = dpg.add_input_float(width=80, default_value=0.03, step=0.01)
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as ip_in: dpg.add_text("Target IP In", color=(255,150,200)); self.inputs[ip_in] = "Data"; self.in_ip = ip_in
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
+    def execute(self):
+        global aruco_settings, calib_settings, go1_camera_started_flag
+        aruco_settings['enabled'] = dpg.get_value(self.chk_aruco)
+        aruco_settings['marker_size'] = dpg.get_value(self.input_size)
+        calib_settings['enabled'] = dpg.get_value(self.chk_calib)
+        
+        action = dpg.get_value(self.combo_action); ext_ip = self.fetch_input_data(self.in_ip); target_ip = ext_ip if ext_ip else get_local_ip()
+
+        if is_running and action == "Start Stream" and not go1_camera_started_flag:
+            if camera_state['status'] in ['Stopped', 'Stopping...']:
+                folder = dpg.get_value(self.input_folder)
+                dur = dpg.get_value(self.input_duration)
+                camera_command_queue.append(('START_CMD', target_ip, folder, dur))
+                go1_camera_started_flag = True
+
+        if action == "Stop Stream" and camera_state['status'] in ['Running', 'Starting...']:
+            camera_command_queue.append(('STOP', target_ip))
+            go1_camera_started_flag = True
+            
+        return self.out_flow
+    def get_settings(self): return {"act": dpg.get_value(self.combo_action), "aruco": dpg.get_value(self.chk_aruco), "size": dpg.get_value(self.input_size), "calib": dpg.get_value(self.chk_calib), "folder": dpg.get_value(self.input_folder), "dur": dpg.get_value(self.input_duration)}
+    def load_settings(self, data): dpg.set_value(self.combo_action, data.get("act", "Start Stream")); dpg.set_value(self.chk_aruco, data.get("aruco", False)); dpg.set_value(self.input_size, data.get("size", 0.03)); dpg.set_value(self.chk_calib, data.get("calib", True)); dpg.set_value(self.input_folder, data.get("folder", "Captured_Images/go1_front")); dpg.set_value(self.input_duration, data.get("dur", 10.0))
+
+class MultiSenderNode(BaseNode):
+    def __init__(self, node_id): super().__init__(node_id, "Server Sender", "MULTI_SENDER"); self.combo_action = None; self.field_url = None; self.out_flow = None
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Server Sender (Go1)"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): self.combo_action = dpg.add_combo(["Start Sender", "Stop Sender"], default_value="Start Sender", width=140); dpg.add_spacer(height=3); dpg.add_text("Server URL:"); self.field_url = dpg.add_input_text(width=160, default_value="http://210.110.250.33:5001/upload")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
+    def execute(self):
+        global sender_state
+        action = dpg.get_value(self.combo_action); url = dpg.get_value(self.field_url)
+        
+        if action == "Start Sender" and sender_state['status'] == 'Stopped': 
+            sender_state['status'] = 'Starting...'
+            sender_command_queue.append(('START', url))
+        elif action == "Stop Sender" and sender_state['status'] == 'Running': 
+            sender_state['status'] = 'Stopping...'
+            sender_command_queue.append(('STOP', url))
+            
+        return self.out_flow
+    def get_settings(self): return {"act": dpg.get_value(self.combo_action), "url": dpg.get_value(self.field_url)}
+    def load_settings(self, data): dpg.set_value(self.combo_action, data.get("act", "Start Sender")); dpg.set_value(self.field_url, data.get("url", "http://210.110.250.33:5001/upload"))
+
+class Go1UnityNode(BaseNode):
+    def __init__(self, node_id): 
+        super().__init__(node_id, "Unity Link", "GO1_UNITY")
+        self.field_ip = None; self.chk_enable = None; self.chk_aruco = None
+        self.out_vx = None; self.out_vy = None; self.out_wz = None; self.out_active = None
+        
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Unity Link (Go1)"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
+                dpg.add_text("Unity PC IP:", color=(100,255,100))
+                self.field_ip = dpg.add_input_text(width=120, default_value=GO1_UNITY_IP)
+                dpg.add_spacer(height=3)
+                self.chk_enable = dpg.add_checkbox(label="Enable Teleop Rx", default_value=True)
+                self.chk_aruco = dpg.add_checkbox(label="Send ArUco Data (JSON)", default_value=False) 
+                
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as vx: dpg.add_text("Teleop Vx"); self.outputs[vx] = "Data"; self.out_vx = vx
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as vy: dpg.add_text("Teleop Vy"); self.outputs[vy] = "Data"; self.out_vy = vy
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as wz: dpg.add_text("Teleop Wz"); self.outputs[wz] = "Data"; self.out_wz = wz
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as act: dpg.add_text("Is Active?"); self.outputs[act] = "Data"; self.out_active = act
+            
+    def execute(self):
+        global GO1_UNITY_IP, go1_node_intent
+        GO1_UNITY_IP = dpg.get_value(self.field_ip)
+        go1_node_intent['use_unity_cmd'] = dpg.get_value(self.chk_enable)
+        go1_node_intent['send_aruco'] = dpg.get_value(self.chk_aruco)
+        
+        self.output_data[self.out_vx] = go1_unity_data['vx']; self.output_data[self.out_vy] = go1_unity_data['vy']; self.output_data[self.out_wz] = go1_unity_data['wz']; self.output_data[self.out_active] = go1_unity_data['active']
+        return None
+        
+    def get_settings(self): return {"ip": dpg.get_value(self.field_ip), "en": dpg.get_value(self.chk_enable), "aruco": dpg.get_value(self.chk_aruco)}
+    def load_settings(self, data): 
+        dpg.set_value(self.field_ip, data.get("ip", "192.168.50.246"))
+        dpg.set_value(self.chk_enable, data.get("en", True))
+        dpg.set_value(self.chk_aruco, data.get("aruco", False))
+
+class Go1CommandActionNode(BaseNode):
+    def __init__(self, node_id): super().__init__(node_id, "Go1 Action", "GO1_ACTION"); self.combo_id = None; self.in_val1 = None; self.out_flow = None; self.field_v1 = None
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Go1 Action"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): self.combo_id = dpg.add_combo(items=["Stand", "Reset Yaw0", "Walk Fwd/Back", "Walk Strafe", "Turn", "Sit Down", "Stand Tall", "Set Body Height", "Backflip", "JumpYaw", "StraightHand", "Dance1", "Dance2"], default_value="Stand", width=150)
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as v1: dpg.add_text("Speed/Val"); self.field_v1 = dpg.add_input_float(width=60, default_value=0.2); self.inputs[v1] = "Data"; self.in_val1 = v1
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
+    def execute(self):
+        global go1_node_intent; mode = dpg.get_value(self.combo_id); v1 = self.fetch_input_data(self.in_val1); v1 = float(v1) if v1 is not None else dpg.get_value(self.field_v1)
+        if mode == "Stand": go1_node_intent['stop'] = True
+        elif mode == "Reset Yaw0": go1_node_intent['reset_yaw'] = True
+        elif mode == "Sit Down": go1_node_intent['body_height'] = BODY_HEIGHT_MIN
+        elif mode == "Stand Tall": go1_node_intent['body_height'] = BODY_HEIGHT_MAX
+        elif mode == "Set Body Height": go1_node_intent['body_height'] = clamp(v1, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+        elif mode == "Backflip": request_go1_special_action('backflip')
+        elif mode == "JumpYaw": request_go1_special_action('jumpyaw')
+        elif mode == "StraightHand": request_go1_special_action('straighthand')
+        elif mode == "Dance1": request_go1_special_action('dance1')
+        elif mode == "Dance2": request_go1_special_action('dance2')
+        else: go1_node_intent['vx'] = v1 if mode == "Walk Fwd/Back" else 0.0; go1_node_intent['vy'] = v1 if mode == "Walk Strafe" else 0.0; go1_node_intent['wz'] = v1 if mode == "Turn" else 0.0; go1_node_intent['trigger_time'] = time.monotonic()
+        return self.out_flow
+    def get_settings(self): return {"mode": dpg.get_value(self.combo_id), "v1": dpg.get_value(self.field_v1)}
+    def load_settings(self, data): dpg.set_value(self.combo_id, data.get("mode", "Stand")); dpg.set_value(self.field_v1, data.get("v1", 0.2))
+
+class Go1TimedActionNode(BaseNode):
+    def __init__(self, node_id): 
+        super().__init__(node_id, "Go1 Timed Action", "GO1_TIMED")
+        self.combo_id = None; self.field_spd = None; self.field_time = None; self.out_flow = None
+        self.start_time = 0.0; self.is_running = False
+
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Go1 Timed Action (Test)"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): 
+                self.combo_id = dpg.add_combo(items=["Walk Fwd", "Walk Back", "Turn Left", "Turn Right"], default_value="Walk Fwd", width=130)
+                dpg.add_spacer(height=3)
+                with dpg.group(horizontal=True): dpg.add_text("Spd:"); self.field_spd = dpg.add_input_float(width=60, default_value=0.4, step=0.1)
+                with dpg.group(horizontal=True): dpg.add_text("Sec:"); self.field_time = dpg.add_input_float(width=60, default_value=2.0, step=0.5)
+                dpg.add_spacer(height=5)
+                dpg.add_button(label="[ ▶ TEST TRIGGER ]", width=130, callback=self.start_timer)
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
+
+    def start_timer(self, s, a):
+        self.is_running = True; self.start_time = time.time()
+        write_log(f"Timed Action: {dpg.get_value(self.field_time)}sec test started")
+
+    def execute(self):
+        global go1_node_intent
+        if self.is_running:
+            if time.time() - self.start_time <= dpg.get_value(self.field_time):
+                mode = dpg.get_value(self.combo_id); spd = dpg.get_value(self.field_spd)
+                vx = 0.0; vy = 0.0; wz = 0.0
+                if mode == "Walk Fwd": vx = spd
+                elif mode == "Walk Back": vx = -spd
+                elif mode == "Turn Left": wz = spd
+                elif mode == "Turn Right": wz = -spd
+                
+                go1_node_intent['vx'] = vx; go1_node_intent['vy'] = vy; go1_node_intent['wz'] = wz
+                go1_node_intent['trigger_time'] = time.monotonic()
+            else: 
+                self.is_running = False; go1_node_intent['stop'] = True
+                write_log("Timed Action: Finished")
+        return self.out_flow
+
+    def get_settings(self): return {"mode": dpg.get_value(self.combo_id), "spd": dpg.get_value(self.field_spd), "time": dpg.get_value(self.field_time)}
+    def load_settings(self, data): dpg.set_value(self.combo_id, data.get("mode", "Walk Fwd")); dpg.set_value(self.field_spd, data.get("spd", 0.4)); dpg.set_value(self.field_time, data.get("time", 2.0))
+
+class GetGo1StateNode(BaseNode):
+    def __init__(self, node_id): super().__init__(node_id, "Get Go1 State", "GET_GO1_STATE"); self.out_x = None; self.out_z = None; self.out_yaw = None
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Get Go1 State"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as x: dpg.add_text("World X"); self.outputs[x] = "Data"; self.out_x = x
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as z: dpg.add_text("World Z"); self.outputs[z] = "Data"; self.out_z = z
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as y: dpg.add_text("Yaw (rad)"); self.outputs[y] = "Data"; self.out_yaw = y
+    def execute(self): self.output_data[self.out_x] = go1_state['world_x']; self.output_data[self.out_z] = go1_state['world_z']; self.output_data[self.out_yaw] = go1_state['yaw_unity']; return None
+
+class Go1KeyboardNode(BaseNode):
+    def __init__(self, node_id): super().__init__(node_id, "Keyboard (Go1)", "GO1_KEYBOARD"); self.out_vx = None; self.out_vy = None; self.out_wz = None; self.combo_keys = None
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Keyboard (Go1 Intent)"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                self.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
+                dpg.add_text("Move / QE: Turn\nZ/X: Body Height +/-\nSpace: Stop / R: Yaw Align / C: Reset Yaw", color=(255,150,150))
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as vx: dpg.add_text("Target Vx"); self.outputs[vx] = "Data"; self.out_vx = vx
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as vy: dpg.add_text("Target Vy"); self.outputs[vy] = "Data"; self.out_vy = vy
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as wz: dpg.add_text("Target Wz"); self.outputs[wz] = "Data"; self.out_wz = wz
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("Flow Out"); self.outputs[f] = "Flow"
+    def execute(self):
+        if dpg.is_item_focused("file_name_input") or (dpg.does_item_exist("path_name_input") and dpg.is_item_focused("path_name_input")):
+            for k, v in self.outputs.items():
+                if v == "Flow": return k
+            return None
+        
+        global go1_node_intent; vx = 0.0; vy = 0.0; wz = 0.0
+        
+        key_mode = dpg.get_value(self.combo_keys)
+        if key_mode == "WASD":
+            if dpg.is_key_down(dpg.mvKey_W): vx = VX_CMD
+            if dpg.is_key_down(dpg.mvKey_S): vx = -VX_CMD
+            if dpg.is_key_down(dpg.mvKey_A): vy = VY_CMD
+            if dpg.is_key_down(dpg.mvKey_D): vy = -VY_CMD
+        else:
+            if dpg.is_key_down(dpg.mvKey_Up): vx = VX_CMD
+            if dpg.is_key_down(dpg.mvKey_Down): vx = -VX_CMD
+            if dpg.is_key_down(dpg.mvKey_Left): vy = VY_CMD
+            if dpg.is_key_down(dpg.mvKey_Right): vy = -VY_CMD
+
+        if dpg.is_key_down(dpg.mvKey_Q): wz = WZ_CMD
+        if dpg.is_key_down(dpg.mvKey_E): wz = -WZ_CMD
+        if dpg.is_key_down(dpg.mvKey_Z):
+            go1_node_intent['body_height'] = clamp(go1_node_intent.get('body_height', 0.0) + BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+        if dpg.is_key_down(dpg.mvKey_X):
+            go1_node_intent['body_height'] = clamp(go1_node_intent.get('body_height', 0.0) - BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+        if dpg.is_key_down(dpg.mvKey_Spacebar): go1_node_intent['stop'] = True
+        if dpg.is_key_pressed(dpg.mvKey_R): go1_node_intent['yaw_align'] = True
+        if dpg.is_key_pressed(dpg.mvKey_C): go1_node_intent['reset_yaw'] = True
+        
+        if vx or vy or wz: go1_node_intent['vx'] = vx; go1_node_intent['vy'] = vy; go1_node_intent['wz'] = wz; go1_node_intent['trigger_time'] = time.monotonic()
+        self.output_data[self.out_vx]=vx; self.output_data[self.out_vy]=vy; self.output_data[self.out_wz]=wz
+        for k, v in self.outputs.items():
+            if v == "Flow": return k
+        return None
+    def get_settings(self): return {"keys": dpg.get_value(self.combo_keys)}
+    def load_settings(self, data): dpg.set_value(self.combo_keys, data.get("keys", "WASD"))
+
+# ================= [Universal / Logic Nodes] =================
+class StartNode(BaseNode):
+    def __init__(self, node_id): super().__init__(node_id, "START", "START")
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="START"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out = out
+    def execute(self): return self.out 
+
+class LogicIfNode(BaseNode):
+    def __init__(self, node_id): super().__init__(node_id, "Logic: IF", "LOGIC_IF"); self.in_cond = None; self.out_true = None; self.out_false = None
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="IF Condition"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as cond: dpg.add_text("Condition", color=(255,100,100)); self.inputs[cond] = "Data"; self.in_cond = cond
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as t: dpg.add_text("True", color=(100,255,100)); self.outputs[t] = "Flow"; self.out_true = t
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("False", color=(255,100,100)); self.outputs[f] = "Flow"; self.out_false = f
+    def execute(self):
+        target_link = None
+        for link in link_registry.values():
+            if link['target'] == self.in_cond: target_link = link; break
+        if target_link:
+            src_node_id = dpg.get_item_parent(target_link['source'])
+            if src_node_id in node_registry and node_registry[src_node_id].type_str.startswith("COND_"): node_registry[src_node_id].execute()
+        return self.out_true if self.fetch_input_data(self.in_cond) else self.out_false
+
+class LogicLoopNode(BaseNode):
+    def __init__(self, node_id): super().__init__(node_id, "Logic: LOOP", "LOGIC_LOOP"); self.field_count = None; self.out_loop = None; self.out_finish = None; self.current_iter = 0; self.target_iter = 0; self.is_active = False
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="For Loop"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_text("Count:"); self.field_count = dpg.add_input_int(width=80, default_value=3, min_value=1)
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as l: dpg.add_text("Loop Body", color=(100,200,255)); self.outputs[l] = "Flow"; self.out_loop = l
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as f: dpg.add_text("Finished", color=(200,200,200)); self.outputs[f] = "Flow"; self.out_finish = f
+    def execute(self):
+        if not self.is_active: self.target_iter = dpg.get_value(self.field_count); self.current_iter = 0; self.is_active = True
+        if self.current_iter < self.target_iter: self.current_iter += 1; return self.out_loop 
+        else: self.is_active = False; return self.out_finish
+    def get_settings(self): return {"count": dpg.get_value(self.field_count)}
+    def load_settings(self, data): dpg.set_value(self.field_count, data.get("count", 3))
+
+class ConditionKeyNode(BaseNode):
+    def __init__(self, node_id): super().__init__(node_id, "Check: Key", "COND_KEY"); self.field_key = None; self.out_res = None; self.key_map = {"A": dpg.mvKey_A, "B": dpg.mvKey_B, "C": dpg.mvKey_C, "S": dpg.mvKey_S, "W": dpg.mvKey_W, "SPACE": dpg.mvKey_Spacebar} 
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Key Check"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): dpg.add_text("Key (A-Z):"); self.field_key = dpg.add_input_text(width=60, default_value="A")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as res: dpg.add_text("Is Pressed?"); self.outputs[res] = "Data"; self.out_res = res
+    def execute(self): k = dpg.get_value(self.field_key).upper(); self.output_data[self.out_res] = dpg.is_key_down(self.key_map.get(k, 0)); return None
+    def get_settings(self): return {"k": dpg.get_value(self.field_key)}
+    def load_settings(self, data): dpg.set_value(self.field_key, data.get("k", "A"))
+
+class ConstantNode(BaseNode):
+    def __init__(self, node_id): super().__init__(node_id, "Constant", "CONSTANT"); self.out_val = None; self.field_val = None
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Constant"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static): self.field_val = dpg.add_input_float(width=80, default_value=1.0)
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Data"); self.outputs[out] = "Data"; self.out_val = out
+    def execute(self): self.output_data[self.out_val] = dpg.get_value(self.field_val); return None
+    def get_settings(self): return {"val": dpg.get_value(self.field_val)}
+    def load_settings(self, data): dpg.set_value(self.field_val, data.get("val", 1.0))
+
+class PrintNode(BaseNode):
+    def __init__(self, node_id): super().__init__(node_id, "Print Log", "PRINT"); self.out_flow = None; self.inp_data = None
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="Print Log"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as flow: dpg.add_text("Flow In"); self.inputs[flow] = "Flow"
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input) as data: dpg.add_text("Data"); self.inputs[data] = "Data"; self.inp_data = data
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output) as out: dpg.add_text("Flow Out"); self.outputs[out] = "Flow"; self.out_flow = out
+    def execute(self):
+        val = self.fetch_input_data(self.inp_data)
+        if val is not None: write_log(f"PRINT: {val}")
+        return self.out_flow
+
+class LoggerNode(BaseNode):
+    def __init__(self, node_id): super().__init__(node_id, "System Log", "LOGGER"); self.txt=None; self.llen=0
+    def build_ui(self):
+        with dpg.node(tag=self.node_id, parent="node_editor", label="System Log (Flowless)"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                with dpg.child_window(width=200, height=100): self.txt=dpg.add_text("", wrap=190)
+    def execute(self):
+        if len(system_log_buffer)!=self.llen: dpg.set_value(self.txt, "\n".join(list(system_log_buffer)[-8:])); self.llen=len(system_log_buffer)
+        return None
+
+# ================= [Execution Engine (Hybrid)] =================
+def execute_graph_once():
+    start_node = None
+    for node in node_registry.values():
+        if isinstance(node, StartNode): start_node = node; break
+    
+    for node in node_registry.values():
+        if not isinstance(node, (StartNode, Go1CommandActionNode, LogicIfNode, LogicLoopNode, ConditionKeyNode)):
+            try: node.execute()
+            except: pass
+
+    if not start_node: return
+
+    current_node = start_node
+    steps = 0; MAX_STEPS = 100 
+    while current_node and steps < MAX_STEPS:
+        result = current_node.execute()
+        next_out_id = None
+        if result is not None:
+            if isinstance(result, (int, str)): next_out_id = result
+            elif isinstance(result, dict):
+                for k, v in result.items():
+                    if v == "Flow": next_out_id = k; break
+        next_node = None
+        if next_out_id:
+            for link in link_registry.values():
+                if link['source'] == next_out_id:
+                    target_node_id = dpg.get_item_parent(link['target'])
+                    if target_node_id in node_registry:
+                        next_node = node_registry[target_node_id]; break
+        current_node = next_node; steps += 1
+
+# ================= [Factory & Serialization] =================
+class NodeFactory:
+    @staticmethod
+    def create_node(node_type, node_id=None):
+        if node_id is None: node_id = dpg.generate_uuid()
+        node = None
+        if node_type == "START": node = StartNode(node_id)
+        elif node_type == "LOGIC_IF": node = LogicIfNode(node_id)
+        elif node_type == "LOGIC_LOOP": node = LogicLoopNode(node_id)
+        elif node_type == "COND_KEY": node = ConditionKeyNode(node_id)
+        elif node_type == "CONSTANT": node = ConstantNode(node_id)
+        elif node_type == "PRINT": node = PrintNode(node_id)
+        elif node_type == "LOGGER": node = LoggerNode(node_id)
+        elif node_type == "GO1_DRIVER": node = UniversalRobotNode(node_id, Go1RobotDriver())
+        elif node_type == "GO1_ACTION": node = Go1CommandActionNode(node_id)
+        elif node_type == "GO1_TIMED": node = Go1TimedActionNode(node_id)
+        elif node_type == "GO1_KEYBOARD": node = Go1KeyboardNode(node_id)
+        elif node_type == "GO1_UNITY": node = Go1UnityNode(node_id)
+        elif node_type == "CAM_CTRL": node = CameraControlNode(node_id)
+        elif node_type == "TARGET_IP": node = TargetIpNode(node_id)
+        elif node_type == "MULTI_SENDER": node = MultiSenderNode(node_id)
+        elif node_type == "GET_GO1_STATE": node = GetGo1StateNode(node_id)
+        
+        if node: node.build_ui(); node_registry[node_id] = node; return node
+        return None
+
+def toggle_exec(s, a): 
+    global is_running, go1_camera_started_flag
+    is_running = not is_running
+    dpg.set_item_label("btn_run", "STOP" if is_running else "RUN SCRIPT")
+
+    if is_running:
+        go1_camera_started_flag = False
+    
+    if not is_running:
+        go1_camera_started_flag = False
+        
+        if camera_state['status'] in ['Running', 'Starting...']:
+            camera_command_queue.append(('STOP', ''))
+            
+        if sender_state['status'] in ['Running']:
+            sender_command_queue.append(('STOP', ''))
+            
+        global go1_node_intent
+        go1_node_intent['stop'] = True
+        go1_node_intent['vx'] = 0.0
+        go1_node_intent['vy'] = 0.0
+        go1_node_intent['wz'] = 0.0
+        go1_node_intent['body_height'] = 0.0
+        go1_special_queue.clear()
+        go1_special_state['active'] = False
+        go1_special_state['name'] = ''
+        go1_special_state['mode'] = 0
+        go1_special_state['phase'] = 'idle'
+        go1_special_state['queue_size'] = 0
+        go1_dashboard['special'] = "Idle"
+        write_log("System: Script Stopped. Halting all background tasks.")
+        
+def link_cb(s, a): src, dst = a[0], a[1] if len(a)==2 else a[1]; lid = dpg.add_node_link(src, dst, parent=s); link_registry[lid] = {'source': src, 'target': dst}
+def del_link_cb(s, a): dpg.delete_item(a); link_registry.pop(a, None)
+def add_node_cb(s, a, u): NodeFactory.create_node(u)
+def save_cb(s, a): save_graph(dpg.get_value("file_name_input"))
+def load_cb(s, a): load_graph(dpg.get_value("file_list_combo"))
+
+def save_graph(filename):
+    if not filename.endswith(".json"): filename += ".json"
+    filepath = os.path.join(SAVE_DIR, filename)
+    data = {"nodes": [], "links": []}
+    for nid, node in node_registry.items():
+        pos = dpg.get_item_pos(nid) or [0,0]
+        data["nodes"].append({"type": node.type_str, "id": nid, "pos": pos, "settings": node.get_settings()})
+    for lid, link in link_registry.items():
+        src_node_id, dst_node_id = dpg.get_item_parent(link['source']), dpg.get_item_parent(link['target'])
+        if src_node_id in node_registry and dst_node_id in node_registry:
+            src_idx = list(node_registry[src_node_id].outputs.keys()).index(link['source'])
+            dst_idx = list(node_registry[dst_node_id].inputs.keys()).index(link['target'])
+            data["links"].append({"src_node": src_node_id, "src_idx": src_idx, "dst_node": dst_node_id, "dst_idx": dst_idx})
+    try:
+        with open(filepath, 'w') as f: json.dump(data, f, indent=4)
+        write_log(f"Saved: {filename}"); update_file_list()
+    except Exception as e: write_log(f"Save Err: {e}")
+
+def load_graph(filename):
+    if not filename.endswith(".json"): filename += ".json"
+    filepath = os.path.join(SAVE_DIR, filename)
+    if not os.path.exists(filepath): return
+    for lid in list(link_registry.keys()): dpg.delete_item(lid)
+    for nid in list(node_registry.keys()): dpg.delete_item(nid)
+    link_registry.clear(); node_registry.clear()
+    try:
+        with open(filepath, 'r') as f: data = json.load(f)
+        id_map = {}
+        for n_data in data["nodes"]:
+            node = NodeFactory.create_node(n_data["type"], None) 
+            if node:
+                id_map[n_data["id"]] = node.node_id
+                dpg.set_item_pos(node.node_id, n_data["pos"] if n_data["pos"] else [0,0])
+                node.load_settings(n_data.get("settings", {}))
+        for l_data in data["links"]:
+            if l_data["src_node"] in id_map and l_data["dst_node"] in id_map:
+                src_node = node_registry[id_map[l_data["src_node"]]]
+                dst_node = node_registry[id_map[l_data["dst_node"]]]
+                src_attr = list(src_node.outputs.keys())[l_data["src_idx"]]
+                dst_attr = list(dst_node.inputs.keys())[l_data["dst_idx"]]
+                lid = dpg.add_node_link(src_attr, dst_attr, parent="node_editor")
+                link_registry[lid] = {'source': src_attr, 'target': dst_attr}
+        write_log(f"Loaded: {filename}")
+    except Exception as e: write_log(f"Load Err: {e}")
+
+def update_file_list(): dpg.configure_item("file_list_combo", items=get_save_files())
+def delete_selection(sender, app_data):
+    selected_links = dpg.get_selected_links("node_editor"); selected_nodes = dpg.get_selected_nodes("node_editor")
+    for lid in selected_links:
+        if lid in link_registry: del link_registry[lid]
+        if dpg.does_item_exist(lid): dpg.delete_item(lid)
+    for nid in selected_nodes:
+        if nid not in node_registry: continue
+        node = node_registry[nid]; my_ports = set(node.inputs.keys()) | set(node.outputs.keys()); links_to_remove = []
+        for lid, ldata in link_registry.items():
+            if ldata['source'] in my_ports or ldata['target'] in my_ports: links_to_remove.append(lid)
+        for lid in links_to_remove:
+            if lid in link_registry: del link_registry[lid]
+            if dpg.does_item_exist(lid): dpg.delete_item(lid)
+        del node_registry[nid]
+        if dpg.does_item_exist(nid): dpg.delete_item(nid)
+
+# ================= [Main Setup & Cleanup] =================
+import atexit
+
+def setup_go1_routing():
+    try:
+        target_gw = ROBOT_IP
+        if not target_gw:
+            write_log("System: Cannot find raspberrypi.local for routing.")
+            return
+        routes = subprocess.check_output(['ip', 'route']).decode()
+        
+        if f"192.168.123.0/24 via {target_gw}" not in routes:
+            print("\n" + "="*60)
+            print("[System] Go1 카메라망(123.x) 접속을 위한 자동 길뚫기를 시작합니다.")
+            print("[System] 🚨 아래에 우분투 노트북의 '로그인 비밀번호'를 입력하고 엔터를 치세요!")
+            print("="*60 + "\n")
+            
+            subprocess.call(['sudo', 'ip', 'route', 'add', '192.168.123.0/24', 'via', target_gw])
+            write_log("System: Go1 Network Routing Configured.")
+        else:
+            write_log("System: Go1 Network Routing Already Exists.")
+    except Exception as e:
+        write_log(f"System: Routing setup error: {e}")
+
+ROBOT_IP = prompt_go1_ip(ROBOT_IP)
+write_log(f"System: Go1 IP set to {ROBOT_IP}")
+
+setup_go1_routing()
+
+def force_cleanup_cameras():
+    write_log("System: Cleaning up ghost camera receiver processes only...")
+    subprocess.call("pkill -f 'gst-launch-1.0'", shell=True)
+    time.sleep(0.5)
+
+force_cleanup_cameras()
+atexit.register(force_cleanup_cameras)
+
+threading.Thread(target=network_monitor_thread, daemon=True).start()
+threading.Thread(target=go1_v4_comm_thread, daemon=True).start()
+threading.Thread(target=camera_worker_thread, daemon=True).start()
+threading.Thread(target=sender_manager_thread, daemon=True).start()
+threading.Thread(target=go1_vision_worker_thread, daemon=True).start()
+threading.Thread(target=global_image_cleanup_thread, daemon=True).start()
+threading.Thread(target=start_flask_app, daemon=True).start()
+threading.Thread(target=lambda: (time.sleep(1), update_file_list()), daemon=True).start()
+
+dpg.create_context()
+with dpg.handler_registry(): dpg.add_key_press_handler(dpg.mvKey_Delete, callback=delete_selection)
+
+with dpg.theme() as estop_theme:
+    with dpg.theme_component(dpg.mvButton):
+        dpg.add_theme_color(dpg.mvThemeCol_Button, (200, 50, 50))
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (255, 100, 100))
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (150, 30, 30))
+
+with dpg.window(tag="PrimaryWindow"):
+    with dpg.tab_bar():
+        with dpg.tab(label="Go1 Dashboard"):
+            with dpg.group(horizontal=True):
+                with dpg.child_window(width=220, height=190, border=True):
+                    dpg.add_text("Go1 Status", color=(150,150,150))
+                    dpg.add_text("Status: Idle", tag="go1_dash_status", color=(0,255,0))
+                    dpg.add_text("HW: Offline", tag="go1_dash_link", color=(255,0,0))
+                    dpg.add_text("Unity: Waiting", tag="go1_dash_unity", color=(255,255,0))
+                    dpg.add_text("File Cam: Stopped", tag="go1_dash_cam", color=(200,200,200))
+                    dpg.add_text("ArUco: OFF", tag="go1_dash_aruco", color=(200,200,200))
+                    dpg.add_text("Special: Idle", tag="go1_dash_special", color=(255,200,0))
+                    dpg.add_text("Battery: -%", tag="go1_dash_battery", color=(100,255,100))
+                    btn_estop = dpg.add_button(label="[ EMERGENCY STOP ]", width=-1, callback=go1_estop_callback)
+                    dpg.bind_item_theme(btn_estop, estop_theme)
+                with dpg.child_window(width=220, height=190, border=True):
+                    dpg.add_text("Odometry", color=(0,255,255))
+                    dpg.add_text("World X: 0.000", tag="go1_dash_wx")
+                    dpg.add_text("World Z: 0.000", tag="go1_dash_wz")
+                    dpg.add_text("Yaw: 0.000 rad", tag="go1_dash_yaw")
+                    dpg.add_text("Mode: 1 | NONE", tag="go1_dash_reason", color=(200,200,200))
+                with dpg.child_window(width=220, height=190, border=True):
+                    dpg.add_text("Commands", color=(255,200,0))
+                    dpg.add_text("Vx Cmd: 0.00", tag="go1_dash_vx_2")
+                    dpg.add_text("Vy Cmd: 0.00", tag="go1_dash_vy_2")
+                    dpg.add_text("Wz Cmd: 0.00", tag="go1_dash_wz_2")
+                    dpg.add_text("Body H: 0.00", tag="go1_dash_body_h")
+                    dpg.add_text("Latency: 0.0 ms", tag="go1_dash_latency")
+                with dpg.child_window(width=220, height=190, border=True):
+                    dpg.add_text("Network Info", color=(100,200,255))
+                    dpg.add_text("Host IP: Loading...", tag="dash_host_ip", color=(200,200,200))
+                    dpg.add_text("Go1 Target: Loading...", tag="dash_relay_ip", color=(200,200,200))
+                    dpg.add_text("Unity Target: Loading...", tag="dash_unity_ip", color=(200,200,200))
+                    dpg.add_separator()
+                    dpg.add_text("Interfaces: Loading...", tag="dash_net_if", color=(170,170,170))
+                with dpg.child_window(width=360, height=190, border=True):
+                    dpg.add_text("Special Motions", color=(255,150,150))
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label="Backflip", width=80, callback=go1_special_button_callback, user_data='backflip')
+                        dpg.add_button(label="JumpYaw", width=80, callback=go1_special_button_callback, user_data='jumpyaw')
+                        dpg.add_button(label="StraightHand", width=100, callback=go1_special_button_callback, user_data='straighthand')
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label="Dance1", width=80, callback=go1_special_button_callback, user_data='dance1')
+                        dpg.add_button(label="Dance2", width=80, callback=go1_special_button_callback, user_data='dance2')
+                    dpg.add_text("CAUTION: Run only in a safe space", color=(200,180,180))
+                    dpg.add_text("CAUTION: Check current mode and run only after the previous action is complete", color=(200,180,180), wrap=340)
+
+        with dpg.tab(label="Files & System"):
+            with dpg.group(horizontal=True):
+                with dpg.child_window(width=650, height=100, border=True):
+                    dpg.add_text("File Manager", color=(0,255,255))
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("Save:"); dpg.add_input_text(tag="file_name_input", default_value="my_graph", width=120); dpg.add_button(label="SAVE", callback=save_cb, width=60)
+                        dpg.add_spacer(width=20)
+                        dpg.add_text("Load:"); dpg.add_combo(items=get_save_files(), tag="file_list_combo", width=120); dpg.add_button(label="LOAD", callback=load_cb, width=60); dpg.add_button(label="Refresh", callback=update_file_list, width=60)
+                with dpg.child_window(width=400, height=100, border=False):
+                    dpg.add_spacer(height=20)
+                    dpg.add_text("Loading...", tag="sys_tab_net", color=(180,180,180))
+
+    dpg.add_separator()
+    
+    with dpg.group():
+        with dpg.group(horizontal=True):
+            dpg.add_text("Common:", color=(200,200,200))
+            dpg.add_button(label="START", callback=add_node_cb, user_data="START")
+            dpg.add_button(label="IF", callback=add_node_cb, user_data="LOGIC_IF")
+            dpg.add_button(label="LOOP", callback=add_node_cb, user_data="LOGIC_LOOP")
+            dpg.add_button(label="CHK KEY", callback=add_node_cb, user_data="COND_KEY")
+            dpg.add_button(label="CONST", callback=add_node_cb, user_data="CONSTANT")
+            dpg.add_button(label="PRINT", callback=add_node_cb, user_data="PRINT")
+            dpg.add_button(label="LOG", callback=add_node_cb, user_data="LOGGER")
+            dpg.add_spacer(width=50)
+            dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
+
+        with dpg.group(horizontal=True):
+            dpg.add_text("Go1 Tools:", color=(0,255,255))
+            dpg.add_button(label="DRIVER", callback=add_node_cb, user_data="GO1_DRIVER")
+            dpg.add_button(label="ACTION", callback=add_node_cb, user_data="GO1_ACTION")
+            dpg.add_button(label="TIMED", callback=add_node_cb, user_data="GO1_TIMED")
+            dpg.add_button(label="KEY", callback=add_node_cb, user_data="GO1_KEYBOARD")
+            dpg.add_button(label="UNITY", callback=add_node_cb, user_data="GO1_UNITY")
+            dpg.add_button(label="FILE_CAM", callback=add_node_cb, user_data="CAM_CTRL")
+            dpg.add_button(label="TARGET_IP", callback=add_node_cb, user_data="TARGET_IP")
+            dpg.add_button(label="SENDER", callback=add_node_cb, user_data="MULTI_SENDER")
+            dpg.add_button(label="GO1_STATE", callback=add_node_cb, user_data="GET_GO1_STATE")
+        
+
+    with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
+
+dpg.create_viewport(title='Go1 PyGui Eduver', width=1280, height=800, vsync=True)
+dpg.setup_dearpygui(); dpg.set_primary_window("PrimaryWindow", True); dpg.show_viewport()
+
+last_logic_time = 0; LOGIC_RATE = 0.02
+
+while dpg.is_dearpygui_running():
+    if dpg.does_item_exist("go1_dash_status"):
+        go1_status = go1_dashboard.get('status', 'Idle')
+        dpg.set_value("go1_dash_status", f"Status: {go1_status}")
+        dpg.configure_item("go1_dash_status", color=(0,255,0) if go1_status == "Running" else (200,200,200))
+
+    hw_link_str = go1_dashboard.get('hw_link', 'Offline')
+    dpg.set_value("go1_dash_link", f"HW: {hw_link_str}")
+    
+    if "Online" in hw_link_str: dpg.configure_item("go1_dash_link", color=(0,255,0))
+    elif hw_link_str == "Simulation" or hw_link_str == "Connecting...": dpg.configure_item("go1_dash_link", color=(255,200,0))
+    else: dpg.configure_item("go1_dash_link", color=(255,0,0))
+    
+    dpg.set_value("go1_dash_unity", f"Unity: {go1_dashboard['unity_link']}")
+    if dpg.does_item_exist("go1_dash_special"):
+        dpg.set_value("go1_dash_special", f"Special: {go1_dashboard.get('special', 'Idle')}")
+    dpg.set_value("go1_dash_reason", f"Mode: {go1_state['mode']} | {go1_state['reason']}")
+    dpg.set_value("go1_dash_wx", f"World X: {go1_state['world_x']:.3f}")
+    dpg.set_value("go1_dash_wz", f"World Z: {go1_state['world_z']:.3f}")
+    dpg.set_value("go1_dash_yaw", f"Yaw: {go1_state['yaw_unity']:.3f} rad")
+    dpg.set_value("go1_dash_vx_2", f"Vx Cmd: {go1_state['vx_cmd']:.2f}")
+    dpg.set_value("go1_dash_vy_2", f"Vy Cmd: {go1_state['vy_cmd']:.2f}")
+    dpg.set_value("go1_dash_wz_2", f"Wz Cmd: {go1_state['wz_cmd']:.2f}")
+    dpg.set_value("go1_dash_body_h", f"Body H: {go1_state.get('body_height_cmd', 0.0):.2f}")
+    dpg.set_value("go1_dash_latency", f"Latency: {go1_state.get('control_latency_ms', 0.0):.1f} ms")
+    
+    bat_val = go1_state.get('battery', -1)
+    if bat_val >= 0: dpg.set_value("go1_dash_battery", f"Battery: {bat_val}%")
+    else: dpg.set_value("go1_dash_battery", "Battery: 100% (Sim)")
+    
+    # File Cam (V4) Dashboard UI
+    dpg.set_value("go1_dash_cam", f"File Cam: {camera_state['status']}")
+    if camera_state['status'] == 'Running': dpg.configure_item("go1_dash_cam", color=(0,255,0))
+    elif camera_state['status'] == 'Stopped': dpg.configure_item("go1_dash_cam", color=(200,200,200))
+    else: dpg.configure_item("go1_dash_cam", color=(255,200,0))
+    
+    # ArUco State UI
+    if aruco_settings['enabled']:
+        marker_size = aruco_settings.get('marker_size', 0.03)
+        send_enabled = bool(go1_node_intent.get('send_aruco', False))
+        status_text = f"ArUco: Ready | {float(marker_size):.3f}m"
+        status_text += " | TX ON" if send_enabled else " | TX OFF"
+        dpg.configure_item("go1_dash_aruco", default_value=status_text, color=(0,255,255))
+    else:
+        dpg.configure_item("go1_dash_aruco", default_value="ArUco: OFF", color=(200,200,200))
+
+    if dpg.does_item_exist("dash_host_ip"): dpg.set_value("dash_host_ip", f"Host IP: {get_local_ip()}")
+    if dpg.does_item_exist("dash_relay_ip"):
+        current_relay_ip = safe_resolve_hostname("raspberrypi.local") or ROBOT_IP
+        dpg.set_value("dash_relay_ip", f"Go1 Target: {current_relay_ip}")
+    if dpg.does_item_exist("dash_unity_ip"): dpg.set_value("dash_unity_ip", f"Unity Target: {GO1_UNITY_IP}")
+    if dpg.does_item_exist("dash_net_if"): dpg.set_value("dash_net_if", f"Interfaces: {sys_net_str.replace(chr(10), ' | ')}")
+    if dpg.does_item_exist("sys_tab_net"): dpg.set_value("sys_tab_net", sys_net_str)
+    
+    if is_running and (time.time() - last_logic_time > LOGIC_RATE):
+        execute_graph_once()
+        last_logic_time = time.time()
+        
+    dpg.render_dearpygui_frame()
+
+dpg.destroy_context()
