@@ -960,7 +960,8 @@ def go1_keepalive_thread():
                     special_runtime['wait_started_at'] = tnow
 
             elif phase == 'wait_done':
-                target_mode = special_runtime['mode']
+                # C++ 테스트 코드와 동일하게 트리거 후에는 mode를 계속 밀지 않고 완료를 대기한다.
+                target_mode = 1
                 go1_state['reason'] = f"SPECIAL_WAIT_{special_runtime['mode']}"
                 hw_mode = int(getattr(state, 'mode', special_runtime['mode'])) if state is not None else int(go1_state.get('mode', special_runtime['mode']))
                 if hw_mode == special_runtime['mode']:
@@ -1022,6 +1023,13 @@ def go1_keepalive_thread():
             out_wz = 0.0
             if cmd:
                 cmd.gaitType = 0
+                cmd.speedLevel = 0
+                cmd.footRaiseHeight = 0.0
+                cmd.bodyHeight = 0.0
+                cmd.euler = [0.0, 0.0, 0.0]
+                cmd.velocity = [0.0, 0.0]
+                cmd.yawSpeed = 0.0
+                cmd.reserve = 0
 
         go1_in_use = bool(engine_module.is_running) and (_has_go1_nodes() or special_runtime['active'])
 

@@ -832,3 +832,28 @@ odes/robots/go1.py (함수/클래스 추가)
   - `nodes/robots/go1.py`
   - `ui/dpg_manager.py`
   - `code_fix_log/code_fix_go1.md`
+
+### [2026-04-12 00:20:00] Backflip 단독 실패 원인 수정 (특수모드 재트리거 제거)
+- 문제 분석:
+  - 사용자 테스트에서 `JumpYaw/StraightHand/Dance1/Dance2`는 동작하지만 `Backflip`만 실패.
+  - 원인 후보를 C++ 원본(`mode_Test.cpp`)과 Python 이식(`go1.py`) 비교한 결과:
+    1. C++는 mode9를 200ms 단발 트리거 후 `waitUntilDone` 동안 추가 송신 없이 수신 상태만 폴링.
+    2. Python 이식은 `wait_done` 단계에서도 `target_mode=9`를 계속 송신해 재트리거/조건 충돌 가능.
+    3. 특수동작 중 명령 기본값이 `footRaiseHeight=0.08` 등 일반주행 베이스를 유지해 백플립에 불리할 수 있음.
+
+- 조치 방안:
+  - `nodes/robots/go1.py`
+    - `wait_done` 단계에서 `target_mode=1`로 변경.
+      - 즉, 0.2초 트리거 이후에는 mode를 계속 밀지 않고 C++와 동일하게 완료 대기만 수행.
+    - 특수동작 active 구간에서 cmd 파라미터를 중립값으로 고정:
+      - `gaitType=0`, `speedLevel=0`, `footRaiseHeight=0.0`, `bodyHeight=0.0`
+      - `euler=[0,0,0]`, `velocity=[0,0]`, `yawSpeed=0.0`, `reserve=0`
+
+- 기대 효과:
+  1. Backflip이 단발 트리거 조건으로 안정적으로 실행될 확률 향상.
+  2. 특수모드 중 일반 보행 파라미터 간섭 제거.
+  3. C++ 테스트 코드 실행 방식과 Python 런타임 동작이 더 정확히 일치.
+
+- 수정 파일:
+  - `nodes/robots/go1.py`
+  - `code_fix_log/code_fix_go1.md`
