@@ -957,7 +957,7 @@ def __init_ui__():
             # ================= [Go1 Dashboard Tab] =================
             with dpg.tab(label="Go1 Dashboard"):
                 with dpg.group(horizontal=True):
-                    with dpg.child_window(width=250, height=190, border=True):
+                    with dpg.child_window(width=220, height=190, border=True):
                         dpg.add_text("Go1 Status", color=(150,150,150))
                         dpg.add_text("Status: Idle", tag="go1_dash_status", color=(0,255,0))
                         dpg.add_text("HW: Offline", tag="go1_dash_link", color=(255,0,0))
@@ -968,14 +968,14 @@ def __init_ui__():
                         dpg.add_text("Battery: -%", tag="go1_dash_battery", color=(100,255,100))
                         dpg.add_button(label="[ EMERGENCY STOP ]", width=-1, callback=lambda s,a,u: go1_estop_callback() if HAS_GO1 else None)
                     
-                    with dpg.child_window(width=280, height=160, border=True):
+                    with dpg.child_window(width=220, height=190, border=True):
                         dpg.add_text("Odometry", color=(0,255,255))
                         dpg.add_text("World X: 0.000", tag="go1_dash_wx")
                         dpg.add_text("World Z: 0.000", tag="go1_dash_wz")
                         dpg.add_text("Yaw: 0.000 rad", tag="go1_dash_yaw")
                         dpg.add_text("Mode: 1 | NONE", tag="go1_dash_reason", color=(200,200,200))
 
-                    with dpg.child_window(width=280, height=160, border=True):
+                    with dpg.child_window(width=220, height=190, border=True):
                         dpg.add_text("Commands", color=(255,200,0))
                         dpg.add_text("Vx Cmd: 0.00", tag="go1_dash_vx_2")
                         dpg.add_text("Vy Cmd: 0.00", tag="go1_dash_vy_2")
@@ -983,7 +983,7 @@ def __init_ui__():
                         dpg.add_text("Body H: 0.00", tag="go1_dash_body_h")
                         dpg.add_text("Latency: 0.0 ms", tag="go1_dash_latency")
 
-                    with dpg.child_window(width=280, height=160, border=True):
+                    with dpg.child_window(width=220, height=190, border=True):
                         dpg.add_text("Network Info", color=(100,200,255))
                         dpg.add_text("Host IP: Loading...", tag="dash_host_ip", color=(200,200,200))
                         dpg.add_text("Go1 Target: Loading...", tag="dash_relay_ip", color=(200,200,200))
@@ -991,8 +991,7 @@ def __init_ui__():
                         dpg.add_separator()
                         dpg.add_text("Interfaces: Loading...", tag="dash_net_if", color=(170,170,170))
 
-                with dpg.group(horizontal=True):
-                    with dpg.child_window(width=420, height=110, border=True):
+                    with dpg.child_window(width=360, height=190, border=True):
                         dpg.add_text("Special Motions", color=(255,150,150))
                         with dpg.group(horizontal=True):
                             dpg.add_button(label="Backflip", width=80, callback=go1_action_callback, user_data="SPECIAL_backflip")
@@ -1001,7 +1000,8 @@ def __init_ui__():
                         with dpg.group(horizontal=True):
                             dpg.add_button(label="Dance1", width=80, callback=go1_action_callback, user_data="SPECIAL_dance1")
                             dpg.add_button(label="Dance2", width=80, callback=go1_action_callback, user_data="SPECIAL_dance2")
-                        dpg.add_text("주의: 충분한 안전 공간에서만 실행", color=(200,180,180))
+                        dpg.add_text("CAUTION: Run only in a safe space", color=(200,180,180))
+                        dpg.add_text("CAUTION: Check current mode and run only after the previous action is complete", color=(200,180,180), wrap=340)
 
             # ================= [EP Dashboard Tab] =================
             with dpg.tab(label="EP Dashboard"):
