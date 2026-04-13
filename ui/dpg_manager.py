@@ -1029,7 +1029,6 @@ def __init_ui__():
                     with dpg.child_window(width=360, height=190, border=True):
                         dpg.add_text("Special Motions", color=(255,150,150))
                         with dpg.group(horizontal=True):
-                            dpg.add_button(label="Backflip", width=80, callback=go1_action_callback, user_data="SPECIAL_backflip")
                             dpg.add_button(label="JumpYaw", width=80, callback=go1_action_callback, user_data="SPECIAL_jumpyaw")
                             dpg.add_button(label="StraightHand", width=100, callback=go1_action_callback, user_data="SPECIAL_straighthand")
                         with dpg.group(horizontal=True):
