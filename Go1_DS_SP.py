@@ -173,6 +173,7 @@ go1_state = {'world_x': 0.0, 'world_z': 0.0, 'yaw_unity': 0.0, 'vx_cmd': 0.0, 'v
 go1_unity_data = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'estop': 0, 'active': False} 
 go1_dashboard = {"status": "Idle", "hw_link": "Offline", "unity_link": "Waiting", "special": "Idle"}
 
+# --------------------------------- 수정해야 할 부분 ---------------------------------
 GO1_SPECIAL_ACTIONS = {
     'backflip': {'mode': 9, 'trigger_sec': 0.4, 'wait_timeout': 5.0, 'recovery': 'stand'},
     'jumpyaw': {'mode': 10, 'trigger_sec': 0.2, 'wait_timeout': 4.0, 'recovery': 'stand'},
@@ -180,6 +181,7 @@ GO1_SPECIAL_ACTIONS = {
     'dance1': {'mode': 12, 'trigger_sec': 0.2, 'wait_timeout': 8.0, 'recovery': 'idle'},
     'dance2': {'mode': 13, 'trigger_sec': 0.2, 'wait_timeout': 8.0, 'recovery': 'idle'},
 }
+# -----------------------------------------------------------------------------------
 
 go1_special_queue = deque()
 go1_special_state = {
@@ -1453,7 +1455,6 @@ with dpg.window(tag="PrimaryWindow"):
                 with dpg.child_window(width=360, height=190, border=True):
                     dpg.add_text("Special Motions", color=(255,150,150))
                     with dpg.group(horizontal=True):
-                        dpg.add_button(label="Backflip", width=80, callback=go1_special_button_callback, user_data='backflip')
                         dpg.add_button(label="JumpYaw", width=80, callback=go1_special_button_callback, user_data='jumpyaw')
                         dpg.add_button(label="StraightHand", width=100, callback=go1_special_button_callback, user_data='straighthand')
                     with dpg.group(horizontal=True):
