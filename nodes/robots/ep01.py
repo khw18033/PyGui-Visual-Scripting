@@ -4,6 +4,9 @@ import threading
 import math
 import sys
 import os
+import glob
+import asyncio
+from collections import deque
 from unittest.mock import MagicMock
 from nodes.base import BaseNode, BaseRobotDriver
 from core.engine import generate_uuid, PortType, write_log, HwStatus
@@ -22,6 +25,13 @@ except ImportError:
     Flask = None
     Response = None
     HAS_FLASK = False
+
+try:
+    import aiohttp
+    HAS_AIOHTTP = True
+except ImportError:
+    aiohttp = None
+    HAS_AIOHTTP = False
 
 # ================= [EP Globals & Network] =================
 EP_USE_MEDIA_MOCK = os.getenv("EP_USE_MEDIA_MOCK", "0").strip().lower() in ("1", "true", "yes", "on")
@@ -60,6 +70,21 @@ ep_camera_state = {
     "source": "none",
     "url": "rtsp://192.168.42.2/live",
 }
+
+ep_camera_save_state = {
+    'status': 'Stopped',
+    'folder': 'Captured_Images/ep01_saved',
+    'duration': 0.0,
+    'start_time': None,
+    'frame_count': 0,
+}
+
+ep_sender_state = {'status': 'Stopped'}
+ep_sender_command_queue = deque()
+ep_sender_active = False
+EP_SENDER_TARGET_FPS = 30
+EP_SENDER_INTERVAL = 1.0 / EP_SENDER_TARGET_FPS
+_ep_sender_manager_started = False
 
 ep_arm_state = {
     "x": 100.0,
@@ -300,6 +325,126 @@ def stop_ep_camera_pipeline():
         _ep_cam_last_frame = None
         ep_camera_state['status'] = 'Stopped'
         ep_camera_state['source'] = 'none'
+
+
+def _ep_extract_front_frame_index(path):
+    name = os.path.basename(path)
+    if not (name.startswith("front_") and name.endswith(".jpg")):
+        return -1
+    number_part = name[6:-4]
+    return int(number_part) if number_part.isdigit() else -1
+
+
+def _ep_is_file_stable(path, wait_sec=0.02):
+    try:
+        size1 = os.path.getsize(path)
+        time.sleep(wait_sec)
+        size2 = os.path.getsize(path)
+        return size1 > 0 and size1 == size2
+    except OSError:
+        return False
+
+
+async def _ep_send_image_async(session, filepath, camera_id, server_url):
+    try:
+        if not os.path.exists(filepath):
+            return
+        with open(filepath, 'rb') as f:
+            file_data = f.read()
+
+        form = aiohttp.FormData()
+        form.add_field('camera_id', camera_id)
+        form.add_field('file', file_data, filename=f"{camera_id}.jpg", content_type='image/jpeg')
+
+        async with session.post(server_url, data=form, timeout=aiohttp.ClientTimeout(total=3.5)):
+            pass
+    except Exception as e:
+        write_log(f"[EP Sender] upload error: {e}")
+
+
+async def _ep_camera_async_worker(config, server_url):
+    global ep_sender_active
+
+    folder = config["folder"]
+    camera_id = config["id"]
+    last_processed_file = None
+    last_processed_idx = -1
+
+    os.makedirs(folder, exist_ok=True)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            while ep_sender_active:
+                cycle_start = time.time()
+                files = glob.glob(os.path.join(folder, "*.jpg"))
+
+                if files:
+                    best_file = None
+                    best_idx = -1
+                    for f in files:
+                        idx = _ep_extract_front_frame_index(f)
+                        if idx > best_idx:
+                            best_idx = idx
+                            best_file = f
+
+                    if best_file is None:
+                        valid_files = []
+                        for f in files:
+                            try:
+                                valid_files.append((os.path.getctime(f), f))
+                            except OSError:
+                                pass
+                        if valid_files:
+                            _, latest_file = max(valid_files)
+                            if latest_file != last_processed_file and _ep_is_file_stable(latest_file):
+                                last_processed_file = latest_file
+                                await _ep_send_image_async(session, latest_file, camera_id, server_url)
+                    else:
+                        if best_idx > last_processed_idx and _ep_is_file_stable(best_file):
+                            await _ep_send_image_async(session, best_file, camera_id, server_url)
+                            last_processed_idx = best_idx
+                            last_processed_file = best_file
+
+                await asyncio.sleep(max(0, EP_SENDER_INTERVAL - (time.time() - cycle_start)))
+    except Exception as e:
+        write_log(f"[EP Sender] worker error ({camera_id}): {e}")
+
+
+def _ep_start_async_loop(config, server_url):
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_ep_camera_async_worker(config, server_url))
+    except Exception:
+        pass
+
+
+def _ep_sender_manager_thread():
+    global ep_sender_active, ep_sender_state
+    sender_threads = []
+
+    while True:
+        if ep_sender_command_queue:
+            cmd, url = ep_sender_command_queue.popleft()
+
+            if cmd == 'START' and not ep_sender_active:
+                upload_folder = str(ep_camera_save_state.get('folder', '')).strip() or 'Captured_Images/ep01_saved'
+                ep_sender_active = True
+                ep_sender_state['status'] = 'Running'
+                write_log(f"[EP Sender] 연결: {url} | folder={upload_folder}")
+
+                config = {"folder": upload_folder, "id": "ep01_front"}
+                s_thread = threading.Thread(target=_ep_start_async_loop, args=(config, url), daemon=True)
+                s_thread.start()
+                sender_threads.append(s_thread)
+
+            elif cmd == 'STOP' and ep_sender_active:
+                ep_sender_active = False
+                ep_sender_state['status'] = 'Stopped'
+                write_log("[EP Sender] 연결 해제")
+                sender_threads.clear()
+
+        time.sleep(0.1)
 
 def ep_status_thread():
     """EP 상태 모니터 및 통신 스레드 시작"""
@@ -742,6 +887,174 @@ class EPCameraStreamNode(BaseNode):
                     with _ep_flask_lock:
                         global _ep_flask_latest_jpg
                         _ep_flask_latest_jpg = buf.tobytes()
+
+        return self.out_flow
+
+
+class EPVideoFrameSaveNode(BaseNode):
+    """EP 카메라 프레임을 지정 폴더에 저장하는 노드"""
+    def __init__(self, node_id):
+        super().__init__(node_id, "EP Video Save", "EP_VIS_SAVE")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.in_frame = generate_uuid()
+        self.inputs[self.in_frame] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['folder'] = 'Captured_Images/ep01_saved'
+        self.state['duration'] = 10.0
+        self.state['use_timer'] = False
+        self.state['max_frames'] = 100
+
+        self._save_start_time = None
+        self._frame_count = 0
+        self._timer_completed_this_run = False
+        self._frame_index = 0
+
+    def _extract_frame_index(self, path):
+        name = os.path.basename(path)
+        if not (name.startswith("front_") and name.endswith(".jpg")):
+            return -1
+        number_part = name[6:-4]
+        return int(number_part) if number_part.isdigit() else -1
+
+    def _sync_frame_index_from_folder(self, folder):
+        files = glob.glob(os.path.join(folder, "front_*.jpg"))
+        max_idx = 0
+        for path in files:
+            idx = self._extract_frame_index(path)
+            if idx > max_idx:
+                max_idx = idx
+        self._frame_index = max_idx
+
+    def _prune_saved_frames(self, folder, max_frames):
+        files = glob.glob(os.path.join(folder, "front_*.jpg"))
+        if len(files) <= max_frames:
+            return
+        files.sort(key=lambda p: (self._extract_frame_index(p), os.path.getmtime(p)))
+        for old_file in files[:len(files) - max_frames]:
+            try:
+                os.remove(old_file)
+            except Exception:
+                pass
+
+    def execute(self):
+        global ep_camera_save_state
+
+        folder = str(self.state.get('folder', 'Captured_Images/ep01_saved')).strip() or 'Captured_Images/ep01_saved'
+        is_saving = True
+        duration = float(self.state.get('duration', 10.0))
+
+        raw_use_timer = self.state.get('use_timer', False)
+        if isinstance(raw_use_timer, str):
+            use_timer = raw_use_timer.strip().lower() in ['1', 'true', 'yes', 'on']
+        else:
+            use_timer = bool(raw_use_timer)
+
+        raw_max_frames = self.state.get('max_frames', 100)
+        try:
+            max_frames = max(1, int(float(raw_max_frames)))
+        except Exception:
+            max_frames = 100
+
+        ep_camera_save_state['folder'] = folder
+        ep_camera_save_state['duration'] = duration
+
+        if not is_saving:
+            self._timer_completed_this_run = False
+            if self._save_start_time is not None:
+                self._save_start_time = None
+                ep_camera_save_state['status'] = 'Stopped'
+                ep_camera_save_state['start_time'] = None
+                ep_camera_save_state['frame_count'] = 0
+            return self.out_flow
+
+        if not self._save_start_time and not self._timer_completed_this_run:
+            self._save_start_time = time.time()
+            self._frame_count = 0
+            ep_camera_save_state['status'] = 'Running'
+            ep_camera_save_state['start_time'] = self._save_start_time
+            try:
+                os.makedirs(folder, exist_ok=True)
+                self._sync_frame_index_from_folder(folder)
+                write_log(f"[EP_VIS_SAVE] 저장 시작: {folder}")
+            except Exception as e:
+                write_log(f"[EP_VIS_SAVE] 폴더 생성 실패: {e}")
+                return self.out_flow
+
+        if self._save_start_time and use_timer and duration > 0:
+            elapsed = time.time() - self._save_start_time
+            if elapsed > duration:
+                write_log(f"[EP_VIS_SAVE] 타이머 종료: {duration:.1f}s 경과")
+                self._save_start_time = None
+                self._timer_completed_this_run = True
+                ep_camera_save_state['status'] = 'Stopped'
+                ep_camera_save_state['start_time'] = None
+                ep_camera_save_state['frame_count'] = 0
+                return self.out_flow
+
+        frame = self.fetch_input_data(self.in_frame)
+        if frame is not None and HAS_CV2 and self._save_start_time is not None:
+            try:
+                self._frame_index += 1
+                filename = os.path.join(folder, f"front_{self._frame_index:06d}.jpg")
+                success = cv2.imwrite(filename, frame)
+                if success:
+                    self._frame_count += 1
+                    ep_camera_save_state['frame_count'] = self._frame_count
+            except Exception as e:
+                write_log(f"[EP_VIS_SAVE] 프레임 저장 실패: {e}")
+
+        if self._save_start_time is not None and not use_timer:
+            self._prune_saved_frames(folder, max_frames)
+
+        return self.out_flow
+
+
+class EPServerSenderNode(BaseNode):
+    """EP 저장 폴더 이미지를 원격 서버로 업로드하는 노드"""
+    def __init__(self, node_id):
+        super().__init__(node_id, "EP Server Sender", "EP_SERVER_SENDER")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['action'] = 'Start Sender'
+        self.state['server_url'] = "http://210.110.250.33:5002/upload"
+
+        self._last_action = None
+        self._last_request_ts = 0.0
+
+    def execute(self):
+        global ep_sender_state, ep_sender_active, _ep_sender_manager_started
+
+        if not HAS_AIOHTTP:
+            return self.out_flow
+
+        if not _ep_sender_manager_started:
+            _ep_sender_manager_started = True
+            threading.Thread(target=_ep_sender_manager_thread, daemon=True).start()
+
+        action = self.state.get('action', 'Start Sender')
+        url = self.state.get('server_url', "http://210.110.250.33:5002/upload")
+        now = time.monotonic()
+        cooldown_ok = (now - self._last_request_ts) > 0.5
+
+        if action != self._last_action:
+            self._last_action = action
+
+        if action == "Start Sender":
+            if (not ep_sender_active) and ep_sender_state['status'] in ['Stopped', 'Stopping...'] and cooldown_ok:
+                ep_sender_state['status'] = 'Starting...'
+                ep_sender_command_queue.append(('START', url))
+                self._last_request_ts = now
+        elif action == "Stop Sender":
+            if ep_sender_active and ep_sender_state['status'] in ['Running', 'Starting...'] and cooldown_ok:
+                ep_sender_state['status'] = 'Stopping...'
+                ep_sender_command_queue.append(('STOP', url))
+                self._last_request_ts = now
 
         return self.out_flow
 

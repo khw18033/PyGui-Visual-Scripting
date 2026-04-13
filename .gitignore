@@ -12,3 +12,6 @@ visual_scripting_Int_v11.py
 Go1_DS.py
 Captured_Images/
 mode_Test.cpp
+ep01_capture.py
+ep01_sender.py
+ep01_server_stream.py

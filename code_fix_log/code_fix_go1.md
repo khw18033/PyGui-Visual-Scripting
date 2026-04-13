@@ -858,26 +858,6 @@ odes/robots/go1.py (함수/클래스 추가)
   - `nodes/robots/go1.py`
   - `code_fix_log/code_fix_go1.md`
 
-### [2026-04-12 00:50:00] Go1 Dashboard UI 정리 (Special Motions 1줄 배치 + CAUTION2 안내문 교체)
-- 문제 분석:
-  - Go1 Dashboard에서 `Special Motions` 패널이 2번째 줄에 있어, 상단 상태 패널들과 분리되어 시인성이 떨어졌음.
-  - `CAUTION2`가 의미 없는 플레이스홀더 텍스트로 남아 있었음.
-
-- 조치 방안:
-  - `ui/dpg_manager.py`
-    - `Special Motions` 패널을 상단 첫 번째 `horizontal group`으로 이동해 Go1 Dashboard 전체를 1줄 배치로 정리.
-    - 패널 폭/높이를 재조정해 동일 행에서 레이아웃이 유지되도록 수정.
-    - `CAUTION2` 문구를 아래 영어 안내로 교체:
-      - `Check current mode and run only after the previous action is complete.`
-
-- 기대 효과:
-  1. Go1 Dashboard 주요 정보와 특수동작 버튼을 한 줄에서 확인 가능.
-  2. 실행 순서 관련 주의사항이 명확해져 오조작 위험 감소.
-
-- 수정 파일:
-  - `ui/dpg_manager.py`
-  - `code_fix_log/code_fix_go1.md`
-
 ### [2026-04-12 00:35:00] 특수동작 안정화 2차 보정 (wait_done 송신 억제 + Backflip 트리거 보강)
 - 문제 분석:
   - 사용자 실측 결과:
@@ -906,4 +886,24 @@ odes/robots/go1.py (함수/클래스 추가)
 
 - 수정 파일:
   - `nodes/robots/go1.py`
+  - `code_fix_log/code_fix_go1.md`
+
+### [2026-04-12 00:50:00] Go1 Dashboard UI 정리 (Special Motions 1줄 배치 + CAUTION2 안내문 교체)
+- 문제 분석:
+  - Go1 Dashboard에서 `Special Motions` 패널이 2번째 줄에 있어, 상단 상태 패널들과 분리되어 시인성이 떨어졌음.
+  - `CAUTION2`가 의미 없는 플레이스홀더 텍스트로 남아 있었음.
+
+- 조치 방안:
+  - `ui/dpg_manager.py`
+    - `Special Motions` 패널을 상단 첫 번째 `horizontal group`으로 이동해 Go1 Dashboard 전체를 1줄 배치로 정리.
+    - 패널 폭/높이를 재조정해 동일 행에서 레이아웃이 유지되도록 수정.
+    - `CAUTION2` 문구를 아래 영어 안내로 교체:
+      - `Check current mode and run only after the previous action is complete.`
+
+- 기대 효과:
+  1. Go1 Dashboard 주요 정보와 특수동작 버튼을 한 줄에서 확인 가능.
+  2. 실행 순서 관련 주의사항이 명확해져 오조작 위험 감소.
+
+- 수정 파일:
+  - `ui/dpg_manager.py`
   - `code_fix_log/code_fix_go1.md`
