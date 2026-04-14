@@ -829,7 +829,9 @@ def link_cb(s, a):
     link_registry[lid] = {'source': src, 'target': dst, 'src_node_id': src_node_id, 'dst_node_id': dst_node_id}
     
 def del_link_cb(s, a): 
-    dpg.delete_item(a); link_registry.pop(a, None)
+    link_registry.pop(a, None)
+    if dpg.does_item_exist(a):
+        dpg.delete_item(a)
 def add_node_cb(s, a, u):
     node = NodeFactory.create_node(u)
     if not node:

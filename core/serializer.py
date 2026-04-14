@@ -1,5 +1,6 @@
 import os
 import json
+import dearpygui.dearpygui as dpg
 from core.engine import SAVE_DIR, write_log, node_registry, link_registry
 from core.factory import NodeFactory
 
@@ -149,27 +150,45 @@ def load_graph(filename):
             if node_type == "MT4_DRIVER" and any(k in settings for k in ["vx", "vy", "vyaw", "body_height"]):
                 node_type = "GO1_DRIVER"
 
-            node = NodeFactory.create_node(node_type, n_data.get("id"))
-            if node:
-                old_id = n_data.get("id")
-                if old_id is None:
-                    write_log("Load Warn: id 정보가 없는 노드를 건너뜁니다.")
-                    continue
-                id_map[old_id] = node.node_id
+            old_id = n_data.get("id")
+            if old_id is None:
+                write_log("Load Warn: id 정보가 없는 노드를 건너뜁니다.")
+                continue
+
+            # 저장 파일의 node id를 그대로 재사용하면 DPG tag 충돌이 발생할 수 있어,
+            # 로드시에는 항상 새 id를 발급한다.
+            node = NodeFactory.create_node(node_type)
+            if not node:
+                write_log(f"Load Warn: 알 수 없는 노드 타입을 건너뜁니다. ({node_type})")
+                continue
+
+            try:
                 NodeUIRenderer.render(node)
                 pos = n_data.get("pos")
                 set_item_pos_safe(node.node_id, pos if pos else [0,0])
                 node.load_settings(settings)
                 NodeUIRenderer.sync_state_to_ui(node)
+                id_map[str(old_id)] = node.node_id
+            except Exception as node_err:
+                # 개별 노드 복원 실패가 전체 로드를 중단하지 않도록 격리한다.
+                try:
+                    if dpg.does_item_exist(node.node_id):
+                        dpg.delete_item(node.node_id)
+                except Exception:
+                    pass
+                node_registry.pop(node.node_id, None)
+                write_log(f"Load Warn: 노드 복원 실패(type={node_type}, id={old_id}) - {node_err}")
                 
         for l_data in data.get("links", []):
             if not isinstance(l_data, dict):
                 continue
             src_old = l_data.get("src_node")
             dst_old = l_data.get("dst_node")
-            if src_old in id_map and dst_old in id_map:
-                src_node = node_registry[id_map[src_old]]
-                dst_node = node_registry[id_map[dst_old]]
+            src_key = str(src_old) if src_old is not None else None
+            dst_key = str(dst_old) if dst_old is not None else None
+            if src_key in id_map and dst_key in id_map:
+                src_node = node_registry[id_map[src_key]]
+                dst_node = node_registry[id_map[dst_key]]
                 src_attr = _resolve_port_with_fallback(
                     src_node,
                     "output",
@@ -186,7 +205,7 @@ def load_graph(filename):
                 )
 
                 if src_attr and dst_attr:
-                    add_dpg_link(src_attr, dst_attr, id_map[src_old], id_map[dst_old])
+                    add_dpg_link(src_attr, dst_attr, id_map[src_key], id_map[dst_key])
                 else:
                     write_log(
                         f"Load Warn: Skipped incompatible link src={l_data.get('src_node')} dst={l_data.get('dst_node')}"
