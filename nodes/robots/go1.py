@@ -1560,9 +1560,9 @@ class FisheyeUndistortNode(BaseNode):
         self.out_frame = generate_uuid()
         self.outputs[self.out_frame] = PortType.DATA
         self.state['enabled'] = True
-        self.state['crop_enabled'] = True
-        self.state['crop_mode'] = 'left_half'
-        self.state['crop_ratio'] = 0.5
+        # self.state['crop_enabled'] = True
+        # self.state['crop_mode'] = 'left_half'
+        # self.state['crop_ratio'] = 0.5
 
     def execute(self):
         frame = self.fetch_input_data(self.in_frame)
@@ -1582,17 +1582,17 @@ class FisheyeUndistortNode(BaseNode):
                 undistorted = frame
 
             out_frame = undistorted
-            crop_enabled = _coerce_bool(self.state.get('crop_enabled', True), True)
-            if use_calib and crop_enabled and out_frame is not None and len(out_frame.shape) >= 2:
-                h, w = out_frame.shape[:2]
-                if w > 1:
-                    crop_mode = str(self.state.get('crop_mode', 'left_half')).strip().lower()
-                    if crop_mode == 'custom_ratio':
-                        ratio = _clamp(_coerce_float(self.state.get('crop_ratio', 0.5), 0.5), 0.1, 1.0)
-                        crop_w = max(1, int(w * ratio))
-                    else:
-                        crop_w = max(1, w // 2)
-                    out_frame = out_frame[:, :crop_w]
+            # crop_enabled = _coerce_bool(self.state.get('crop_enabled', True), True)
+            # if use_calib and crop_enabled and out_frame is not None and len(out_frame.shape) >= 2:
+            #     h, w = out_frame.shape[:2]
+            #     if w > 1:
+            #         crop_mode = str(self.state.get('crop_mode', 'left_half')).strip().lower()
+            #         if crop_mode == 'custom_ratio':
+            #             ratio = _clamp(_coerce_float(self.state.get('crop_ratio', 0.5), 0.5), 0.1, 1.0)
+            #             crop_w = max(1, int(w * ratio))
+            #         else:
+            #             crop_w = max(1, w // 2)
+            #         out_frame = out_frame[:, :crop_w]
 
             self.output_data[self.out_frame] = out_frame
         except Exception:
