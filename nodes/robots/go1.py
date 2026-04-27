@@ -1515,6 +1515,9 @@ class Go1ServerJsonRecvNode(BaseNode):
         self._last_error = ''
         self._motion_active = False
         self._motion_until_mono = 0.0
+        self._motion_vx = 0.0
+        self._motion_vy = 0.0
+        self._motion_wz = 0.0
         self._last_motion_trigger_key = ''
         self._last_logged_raw = ''
         self._last_logged_error = ''
@@ -1598,6 +1601,9 @@ class Go1ServerJsonRecvNode(BaseNode):
             go1_node_intent['trigger_time'] = time.monotonic()
             self._motion_active = False
             self._motion_until_mono = 0.0
+            self._motion_vx = 0.0
+            self._motion_vy = 0.0
+            self._motion_wz = 0.0
             write_log("[GO1 JSON RX] command=stop -> immediate stop")
             return
 
@@ -1621,6 +1627,9 @@ class Go1ServerJsonRecvNode(BaseNode):
 
         self._motion_active = True
         self._motion_until_mono = time.monotonic() + max(0.05, move_duration_sec)
+        self._motion_vx = go1_node_intent['vx']
+        self._motion_vy = go1_node_intent['vy']
+        self._motion_wz = go1_node_intent['wz']
         write_log(
             f"[GO1 JSON RX] command={direction} -> move vx={go1_node_intent['vx']:.3f}, "
             f"vy={go1_node_intent['vy']:.3f}, wz={go1_node_intent['wz']:.3f}, duration={move_duration_sec:.2f}s"
@@ -1687,15 +1696,25 @@ class Go1ServerJsonRecvNode(BaseNode):
 
         now_mono = time.monotonic()
 
-        if self._motion_active and now_mono >= self._motion_until_mono:
-            go1_node_intent['vx'] = 0.0
-            go1_node_intent['vy'] = 0.0
-            go1_node_intent['wz'] = 0.0
-            go1_node_intent['stop'] = True
-            go1_node_intent['trigger_time'] = now_mono
-            self._motion_active = False
-            self._motion_until_mono = 0.0
-            write_log("[GO1 JSON RX] timed motion finished -> stop")
+        if self._motion_active:
+            if now_mono < self._motion_until_mono:
+                go1_node_intent['vx'] = self._motion_vx
+                go1_node_intent['vy'] = self._motion_vy
+                go1_node_intent['wz'] = self._motion_wz
+                go1_node_intent['stop'] = False
+                go1_node_intent['trigger_time'] = now_mono
+            else:
+                go1_node_intent['vx'] = 0.0
+                go1_node_intent['vy'] = 0.0
+                go1_node_intent['wz'] = 0.0
+                go1_node_intent['stop'] = True
+                go1_node_intent['trigger_time'] = now_mono
+                self._motion_active = False
+                self._motion_until_mono = 0.0
+                self._motion_vx = 0.0
+                self._motion_vy = 0.0
+                self._motion_wz = 0.0
+                write_log("[GO1 JSON RX] timed motion finished -> stop")
 
         should_poll = (now_mono - self._last_poll_mono) >= poll_interval_sec or not self._last_raw_json
 
