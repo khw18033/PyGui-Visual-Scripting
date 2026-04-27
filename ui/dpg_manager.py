@@ -253,6 +253,23 @@ class NodeUIRenderer:
                 node.state['crop_enabled'] = dpg.get_value(node.ui_crop_enabled)
                 node.state['crop_mode'] = dpg.get_value(node.ui_crop_mode)
                 node.state['crop_ratio'] = dpg.get_value(node.ui_crop_ratio)
+            elif t == "VIS_DEPTH_DA2" and hasattr(node, 'ui_enabled'):
+                node.state['enabled'] = dpg.get_value(node.ui_enabled)
+                node.state['backend'] = dpg.get_value(node.ui_backend)
+                node.state['encoder'] = dpg.get_value(node.ui_encoder)
+                node.state['checkpoint_path'] = dpg.get_value(node.ui_checkpoint)
+                node.state['hf_model_id'] = dpg.get_value(node.ui_hf_model)
+                node.state['prefer_cuda'] = dpg.get_value(node.ui_prefer_cuda)
+                node.state['input_size'] = dpg.get_value(node.ui_input_size)
+                node.state['inference_interval_sec'] = dpg.get_value(node.ui_infer_interval)
+                node.state['closer_is_brighter'] = dpg.get_value(node.ui_closer_is_brighter)
+                node.state['risk_threshold'] = dpg.get_value(node.ui_risk_threshold)
+                node.state['consecutive_frames_for_stop'] = dpg.get_value(node.ui_hits_for_stop)
+                node.state['use_stop_signal'] = dpg.get_value(node.ui_use_stop_signal)
+                node.state['roi_x0'] = dpg.get_value(node.ui_roi_x0)
+                node.state['roi_y0'] = dpg.get_value(node.ui_roi_y0)
+                node.state['roi_x1'] = dpg.get_value(node.ui_roi_x1)
+                node.state['roi_y1'] = dpg.get_value(node.ui_roi_y1)
             elif t == "VIS_SAVE" and hasattr(node, 'ui_folder'):
                 node.state['folder'] = dpg.get_value(node.ui_folder)
                 node.state['duration'] = dpg.get_value(node.ui_duration)
@@ -326,6 +343,23 @@ class NodeUIRenderer:
             dpg.set_value(node.ui_crop_enabled, node.state.get('crop_enabled', True))
             dpg.set_value(node.ui_crop_mode, node.state.get('crop_mode', 'left_half'))
             dpg.set_value(node.ui_crop_ratio, node.state.get('crop_ratio', 0.5))
+        elif t == "VIS_DEPTH_DA2" and hasattr(node, 'ui_enabled'):
+            dpg.set_value(node.ui_enabled, node.state.get('enabled', True))
+            dpg.set_value(node.ui_backend, node.state.get('backend', 'transformers'))
+            dpg.set_value(node.ui_encoder, node.state.get('encoder', 'vits'))
+            dpg.set_value(node.ui_checkpoint, node.state.get('checkpoint_path', 'checkpoints/depth_anything_v2_vits.pth'))
+            dpg.set_value(node.ui_hf_model, node.state.get('hf_model_id', 'depth-anything/Depth-Anything-V2-Small-hf'))
+            dpg.set_value(node.ui_prefer_cuda, node.state.get('prefer_cuda', True))
+            dpg.set_value(node.ui_input_size, int(node.state.get('input_size', 518)))
+            dpg.set_value(node.ui_infer_interval, float(node.state.get('inference_interval_sec', 0.2)))
+            dpg.set_value(node.ui_closer_is_brighter, node.state.get('closer_is_brighter', True))
+            dpg.set_value(node.ui_risk_threshold, float(node.state.get('risk_threshold', 0.65)))
+            dpg.set_value(node.ui_hits_for_stop, int(node.state.get('consecutive_frames_for_stop', 2)))
+            dpg.set_value(node.ui_use_stop_signal, bool(node.state.get('use_stop_signal', False)))
+            dpg.set_value(node.ui_roi_x0, float(node.state.get('roi_x0', 0.3)))
+            dpg.set_value(node.ui_roi_y0, float(node.state.get('roi_y0', 0.5)))
+            dpg.set_value(node.ui_roi_x1, float(node.state.get('roi_x1', 0.7)))
+            dpg.set_value(node.ui_roi_y1, float(node.state.get('roi_y1', 0.95)))
         elif t == "VIS_SAVE" and hasattr(node, 'ui_folder'):
             dpg.set_value(node.ui_folder, node.state.get('folder', 'Captured_Images/go1_saved'))
             dpg.set_value(node.ui_duration, node.state.get('duration', 10.0))
@@ -376,6 +410,7 @@ class NodeUIRenderer:
         elif t == "GO1_SERVER_SENDER": NodeUIRenderer._render_go1_server_sender(node)
         elif t == "VIDEO_SRC": NodeUIRenderer._render_video_src(node)
         elif t == "VIS_FISHEYE": NodeUIRenderer._render_fisheye(node)
+        elif t == "VIS_DEPTH_DA2": NodeUIRenderer._render_depth_da2(node)
         elif t == "VIS_ARUCO": NodeUIRenderer._render_aruco(node)
         elif t == "VIS_FLASK": NodeUIRenderer._render_flask(node)
         elif t == "VIS_SAVE": NodeUIRenderer._render_video_save(node)
@@ -662,6 +697,48 @@ class NodeUIRenderer:
                 dpg.add_text("Record", color=(255,200,0))
                 node.ui_json_path = dpg.add_input_text(label="JSON Path", width=220, default_value=node.state.get('json_path', 'aruco_data.json'))
                 dpg.add_text("UDP send and JSON write run when Go1 Unity node 'Send ArUco Data' is ON.", color=(180,180,180), wrap=240)
+
+    @staticmethod
+    def _render_depth_da2(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Depth Anything V2"):
+            with dpg.node_attribute(tag=node.in_frame, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Frame In", color=(255,255,0))
+            with dpg.node_attribute(tag=node.out_frame, attribute_type=dpg.mvNode_Attr_Output):
+                dpg.add_text("Depth Vis", color=(255,255,0))
+            with dpg.node_attribute(tag=node.out_depth, attribute_type=dpg.mvNode_Attr_Output):
+                dpg.add_text("Depth Raw", color=(100,200,255))
+            with dpg.node_attribute(tag=node.out_near_score, attribute_type=dpg.mvNode_Attr_Output):
+                dpg.add_text("Near Score", color=(255,200,0))
+            with dpg.node_attribute(tag=node.out_obstacle, attribute_type=dpg.mvNode_Attr_Output):
+                dpg.add_text("Obstacle", color=(255,120,120))
+            with dpg.node_attribute(tag=node.out_json, attribute_type=dpg.mvNode_Attr_Output):
+                dpg.add_text("Risk JSON", color=(255,220,120))
+
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_separator()
+                dpg.add_text("Inference", color=(0,255,255))
+                node.ui_enabled = dpg.add_checkbox(label="Enable", default_value=bool(node.state.get('enabled', True)))
+                node.ui_backend = dpg.add_combo(["transformers", "official"], default_value=str(node.state.get('backend', 'transformers')), width=120)
+                node.ui_encoder = dpg.add_combo(["vits", "vitb", "vitl"], default_value=str(node.state.get('encoder', 'vits')), width=120)
+                node.ui_checkpoint = dpg.add_input_text(label="Checkpoint", width=220, default_value=node.state.get('checkpoint_path', 'checkpoints/depth_anything_v2_vits.pth'))
+                node.ui_hf_model = dpg.add_input_text(label="HF Model", width=220, default_value=node.state.get('hf_model_id', 'depth-anything/Depth-Anything-V2-Small-hf'))
+                node.ui_prefer_cuda = dpg.add_checkbox(label="Prefer CUDA", default_value=bool(node.state.get('prefer_cuda', True)))
+                node.ui_input_size = dpg.add_input_int(label="Input Size", width=100, default_value=int(node.state.get('input_size', 518)), step=16)
+                node.ui_infer_interval = dpg.add_input_float(label="Infer Interval(s)", width=100, default_value=float(node.state.get('inference_interval_sec', 0.2)), step=0.05)
+
+                dpg.add_separator()
+                dpg.add_text("Risk", color=(255,200,0))
+                node.ui_closer_is_brighter = dpg.add_checkbox(label="Closer Is Brighter", default_value=bool(node.state.get('closer_is_brighter', True)))
+                node.ui_risk_threshold = dpg.add_input_float(label="Risk Threshold", width=100, default_value=float(node.state.get('risk_threshold', 0.65)), step=0.05)
+                node.ui_hits_for_stop = dpg.add_input_int(label="Hits For Stop", width=100, default_value=int(node.state.get('consecutive_frames_for_stop', 2)), step=1)
+                node.ui_use_stop_signal = dpg.add_checkbox(label="Use Stop Signal", default_value=bool(node.state.get('use_stop_signal', False)))
+
+                dpg.add_separator()
+                dpg.add_text("ROI (0.0 - 1.0)", color=(180,180,180))
+                node.ui_roi_x0 = dpg.add_input_float(label="ROI X0", width=90, default_value=float(node.state.get('roi_x0', 0.3)), step=0.05)
+                node.ui_roi_y0 = dpg.add_input_float(label="ROI Y0", width=90, default_value=float(node.state.get('roi_y0', 0.5)), step=0.05)
+                node.ui_roi_x1 = dpg.add_input_float(label="ROI X1", width=90, default_value=float(node.state.get('roi_x1', 0.7)), step=0.05)
+                node.ui_roi_y1 = dpg.add_input_float(label="ROI Y1", width=90, default_value=float(node.state.get('roi_y1', 0.95)), step=0.05)
 
     @staticmethod
     def _render_flask(node):
@@ -1108,6 +1185,7 @@ def __init_ui__():
                 dpg.add_button(label="GO1 SENDER", callback=add_node_cb, user_data="GO1_SERVER_SENDER")
                 dpg.add_button(label="VIDEO SRC", callback=add_node_cb, user_data="VIDEO_SRC")
                 dpg.add_button(label="FISHEYE", callback=add_node_cb, user_data="VIS_FISHEYE")
+                dpg.add_button(label="DEPTH DA2", callback=add_node_cb, user_data="VIS_DEPTH_DA2")
                 dpg.add_button(label="ARUCO", callback=add_node_cb, user_data="VIS_ARUCO")
                 dpg.add_button(label="FLASK", callback=add_node_cb, user_data="VIS_FLASK")
                 dpg.add_button(label="SAVE", callback=add_node_cb, user_data="VIS_SAVE")

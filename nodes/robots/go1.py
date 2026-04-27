@@ -40,6 +40,34 @@ except ImportError:
     aiohttp = None
     HAS_AIOHTTP = False
 
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    torch = None
+    HAS_TORCH = False
+
+try:
+    from PIL import Image
+    HAS_PIL = True
+except ImportError:
+    Image = None
+    HAS_PIL = False
+
+try:
+    from depth_anything_v2.dpt import DepthAnythingV2
+    HAS_DA2_OFFICIAL = True
+except ImportError:
+    DepthAnythingV2 = None
+    HAS_DA2_OFFICIAL = False
+
+try:
+    from transformers import pipeline as hf_pipeline
+    HAS_TRANSFORMERS = True
+except ImportError:
+    hf_pipeline = None
+    HAS_TRANSFORMERS = False
+
 # ================= [Unitree SDK Import (Optional)] =================
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..', '..'))
@@ -207,6 +235,16 @@ TARGET_FPS = 30
 INTERVAL = 1.0 / TARGET_FPS
 _SENDER_MANAGER_STARTED = False
 
+_DA2_MODEL_LOCK = threading.Lock()
+_DA2_MODEL_CACHE = {}
+
+_DA2_MODEL_CONFIGS = {
+    'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
+    'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
+    'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
+    'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]},
+}
+
 
 def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
@@ -218,6 +256,109 @@ def _extract_front_frame_index(path):
         return -1
     number_part = name[6:-4]
     return int(number_part) if number_part.isdigit() else -1
+
+
+def _compute_roi_pixels(height, width, x0, y0, x1, y1):
+    x0 = _clamp(_coerce_float(x0, 0.3), 0.0, 1.0)
+    y0 = _clamp(_coerce_float(y0, 0.5), 0.0, 1.0)
+    x1 = _clamp(_coerce_float(x1, 0.7), 0.0, 1.0)
+    y1 = _clamp(_coerce_float(y1, 0.95), 0.0, 1.0)
+    if x1 <= x0:
+        x0, x1 = 0.3, 0.7
+    if y1 <= y0:
+        y0, y1 = 0.5, 0.95
+
+    px0 = int(x0 * width)
+    py0 = int(y0 * height)
+    px1 = int(x1 * width)
+    py1 = int(y1 * height)
+    px0 = max(0, min(px0, width - 1))
+    py0 = max(0, min(py0, height - 1))
+    px1 = max(px0 + 1, min(px1, width))
+    py1 = max(py0 + 1, min(py1, height))
+    return px0, py0, px1, py1
+
+
+def _normalize_depth_for_visual(depth_map):
+    if depth_map is None or np is None:
+        return None
+    d = np.asarray(depth_map, dtype=np.float32)
+    finite = np.isfinite(d)
+    if not np.any(finite):
+        return np.zeros_like(d, dtype=np.float32)
+    valid = d[finite]
+    lo = float(np.percentile(valid, 2.0))
+    hi = float(np.percentile(valid, 98.0))
+    if hi <= lo:
+        hi = lo + 1e-6
+    norm = (d - lo) / (hi - lo)
+    norm = np.clip(norm, 0.0, 1.0)
+    norm[~finite] = 0.0
+    return norm
+
+
+def _get_da2_device_name(prefer_cuda=True):
+    if not HAS_TORCH or torch is None:
+        return 'cpu'
+    if prefer_cuda and torch.cuda.is_available():
+        return 'cuda'
+    mps_ok = bool(getattr(torch.backends, 'mps', None)) and torch.backends.mps.is_available()
+    if mps_ok:
+        return 'mps'
+    return 'cpu'
+
+
+def _load_da2_official_model(encoder, checkpoint_path, prefer_cuda=True):
+    if not (HAS_DA2_OFFICIAL and HAS_TORCH):
+        return None, "official model dependencies missing"
+
+    encoder = str(encoder or 'vits').strip().lower()
+    if encoder not in _DA2_MODEL_CONFIGS:
+        encoder = 'vits'
+
+    checkpoint = str(checkpoint_path or '').strip()
+    if not checkpoint:
+        checkpoint = os.path.join('checkpoints', f'depth_anything_v2_{encoder}.pth')
+
+    if not os.path.isfile(checkpoint):
+        return None, f"checkpoint not found: {checkpoint}"
+
+    device = _get_da2_device_name(prefer_cuda=prefer_cuda)
+    cache_key = ('official', encoder, checkpoint, device)
+    with _DA2_MODEL_LOCK:
+        cached = _DA2_MODEL_CACHE.get(cache_key)
+        if cached is not None:
+            return cached, ""
+
+        try:
+            model = DepthAnythingV2(**_DA2_MODEL_CONFIGS[encoder])
+            state_dict = torch.load(checkpoint, map_location='cpu')
+            model.load_state_dict(state_dict)
+            model = model.to(device).eval()
+            _DA2_MODEL_CACHE[cache_key] = model
+            return model, ""
+        except Exception as e:
+            return None, str(e)
+
+
+def _load_da2_hf_pipeline(model_id, prefer_cuda=True):
+    if not (HAS_TRANSFORMERS and HAS_PIL):
+        return None, "transformers or PIL dependency missing"
+
+    model_name = str(model_id or '').strip() or "depth-anything/Depth-Anything-V2-Small-hf"
+    device_index = 0 if (prefer_cuda and HAS_TORCH and torch.cuda.is_available()) else -1
+    cache_key = ('hf', model_name, device_index)
+    with _DA2_MODEL_LOCK:
+        cached = _DA2_MODEL_CACHE.get(cache_key)
+        if cached is not None:
+            return cached, ""
+
+        try:
+            pipe = hf_pipeline(task="depth-estimation", model=model_name, device=device_index)
+            _DA2_MODEL_CACHE[cache_key] = pipe
+            return pipe, ""
+        except Exception as e:
+            return None, str(e)
 
 
 def _is_file_stable(path, wait_sec=0.02):
@@ -1456,6 +1597,206 @@ class FisheyeUndistortNode(BaseNode):
             self.output_data[self.out_frame] = out_frame
         except Exception:
             self.output_data[self.out_frame] = frame
+        return None
+
+
+class DepthAnythingV2Node(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Depth Anything V2", "VIS_DEPTH_DA2")
+        self.in_frame = generate_uuid()
+        self.inputs[self.in_frame] = PortType.DATA
+
+        self.out_frame = generate_uuid()
+        self.outputs[self.out_frame] = PortType.DATA
+        self.out_depth = generate_uuid()
+        self.outputs[self.out_depth] = PortType.DATA
+        self.out_near_score = generate_uuid()
+        self.outputs[self.out_near_score] = PortType.DATA
+        self.out_obstacle = generate_uuid()
+        self.outputs[self.out_obstacle] = PortType.DATA
+        self.out_json = generate_uuid()
+        self.outputs[self.out_json] = PortType.DATA
+
+        self.state['enabled'] = True
+        self.state['backend'] = 'transformers'
+        self.state['encoder'] = 'vits'
+        self.state['checkpoint_path'] = 'checkpoints/depth_anything_v2_vits.pth'
+        self.state['hf_model_id'] = 'depth-anything/Depth-Anything-V2-Small-hf'
+        self.state['prefer_cuda'] = True
+        self.state['input_size'] = 518
+        self.state['inference_interval_sec'] = 0.2
+        self.state['closer_is_brighter'] = True
+        self.state['risk_threshold'] = 0.65
+        self.state['roi_x0'] = 0.3
+        self.state['roi_y0'] = 0.5
+        self.state['roi_x1'] = 0.7
+        self.state['roi_y1'] = 0.95
+        self.state['consecutive_frames_for_stop'] = 2
+        self.state['use_stop_signal'] = False
+
+        self._last_infer_ts = 0.0
+        self._last_depth = None
+        self._last_vis = None
+        self._last_json = ""
+        self._last_near_score = 0.0
+        self._last_obstacle = False
+        self._risk_hit_count = 0
+        self._last_error = ""
+
+    def _run_inference(self, frame):
+        backend = str(self.state.get('backend', 'transformers')).strip().lower()
+        prefer_cuda = _coerce_bool(self.state.get('prefer_cuda', True), True)
+        input_size = max(64, _coerce_int(self.state.get('input_size', 518), 518))
+
+        if backend == 'official':
+            model, err = _load_da2_official_model(
+                self.state.get('encoder', 'vits'),
+                self.state.get('checkpoint_path', ''),
+                prefer_cuda=prefer_cuda,
+            )
+            if model is None:
+                raise RuntimeError(err or 'failed to load official DA2 model')
+
+            try:
+                depth = model.infer_image(frame, input_size=input_size)
+            except TypeError:
+                depth = model.infer_image(frame)
+            return np.asarray(depth, dtype=np.float32)
+
+        pipe, err = _load_da2_hf_pipeline(
+            self.state.get('hf_model_id', 'depth-anything/Depth-Anything-V2-Small-hf'),
+            prefer_cuda=prefer_cuda,
+        )
+        if pipe is None:
+            raise RuntimeError(err or 'failed to load transformers depth pipeline')
+
+        if not HAS_PIL or Image is None:
+            raise RuntimeError('PIL is required for transformers backend')
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
+        result = pipe(pil_img)
+        raw_depth = result.get('depth') if isinstance(result, dict) else None
+        if raw_depth is None:
+            raise RuntimeError('depth output is missing from transformers pipeline')
+        return np.asarray(raw_depth, dtype=np.float32)
+
+    def execute(self):
+        frame = self.fetch_input_data(self.in_frame)
+        if frame is None or not HAS_CV2 or np is None:
+            self.output_data[self.out_frame] = frame
+            self.output_data[self.out_depth] = None
+            self.output_data[self.out_near_score] = 0.0
+            self.output_data[self.out_obstacle] = False
+            self.output_data[self.out_json] = ""
+            return None
+
+        if not _coerce_bool(self.state.get('enabled', True), True):
+            self._risk_hit_count = 0
+            self.output_data[self.out_frame] = frame
+            self.output_data[self.out_depth] = None
+            self.output_data[self.out_near_score] = 0.0
+            self.output_data[self.out_obstacle] = False
+            self.output_data[self.out_json] = json.dumps({'status': 'disabled'})
+            return None
+
+        infer_interval = max(0.02, _coerce_float(self.state.get('inference_interval_sec', 0.2), 0.2))
+        now = time.monotonic()
+        should_infer = (self._last_depth is None) or ((now - self._last_infer_ts) >= infer_interval)
+        backend = str(self.state.get('backend', 'transformers')).strip().lower()
+
+        vis_frame = self._last_vis if self._last_vis is not None else frame
+        depth_map = self._last_depth
+        near_score = float(self._last_near_score)
+        obstacle = bool(self._last_obstacle)
+        payload_json = self._last_json
+
+        if should_infer:
+            start_t = time.perf_counter()
+            try:
+                depth_map = self._run_inference(frame)
+                norm = _normalize_depth_for_visual(depth_map)
+
+                if norm is None:
+                    raise RuntimeError('failed to normalize depth output')
+
+                closer_is_brighter = _coerce_bool(self.state.get('closer_is_brighter', True), True)
+                near_map = norm if closer_is_brighter else (1.0 - norm)
+
+                h, w = near_map.shape[:2]
+                px0, py0, px1, py1 = _compute_roi_pixels(
+                    h,
+                    w,
+                    self.state.get('roi_x0', 0.3),
+                    self.state.get('roi_y0', 0.5),
+                    self.state.get('roi_x1', 0.7),
+                    self.state.get('roi_y1', 0.95),
+                )
+                roi = near_map[py0:py1, px0:px1]
+                if roi.size == 0:
+                    near_score = 0.0
+                else:
+                    near_score = float(np.percentile(roi, 90.0))
+
+                risk_threshold = _clamp(_coerce_float(self.state.get('risk_threshold', 0.65), 0.65), 0.0, 1.0)
+                obstacle = near_score >= risk_threshold
+
+                if obstacle:
+                    self._risk_hit_count += 1
+                else:
+                    self._risk_hit_count = 0
+
+                required_hits = max(1, _coerce_int(self.state.get('consecutive_frames_for_stop', 2), 2))
+                stop_recommended = bool(obstacle and self._risk_hit_count >= required_hits)
+                if stop_recommended and _coerce_bool(self.state.get('use_stop_signal', False), False):
+                    go1_node_intent['stop'] = True
+                    go1_node_intent['trigger_time'] = time.monotonic()
+
+                vis_gray = np.clip(norm * 255.0, 0, 255).astype(np.uint8)
+                vis_color = cv2.applyColorMap(vis_gray, cv2.COLORMAP_INFERNO)
+                cv2.rectangle(vis_color, (px0, py0), (px1 - 1, py1 - 1), (255, 255, 255), 2)
+                text = f"NearScore:{near_score:.2f} Thr:{risk_threshold:.2f} {'STOP' if stop_recommended else 'SAFE'}"
+                cv2.putText(vis_color, text, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+                infer_latency_ms = (time.perf_counter() - start_t) * 1000.0
+                payload = {
+                    'status': 'ok',
+                    'timestamp': round(time.time(), 3),
+                    'backend': backend,
+                    'near_score': round(float(near_score), 4),
+                    'risk_threshold': round(float(risk_threshold), 4),
+                    'obstacle': bool(obstacle),
+                    'stop_recommended': bool(stop_recommended),
+                    'risk_hit_count': int(self._risk_hit_count),
+                    'roi': {'x0': px0, 'y0': py0, 'x1': px1, 'y1': py1, 'width': w, 'height': h},
+                    'infer_latency_ms': round(float(infer_latency_ms), 2),
+                }
+                payload_json = json.dumps(payload)
+
+                self._last_depth = depth_map
+                self._last_vis = vis_color
+                self._last_json = payload_json
+                self._last_near_score = near_score
+                self._last_obstacle = obstacle
+                self._last_infer_ts = now
+                self._last_error = ""
+                vis_frame = vis_color
+            except Exception as e:
+                self._last_error = str(e)
+                write_log(f"[VIS_DEPTH_DA2] {self._last_error}")
+                payload_json = json.dumps({'status': 'error', 'message': self._last_error})
+                self._last_json = payload_json
+                self._risk_hit_count = 0
+                depth_map = self._last_depth
+                vis_frame = frame
+                near_score = 0.0
+                obstacle = False
+
+        self.output_data[self.out_frame] = vis_frame
+        self.output_data[self.out_depth] = depth_map
+        self.output_data[self.out_near_score] = float(near_score)
+        self.output_data[self.out_obstacle] = bool(obstacle)
+        self.output_data[self.out_json] = payload_json
         return None
 
 
