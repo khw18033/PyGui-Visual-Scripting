@@ -184,6 +184,9 @@ go1_server_json_data = {
     'fresh': False,
     'status': 'Idle',
     'source': '',
+    'motion_active': False,
+    'motion_remaining_ms': 0.0,
+    'last_direction': '',
 }
 
 go1_dashboard = {
@@ -1518,9 +1521,11 @@ class Go1ServerJsonRecvNode(BaseNode):
         self._motion_vx = 0.0
         self._motion_vy = 0.0
         self._motion_wz = 0.0
+        self._last_direction = ''
         self._last_motion_trigger_key = ''
         self._last_logged_raw = ''
         self._last_logged_error = ''
+        self._last_execute_mono = 0.0
 
     def _read_source_text(self, mode, source, timeout_sec):
         source = str(source or '').strip()
@@ -1592,6 +1597,7 @@ class Go1ServerJsonRecvNode(BaseNode):
             return
 
         self._last_motion_trigger_key = trigger_key
+        self._last_direction = direction
 
         if direction == 'stop':
             go1_node_intent['vx'] = 0.0
@@ -1696,6 +1702,14 @@ class Go1ServerJsonRecvNode(BaseNode):
 
         now_mono = time.monotonic()
 
+        # If graph execution was paused and resumed, allow the same text command to trigger again.
+        if self._last_execute_mono > 0.0:
+            paused_gap = now_mono - self._last_execute_mono
+            if paused_gap > max(1.0, poll_interval_sec * 8.0):
+                self._last_motion_trigger_key = ''
+                write_log("[GO1 JSON RX] execution resumed -> retrigger unlocked")
+        self._last_execute_mono = now_mono
+
         if self._motion_active:
             if now_mono < self._motion_until_mono:
                 go1_node_intent['vx'] = self._motion_vx
@@ -1715,6 +1729,13 @@ class Go1ServerJsonRecvNode(BaseNode):
                 self._motion_vy = 0.0
                 self._motion_wz = 0.0
                 write_log("[GO1 JSON RX] timed motion finished -> stop")
+
+        remaining_ms = 0.0
+        if self._motion_active:
+            remaining_ms = max(0.0, (self._motion_until_mono - now_mono) * 1000.0)
+        go1_server_json_data['motion_active'] = bool(self._motion_active)
+        go1_server_json_data['motion_remaining_ms'] = float(remaining_ms)
+        go1_server_json_data['last_direction'] = self._last_direction
 
         should_poll = (now_mono - self._last_poll_mono) >= poll_interval_sec or not self._last_raw_json
 

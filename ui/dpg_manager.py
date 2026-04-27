@@ -1127,6 +1127,8 @@ def __init_ui__():
                         dpg.add_text("Unity: Waiting", tag="go1_dash_unity", color=(255,255,0))
                         dpg.add_text("File Cam: Stopped", tag="go1_dash_cam", color=(200,200,200))
                         dpg.add_text("ArUco: OFF", tag="go1_dash_aruco", color=(200,200,200))
+                        dpg.add_text("JSON RX: Idle", tag="go1_dash_jsonrx", color=(200,200,200))
+                        dpg.add_text("JSON Cmd: - | Remain: 0 ms", tag="go1_dash_jsonrx_motion", color=(180,180,180))
                         dpg.add_text("Special: Idle", tag="go1_dash_special", color=(255,200,0))
                         dpg.add_text("Battery: -%", tag="go1_dash_battery", color=(100,255,100))
                         dpg.add_button(label="[ EMERGENCY STOP ]", width=-1, callback=lambda s,a,u: go1_estop_callback() if HAS_GO1 else None)
@@ -1313,6 +1315,24 @@ def start_gui():
                 dpg.configure_item("go1_dash_cam", color=(0,255,0))
             else:
                 dpg.configure_item("go1_dash_cam", color=(200,200,200))
+
+            json_rx_state = getattr(go1_module, 'go1_server_json_data', {}) if HAS_GO1 else {}
+            rx_status = str(json_rx_state.get('status', 'Idle'))
+            rx_connected = bool(json_rx_state.get('connected', False))
+            rx_fresh = bool(json_rx_state.get('fresh', False))
+            dpg.set_value("go1_dash_jsonrx", f"JSON RX: {rx_status} | conn={rx_connected} | fresh={rx_fresh}")
+            if rx_status.startswith("ERR"):
+                dpg.configure_item("go1_dash_jsonrx", color=(255,100,100))
+            elif rx_connected and rx_fresh:
+                dpg.configure_item("go1_dash_jsonrx", color=(0,255,120))
+            else:
+                dpg.configure_item("go1_dash_jsonrx", color=(220,180,80))
+
+            rx_dir = str(json_rx_state.get('last_direction', '-')) or '-'
+            rx_remain = float(json_rx_state.get('motion_remaining_ms', 0.0))
+            rx_active = bool(json_rx_state.get('motion_active', False))
+            dpg.set_value("go1_dash_jsonrx_motion", f"JSON Cmd: {rx_dir} | Remain: {rx_remain:.0f} ms")
+            dpg.configure_item("go1_dash_jsonrx_motion", color=(0,255,180) if rx_active else (180,180,180))
 
             aruco_node = next((n for n in node_registry.values() if getattr(n, 'type_str', '') == 'VIS_ARUCO'), None)
             if aruco_node is not None:
