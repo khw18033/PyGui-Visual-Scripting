@@ -1633,6 +1633,8 @@ class DepthAnythingV2Node(BaseNode):
         self.state['roi_y1'] = 0.95
         self.state['consecutive_frames_for_stop'] = 2
         self.state['use_stop_signal'] = False
+        self.state['save_json'] = False
+        self.state['json_path'] = 'depth_da2_data.json'
 
         self._last_infer_ts = 0.0
         self._last_depth = None
@@ -1773,6 +1775,11 @@ class DepthAnythingV2Node(BaseNode):
                 }
                 payload_json = json.dumps(payload)
 
+                if _coerce_bool(self.state.get('save_json', False), False):
+                    json_path = str(self.state.get('json_path', 'depth_da2_data.json')).strip() or 'depth_da2_data.json'
+                    if not _safe_json_dump(json_path, payload):
+                        write_log(f"[VIS_DEPTH_DA2] JSON 저장 실패: path={json_path}")
+
                 self._last_depth = depth_map
                 self._last_vis = vis_color
                 self._last_json = payload_json
@@ -1784,7 +1791,12 @@ class DepthAnythingV2Node(BaseNode):
             except Exception as e:
                 self._last_error = str(e)
                 write_log(f"[VIS_DEPTH_DA2] {self._last_error}")
-                payload_json = json.dumps({'status': 'error', 'message': self._last_error})
+                payload = {'status': 'error', 'message': self._last_error, 'timestamp': round(time.time(), 3)}
+                payload_json = json.dumps(payload)
+                if _coerce_bool(self.state.get('save_json', False), False):
+                    json_path = str(self.state.get('json_path', 'depth_da2_data.json')).strip() or 'depth_da2_data.json'
+                    if not _safe_json_dump(json_path, payload):
+                        write_log(f"[VIS_DEPTH_DA2] JSON 저장 실패: path={json_path}")
                 self._last_json = payload_json
                 self._risk_hit_count = 0
                 depth_map = self._last_depth
