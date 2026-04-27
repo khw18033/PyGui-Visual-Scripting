@@ -1516,6 +1516,8 @@ class Go1ServerJsonRecvNode(BaseNode):
         self._motion_active = False
         self._motion_until_mono = 0.0
         self._last_motion_trigger_key = ''
+        self._last_logged_raw = ''
+        self._last_logged_error = ''
 
     def _read_source_text(self, mode, source, timeout_sec):
         source = str(source or '').strip()
@@ -1596,6 +1598,7 @@ class Go1ServerJsonRecvNode(BaseNode):
             go1_node_intent['trigger_time'] = time.monotonic()
             self._motion_active = False
             self._motion_until_mono = 0.0
+            write_log("[GO1 JSON RX] command=stop -> immediate stop")
             return
 
         vx = 0.0
@@ -1618,6 +1621,10 @@ class Go1ServerJsonRecvNode(BaseNode):
 
         self._motion_active = True
         self._motion_until_mono = time.monotonic() + max(0.05, move_duration_sec)
+        write_log(
+            f"[GO1 JSON RX] command={direction} -> move vx={go1_node_intent['vx']:.3f}, "
+            f"vy={go1_node_intent['vy']:.3f}, wz={go1_node_intent['wz']:.3f}, duration={move_duration_sec:.2f}s"
+        )
 
     def _publish_state(self, raw_json, payload, connected, fresh, status, source):
         seq = _coerce_int(payload.get('seq', self._last_seq), self._last_seq)
@@ -1688,6 +1695,7 @@ class Go1ServerJsonRecvNode(BaseNode):
             go1_node_intent['trigger_time'] = now_mono
             self._motion_active = False
             self._motion_until_mono = 0.0
+            write_log("[GO1 JSON RX] timed motion finished -> stop")
 
         should_poll = (now_mono - self._last_poll_mono) >= poll_interval_sec or not self._last_raw_json
 
@@ -1734,6 +1742,15 @@ class Go1ServerJsonRecvNode(BaseNode):
                 self._last_error = ''
                 self._publish_state(raw_json, payload, True, True, 'OK', source)
 
+                raw_for_log = raw_json.strip()
+                if raw_for_log != self._last_logged_raw:
+                    if direction:
+                        write_log(f"[GO1 JSON RX] read ok | source={source} | direction={direction} | raw={raw_for_log}")
+                    else:
+                        write_log(f"[GO1 JSON RX] read ok but no direction token | source={source} | raw={raw_for_log}")
+                    self._last_logged_raw = raw_for_log
+                self._last_logged_error = ''
+
                 if direction:
                     trigger_key = raw_json.strip()
                     self._inject_direction_motion(direction, move_speed, move_duration_sec, trigger_key)
@@ -1742,6 +1759,9 @@ class Go1ServerJsonRecvNode(BaseNode):
                 fresh = (now_mono - self._last_ok_mono) <= fresh_timeout_sec if self._last_ok_mono else False
                 status = f'ERR: {e.__class__.__name__}'
                 self._publish_state(self._last_raw_json, self._last_payload, False, fresh, status, source)
+                if self._last_error != self._last_logged_error:
+                    write_log(f"[GO1 JSON RX] read error | source={source} | {e.__class__.__name__}: {self._last_error}")
+                    self._last_logged_error = self._last_error
         else:
             fresh = (now_mono - self._last_ok_mono) <= fresh_timeout_sec if self._last_ok_mono else False
             status = go1_server_json_data.get('status', 'Idle')
