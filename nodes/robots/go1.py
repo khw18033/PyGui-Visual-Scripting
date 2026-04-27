@@ -1504,6 +1504,8 @@ class Go1ServerJsonRecvNode(BaseNode):
         self.state['poll_interval_sec'] = 0.05
         self.state['request_timeout_sec'] = 2.0
         self.state['fresh_timeout_sec'] = 0.2
+        self.state['move_speed'] = 0.2
+        self.state['move_duration_sec'] = 0.5
 
         self._last_poll_mono = 0.0
         self._last_ok_mono = 0.0
@@ -1511,6 +1513,9 @@ class Go1ServerJsonRecvNode(BaseNode):
         self._last_payload = {}
         self._last_seq = 0
         self._last_error = ''
+        self._motion_active = False
+        self._motion_until_mono = 0.0
+        self._last_motion_trigger_key = ''
 
     def _read_source_text(self, mode, source, timeout_sec):
         source = str(source or '').strip()
@@ -1548,6 +1553,71 @@ class Go1ServerJsonRecvNode(BaseNode):
             if isinstance(last_item, dict):
                 return last_item
         return {}
+
+    def _extract_direction_text(self, payload):
+        allowed = {'left', 'right', 'front', 'back', 'stop'}
+
+        if isinstance(payload, str):
+            text = payload.strip().lower()
+            return text if text in allowed else ''
+
+        if isinstance(payload, list) and payload:
+            last_item = payload[-1]
+            if isinstance(last_item, str):
+                text = last_item.strip().lower()
+                return text if text in allowed else ''
+
+        if isinstance(payload, dict):
+            for key in ('cmd', 'command', 'direction', 'action'):
+                value = payload.get(key)
+                if isinstance(value, str):
+                    text = value.strip().lower()
+                    if text in allowed:
+                        return text
+            for key in ('left', 'right', 'front', 'back', 'stop'):
+                if _coerce_bool(payload.get(key, False), False):
+                    return key
+
+        return ''
+
+    def _inject_direction_motion(self, direction, move_speed, move_duration_sec, trigger_key):
+        if not direction:
+            return
+        if trigger_key == self._last_motion_trigger_key:
+            return
+
+        self._last_motion_trigger_key = trigger_key
+
+        if direction == 'stop':
+            go1_node_intent['vx'] = 0.0
+            go1_node_intent['vy'] = 0.0
+            go1_node_intent['wz'] = 0.0
+            go1_node_intent['stop'] = True
+            go1_node_intent['trigger_time'] = time.monotonic()
+            self._motion_active = False
+            self._motion_until_mono = 0.0
+            return
+
+        vx = 0.0
+        vy = 0.0
+        wz = 0.0
+        if direction == 'front':
+            vx = move_speed
+        elif direction == 'back':
+            vx = -move_speed
+        elif direction == 'left':
+            vy = move_speed
+        elif direction == 'right':
+            vy = -move_speed
+
+        go1_node_intent['vx'] = _clamp(vx, -V_MAX, V_MAX)
+        go1_node_intent['vy'] = _clamp(vy, -S_MAX, S_MAX)
+        go1_node_intent['wz'] = _clamp(wz, -W_MAX, W_MAX)
+        go1_node_intent['stop'] = False
+        go1_node_intent['trigger_time'] = time.monotonic()
+
+        self._motion_active = True
+        self._motion_until_mono = time.monotonic() + max(0.05, move_duration_sec)
 
     def _publish_state(self, raw_json, payload, connected, fresh, status, source):
         seq = _coerce_int(payload.get('seq', self._last_seq), self._last_seq)
@@ -1605,18 +1675,68 @@ class Go1ServerJsonRecvNode(BaseNode):
         poll_interval_sec = max(0.0, _coerce_float(self.state.get('poll_interval_sec', 0.05), 0.05))
         request_timeout_sec = max(0.2, _coerce_float(self.state.get('request_timeout_sec', 2.0), 2.0))
         fresh_timeout_sec = max(0.05, _coerce_float(self.state.get('fresh_timeout_sec', 0.2), 0.2))
+        move_speed = max(0.01, _coerce_float(self.state.get('move_speed', 0.2), 0.2))
+        move_duration_sec = max(0.05, _coerce_float(self.state.get('move_duration_sec', 0.5), 0.5))
 
         now_mono = time.monotonic()
+
+        if self._motion_active and now_mono >= self._motion_until_mono:
+            go1_node_intent['vx'] = 0.0
+            go1_node_intent['vy'] = 0.0
+            go1_node_intent['wz'] = 0.0
+            go1_node_intent['stop'] = True
+            go1_node_intent['trigger_time'] = now_mono
+            self._motion_active = False
+            self._motion_until_mono = 0.0
+
         should_poll = (now_mono - self._last_poll_mono) >= poll_interval_sec or not self._last_raw_json
 
         if should_poll:
             self._last_poll_mono = now_mono
             try:
                 raw_json = self._read_source_text(mode, source, request_timeout_sec)
-                payload = json.loads(raw_json)
-                payload = self._pick_payload(payload)
+                parsed = json.loads(raw_json)
+                direction = self._extract_direction_text(parsed)
+                payload = self._pick_payload(parsed)
+                if not isinstance(payload, dict):
+                    payload = {}
+
+                if direction:
+                    if direction == 'front':
+                        payload['vx'] = move_speed
+                        payload['vy'] = 0.0
+                        payload['wz'] = 0.0
+                        payload['stop'] = False
+                    elif direction == 'back':
+                        payload['vx'] = -move_speed
+                        payload['vy'] = 0.0
+                        payload['wz'] = 0.0
+                        payload['stop'] = False
+                    elif direction == 'left':
+                        payload['vx'] = 0.0
+                        payload['vy'] = move_speed
+                        payload['wz'] = 0.0
+                        payload['stop'] = False
+                    elif direction == 'right':
+                        payload['vx'] = 0.0
+                        payload['vy'] = -move_speed
+                        payload['wz'] = 0.0
+                        payload['stop'] = False
+                    elif direction == 'stop':
+                        payload['vx'] = 0.0
+                        payload['vy'] = 0.0
+                        payload['wz'] = 0.0
+                        payload['stop'] = True
+
+                if 'ts' not in payload and 'timestamp' not in payload:
+                    payload['ts'] = time.time()
+
                 self._last_error = ''
                 self._publish_state(raw_json, payload, True, True, 'OK', source)
+
+                if direction:
+                    trigger_key = raw_json.strip()
+                    self._inject_direction_motion(direction, move_speed, move_duration_sec, trigger_key)
             except Exception as e:
                 self._last_error = str(e)
                 fresh = (now_mono - self._last_ok_mono) <= fresh_timeout_sec if self._last_ok_mono else False

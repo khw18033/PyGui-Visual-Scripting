@@ -234,6 +234,8 @@ class NodeUIRenderer:
                 node.state['poll_interval_sec'] = dpg.get_value(node.field_poll)
                 node.state['request_timeout_sec'] = dpg.get_value(node.field_timeout)
                 node.state['fresh_timeout_sec'] = dpg.get_value(node.field_fresh)
+                node.state['move_speed'] = dpg.get_value(node.field_move_speed)
+                node.state['move_duration_sec'] = dpg.get_value(node.field_move_duration)
             elif t == "GO1_UNITY" and hasattr(node, 'field_ip'):
                 node.state['unity_ip'] = dpg.get_value(node.field_ip)
                 node.state['enable_teleop_rx'] = dpg.get_value(node.chk_enable)
@@ -331,6 +333,8 @@ class NodeUIRenderer:
             dpg.set_value(node.field_poll, float(node.state.get('poll_interval_sec', 0.05)))
             dpg.set_value(node.field_timeout, float(node.state.get('request_timeout_sec', 2.0)))
             dpg.set_value(node.field_fresh, float(node.state.get('fresh_timeout_sec', 0.2)))
+            dpg.set_value(node.field_move_speed, float(node.state.get('move_speed', 0.2)))
+            dpg.set_value(node.field_move_duration, float(node.state.get('move_duration_sec', 0.5)))
         elif t == "GO1_UNITY" and hasattr(node, 'field_ip'):
             dpg.set_value(node.field_ip, node.state.get('unity_ip', getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246')))
             dpg.set_value(node.chk_enable, node.state.get('enable_teleop_rx', True))
@@ -678,6 +682,8 @@ class NodeUIRenderer:
                 node.field_poll = dpg.add_input_float(label="Poll (sec)", width=100, default_value=float(node.state.get('poll_interval_sec', 0.05)), step=0.01)
                 node.field_timeout = dpg.add_input_float(label="Request Timeout", width=120, default_value=float(node.state.get('request_timeout_sec', 2.0)), step=0.1)
                 node.field_fresh = dpg.add_input_float(label="Fresh Timeout", width=120, default_value=float(node.state.get('fresh_timeout_sec', 0.2)), step=0.05)
+                node.field_move_speed = dpg.add_input_float(label="Move Speed", width=100, default_value=float(node.state.get('move_speed', 0.2)), step=0.01)
+                node.field_move_duration = dpg.add_input_float(label="Move Duration", width=120, default_value=float(node.state.get('move_duration_sec', 0.5)), step=0.05)
                 dpg.add_text("Source can be a JSON URL or a local JSON file.", color=(180,180,180))
             with dpg.node_attribute(tag=node.out_raw_json, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Raw JSON")
             with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Vx")
