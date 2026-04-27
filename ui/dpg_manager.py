@@ -228,6 +228,12 @@ class NodeUIRenderer:
             elif t == "GO1_SERVER_SENDER" and hasattr(node, 'combo_action'):
                 node.state['action'] = dpg.get_value(node.combo_action)
                 node.state['server_url'] = dpg.get_value(node.field_url)
+            elif t == "GO1_SERVER_JSON_RECV" and hasattr(node, 'combo_mode'):
+                node.state['mode'] = dpg.get_value(node.combo_mode)
+                node.state['source'] = dpg.get_value(node.field_source)
+                node.state['poll_interval_sec'] = dpg.get_value(node.field_poll)
+                node.state['request_timeout_sec'] = dpg.get_value(node.field_timeout)
+                node.state['fresh_timeout_sec'] = dpg.get_value(node.field_fresh)
             elif t == "GO1_UNITY" and hasattr(node, 'field_ip'):
                 node.state['unity_ip'] = dpg.get_value(node.field_ip)
                 node.state['enable_teleop_rx'] = dpg.get_value(node.chk_enable)
@@ -319,6 +325,12 @@ class NodeUIRenderer:
         elif t == "GO1_SERVER_SENDER" and hasattr(node, 'combo_action'):
             dpg.set_value(node.combo_action, node.state.get('action', 'Start Sender'))
             dpg.set_value(node.field_url, node.state.get('server_url', "http://192.168.1.100:5001/upload"))
+        elif t == "GO1_SERVER_JSON_RECV" and hasattr(node, 'combo_mode'):
+            dpg.set_value(node.combo_mode, node.state.get('mode', 'HTTP'))
+            dpg.set_value(node.field_source, node.state.get('source', 'http://127.0.0.1:5001/cmd'))
+            dpg.set_value(node.field_poll, float(node.state.get('poll_interval_sec', 0.05)))
+            dpg.set_value(node.field_timeout, float(node.state.get('request_timeout_sec', 2.0)))
+            dpg.set_value(node.field_fresh, float(node.state.get('fresh_timeout_sec', 0.2)))
         elif t == "GO1_UNITY" and hasattr(node, 'field_ip'):
             dpg.set_value(node.field_ip, node.state.get('unity_ip', getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246')))
             dpg.set_value(node.chk_enable, node.state.get('enable_teleop_rx', True))
@@ -412,6 +424,7 @@ class NodeUIRenderer:
         elif t == "GO1_UNITY": NodeUIRenderer._render_go1_unity(node)
         elif t == "GO1_ACTION": NodeUIRenderer._render_go1_action(node)
         elif t == "GO1_SERVER_SENDER": NodeUIRenderer._render_go1_server_sender(node)
+        elif t == "GO1_SERVER_JSON_RECV": NodeUIRenderer._render_go1_server_json_recv(node)
         elif t == "VIDEO_SRC": NodeUIRenderer._render_video_src(node)
         elif t == "VIS_FISHEYE": NodeUIRenderer._render_fisheye(node)
         elif t == "VIS_DEPTH_DA2": NodeUIRenderer._render_depth_da2(node)
@@ -653,6 +666,30 @@ class NodeUIRenderer:
                 dpg.add_spacer(height=3)
                 dpg.add_text("Server URL:")
                 node.field_url = dpg.add_input_text(width=160, default_value="http://192.168.1.100:5001/upload")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_go1_server_json_recv(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Server JSON Receiver"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_mode = dpg.add_combo(["HTTP", "FILE"], default_value=node.state.get('mode', 'HTTP'), width=90)
+                node.field_source = dpg.add_input_text(width=220, default_value=node.state.get('source', 'http://127.0.0.1:5001/cmd'))
+                node.field_poll = dpg.add_input_float(label="Poll (sec)", width=100, default_value=float(node.state.get('poll_interval_sec', 0.05)), step=0.01)
+                node.field_timeout = dpg.add_input_float(label="Request Timeout", width=120, default_value=float(node.state.get('request_timeout_sec', 2.0)), step=0.1)
+                node.field_fresh = dpg.add_input_float(label="Fresh Timeout", width=120, default_value=float(node.state.get('fresh_timeout_sec', 0.2)), step=0.05)
+                dpg.add_text("Source can be a JSON URL or a local JSON file.", color=(180,180,180))
+            with dpg.node_attribute(tag=node.out_raw_json, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Raw JSON")
+            with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Vx")
+            with dpg.node_attribute(tag=node.out_vy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Vy")
+            with dpg.node_attribute(tag=node.out_wz, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Wz")
+            with dpg.node_attribute(tag=node.out_stop, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Stop")
+            with dpg.node_attribute(tag=node.out_seq, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Seq")
+            with dpg.node_attribute(tag=node.out_ts, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Ts")
+            with dpg.node_attribute(tag=node.out_confidence, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Confidence")
+            with dpg.node_attribute(tag=node.out_connected, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Connected")
+            with dpg.node_attribute(tag=node.out_fresh, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Fresh")
+            with dpg.node_attribute(tag=node.out_status, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Status")
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
@@ -1189,6 +1226,7 @@ def __init_ui__():
                 dpg.add_button(label="GO1 DRIVER", callback=add_node_cb, user_data="GO1_DRIVER")
                 dpg.add_button(label="GO1 ACTION", callback=add_node_cb, user_data="GO1_ACTION")
                 dpg.add_button(label="GO1 SENDER", callback=add_node_cb, user_data="GO1_SERVER_SENDER")
+                dpg.add_button(label="GO1 JSON RX", callback=add_node_cb, user_data="GO1_SERVER_JSON_RECV")
                 dpg.add_button(label="VIDEO SRC", callback=add_node_cb, user_data="VIDEO_SRC")
                 dpg.add_button(label="FISHEYE", callback=add_node_cb, user_data="VIS_FISHEYE")
                 dpg.add_button(label="DEPTH DA2", callback=add_node_cb, user_data="VIS_DEPTH_DA2")

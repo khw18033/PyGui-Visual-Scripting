@@ -9,6 +9,8 @@ import platform
 import subprocess
 import glob
 import asyncio
+import urllib.request
+import urllib.error
 from datetime import datetime
 from collections import deque
 
@@ -167,6 +169,21 @@ go1_unity_data = {
     'wz': 0.0,
     'estop': 0,
     'active': False,
+}
+
+go1_server_json_data = {
+    'raw_json': '',
+    'seq': 0,
+    'ts': 0.0,
+    'vx': 0.0,
+    'vy': 0.0,
+    'wz': 0.0,
+    'stop': True,
+    'confidence': 0.0,
+    'connected': False,
+    'fresh': False,
+    'status': 'Idle',
+    'source': '',
 }
 
 go1_dashboard = {
@@ -1448,6 +1465,170 @@ class Go1UnityNode(BaseNode):
         self.output_data[self.out_vyaw] = go1_unity_data['wz']
         self.output_data[self.out_body_height] = go1_state.get('body_height_cmd', 0.0)
         self.output_data[self.out_active] = go1_unity_data.get('active', False)
+        return self.out_flow
+
+
+class Go1ServerJsonRecvNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Server JSON Receiver", "GO1_SERVER_JSON_RECV")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.out_raw_json = generate_uuid()
+        self.outputs[self.out_raw_json] = PortType.DATA
+        self.out_seq = generate_uuid()
+        self.outputs[self.out_seq] = PortType.DATA
+        self.out_ts = generate_uuid()
+        self.outputs[self.out_ts] = PortType.DATA
+        self.out_vx = generate_uuid()
+        self.outputs[self.out_vx] = PortType.DATA
+        self.out_vy = generate_uuid()
+        self.outputs[self.out_vy] = PortType.DATA
+        self.out_wz = generate_uuid()
+        self.outputs[self.out_wz] = PortType.DATA
+        self.out_stop = generate_uuid()
+        self.outputs[self.out_stop] = PortType.DATA
+        self.out_confidence = generate_uuid()
+        self.outputs[self.out_confidence] = PortType.DATA
+        self.out_connected = generate_uuid()
+        self.outputs[self.out_connected] = PortType.DATA
+        self.out_fresh = generate_uuid()
+        self.outputs[self.out_fresh] = PortType.DATA
+        self.out_status = generate_uuid()
+        self.outputs[self.out_status] = PortType.DATA
+
+        self.state['mode'] = 'HTTP'
+        self.state['source'] = 'http://127.0.0.1:5001/cmd'
+        self.state['poll_interval_sec'] = 0.05
+        self.state['request_timeout_sec'] = 2.0
+        self.state['fresh_timeout_sec'] = 0.2
+
+        self._last_poll_mono = 0.0
+        self._last_ok_mono = 0.0
+        self._last_raw_json = ''
+        self._last_payload = {}
+        self._last_seq = 0
+        self._last_error = ''
+
+    def _read_source_text(self, mode, source, timeout_sec):
+        source = str(source or '').strip()
+        if not source:
+            raise RuntimeError('source is empty')
+
+        if mode == 'FILE' or (not source.startswith('http://') and not source.startswith('https://')):
+            if not os.path.exists(source):
+                raise FileNotFoundError(source)
+            with open(source, 'r', encoding='utf-8') as f:
+                return f.read()
+
+        req = urllib.request.Request(
+            source,
+            headers={
+                'Accept': 'application/json',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+            },
+            method='GET',
+        )
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            charset = resp.headers.get_content_charset() or 'utf-8'
+            return resp.read().decode(charset, errors='replace')
+
+    def _pick_payload(self, payload):
+        if isinstance(payload, dict):
+            for key in ('cmd', 'data', 'payload', 'command'):
+                nested = payload.get(key)
+                if isinstance(nested, dict):
+                    return nested
+            return payload
+        if isinstance(payload, list) and payload:
+            last_item = payload[-1]
+            if isinstance(last_item, dict):
+                return last_item
+        return {}
+
+    def _publish_state(self, raw_json, payload, connected, fresh, status, source):
+        seq = _coerce_int(payload.get('seq', self._last_seq), self._last_seq)
+        ts = _coerce_float(payload.get('ts', payload.get('timestamp', time.time())), time.time())
+        vx_raw = _coerce_float(payload.get('vx', 0.0), 0.0)
+        vy_raw = _coerce_float(payload.get('vy', 0.0), 0.0)
+        wz_raw = _coerce_float(payload.get('wz', payload.get('yaw', 0.0)), 0.0)
+
+        stop_raw = payload.get('stop', payload.get('estop', False))
+        stop = _coerce_bool(stop_raw, False)
+        if 'estop' in payload:
+            stop = stop or _coerce_bool(payload.get('estop', False), False)
+
+        confidence = _clamp(_coerce_float(payload.get('confidence', 1.0), 1.0), 0.0, 1.0)
+        vx = 0.0 if stop else _clamp(vx_raw, -V_MAX, V_MAX)
+        vy = 0.0 if stop else _clamp(vy_raw, -S_MAX, S_MAX)
+        wz = 0.0 if stop else _clamp(wz_raw, -W_MAX, W_MAX)
+
+        self._last_seq = seq
+        self._last_raw_json = raw_json
+        self._last_payload = dict(payload)
+        if connected and fresh:
+            self._last_ok_mono = time.monotonic()
+
+        go1_server_json_data.update({
+            'raw_json': raw_json,
+            'seq': seq,
+            'ts': ts,
+            'vx': vx,
+            'vy': vy,
+            'wz': wz,
+            'stop': stop,
+            'confidence': confidence,
+            'connected': bool(connected),
+            'fresh': bool(fresh),
+            'status': status,
+            'source': source,
+        })
+
+        self.output_data[self.out_raw_json] = raw_json
+        self.output_data[self.out_seq] = seq
+        self.output_data[self.out_ts] = ts
+        self.output_data[self.out_vx] = vx
+        self.output_data[self.out_vy] = vy
+        self.output_data[self.out_wz] = wz
+        self.output_data[self.out_stop] = stop
+        self.output_data[self.out_confidence] = confidence
+        self.output_data[self.out_connected] = bool(connected)
+        self.output_data[self.out_fresh] = bool(fresh)
+        self.output_data[self.out_status] = status
+
+    def execute(self):
+        mode = str(self.state.get('mode', 'HTTP')).strip().upper()
+        source = str(self.state.get('source', '')).strip()
+        poll_interval_sec = max(0.0, _coerce_float(self.state.get('poll_interval_sec', 0.05), 0.05))
+        request_timeout_sec = max(0.2, _coerce_float(self.state.get('request_timeout_sec', 2.0), 2.0))
+        fresh_timeout_sec = max(0.05, _coerce_float(self.state.get('fresh_timeout_sec', 0.2), 0.2))
+
+        now_mono = time.monotonic()
+        should_poll = (now_mono - self._last_poll_mono) >= poll_interval_sec or not self._last_raw_json
+
+        if should_poll:
+            self._last_poll_mono = now_mono
+            try:
+                raw_json = self._read_source_text(mode, source, request_timeout_sec)
+                payload = json.loads(raw_json)
+                payload = self._pick_payload(payload)
+                self._last_error = ''
+                self._publish_state(raw_json, payload, True, True, 'OK', source)
+            except Exception as e:
+                self._last_error = str(e)
+                fresh = (now_mono - self._last_ok_mono) <= fresh_timeout_sec if self._last_ok_mono else False
+                status = f'ERR: {e.__class__.__name__}'
+                self._publish_state(self._last_raw_json, self._last_payload, False, fresh, status, source)
+        else:
+            fresh = (now_mono - self._last_ok_mono) <= fresh_timeout_sec if self._last_ok_mono else False
+            status = go1_server_json_data.get('status', 'Idle')
+            if not fresh and status == 'OK':
+                status = 'STALE'
+            self._publish_state(self._last_raw_json, self._last_payload, bool(self._last_raw_json), fresh, status, source)
+
         return self.out_flow
 
 
