@@ -1623,6 +1623,7 @@ class Go1ServerJsonRecvNode(BaseNode):
         return ''
 
     def _inject_direction_motion(self, direction, move_speed, move_duration_sec, trigger_key):
+        global go1_estop_hold_until
         if not direction:
             return
         if trigger_key == self._last_motion_trigger_key:
@@ -1637,13 +1638,15 @@ class Go1ServerJsonRecvNode(BaseNode):
             go1_node_intent['wz'] = 0.0
             go1_node_intent['stop'] = True
             go1_node_intent['trigger_time'] = time.monotonic()
-            self._motion_active = True
-            self._motion_until_mono = time.monotonic() + max(0.05, move_duration_sec)
+            # JSON stop uses the same strong hold path as E-STOP: fixed 2s override.
+            go1_estop_hold_until = time.monotonic() + 2.0
+            self._motion_active = False
+            self._motion_until_mono = 0.0
             self._motion_vx = 0.0
             self._motion_vy = 0.0
             self._motion_wz = 0.0
-            self._motion_force_stop = True
-            write_log(f"[GO1 JSON RX] command=stop -> hold stop for {move_duration_sec:.2f}s")
+            self._motion_force_stop = False
+            write_log("[GO1 JSON RX] command=stop -> E-STOP hold path (2.0s)")
             return
 
         vx = 0.0
