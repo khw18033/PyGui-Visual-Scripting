@@ -429,6 +429,7 @@ class NodeUIRenderer:
         elif t == "GO1_ACTION": NodeUIRenderer._render_go1_action(node)
         elif t == "GO1_SERVER_SENDER": NodeUIRenderer._render_go1_server_sender(node)
         elif t == "GO1_SERVER_JSON_RECV": NodeUIRenderer._render_go1_server_json_recv(node)
+        elif t == "GO1_AUTO_AVOIDANCE": NodeUIRenderer._render_go1_auto_avoidance(node)
         elif t == "VIDEO_SRC": NodeUIRenderer._render_video_src(node)
         elif t == "VIS_FISHEYE": NodeUIRenderer._render_fisheye(node)
         elif t == "VIS_DEPTH_DA2": NodeUIRenderer._render_depth_da2(node)
@@ -696,6 +697,21 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.out_connected, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Connected")
             with dpg.node_attribute(tag=node.out_fresh, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Fresh")
             with dpg.node_attribute(tag=node.out_status, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Status")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_go1_auto_avoidance(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Auto Avoidance"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.in_json, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("JSON In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_text("JSON Receiver 뒤에 연결", color=(180, 180, 180))
+            with dpg.node_attribute(tag=node.out_status, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Status")
+            with dpg.node_attribute(tag=node.out_has_near_obstacle, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Has Near Obstacle")
+            with dpg.node_attribute(tag=node.out_near_count, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Near Count")
+            with dpg.node_attribute(tag=node.out_person_found, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Person Found")
+            with dpg.node_attribute(tag=node.out_person_id, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Person ID")
+            with dpg.node_attribute(tag=node.out_person_rel_depth, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Person Depth")
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
@@ -1235,6 +1251,7 @@ def __init_ui__():
                 dpg.add_button(label="GO1 ACTION", callback=add_node_cb, user_data="GO1_ACTION")
                 dpg.add_button(label="GO1 SENDER", callback=add_node_cb, user_data="GO1_SERVER_SENDER")
                 dpg.add_button(label="GO1 JSON RX", callback=add_node_cb, user_data="GO1_SERVER_JSON_RECV")
+                dpg.add_button(label="AUTO AVOID", callback=add_node_cb, user_data="GO1_AUTO_AVOIDANCE")
                 dpg.add_button(label="VIDEO SRC", callback=add_node_cb, user_data="VIDEO_SRC")
                 dpg.add_button(label="FISHEYE", callback=add_node_cb, user_data="VIS_FISHEYE")
                 dpg.add_button(label="DEPTH DA2", callback=add_node_cb, user_data="VIS_DEPTH_DA2")

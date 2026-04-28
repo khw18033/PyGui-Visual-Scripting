@@ -191,6 +191,19 @@ go1_server_json_data = {
     'last_direction': '',
 }
 
+go1_auto_avoidance_data = {
+    'status': 'Idle',
+    'has_near_obstacle': False,
+    'near_count': 0,
+    'person_found': False,
+    'person_id': None,
+    'person_rel_depth': None,
+    'stop_sent': False,
+    'source': '',
+    'last_error': '',
+    'last_trigger_ts': 0.0,
+}
+
 go1_dashboard = {
     "status": "Idle",
     "hw_link": "Offline",
@@ -1950,6 +1963,170 @@ class Go1ServerJsonRecvNode(BaseNode):
                 status = 'STALE'
             self._publish_state(self._last_raw_json, self._last_payload, bool(self._last_raw_json), fresh, status, source)
 
+        return self.out_flow
+
+
+class Go1AutoAvoidanceNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Auto Avoidance", "GO1_AUTO_AVOIDANCE")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.in_json = generate_uuid()
+        self.inputs[self.in_json] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.out_status = generate_uuid()
+        self.outputs[self.out_status] = PortType.DATA
+        self.out_has_near_obstacle = generate_uuid()
+        self.outputs[self.out_has_near_obstacle] = PortType.DATA
+        self.out_near_count = generate_uuid()
+        self.outputs[self.out_near_count] = PortType.DATA
+        self.out_person_found = generate_uuid()
+        self.outputs[self.out_person_found] = PortType.DATA
+        self.out_person_id = generate_uuid()
+        self.outputs[self.out_person_id] = PortType.DATA
+        self.out_person_rel_depth = generate_uuid()
+        self.outputs[self.out_person_rel_depth] = PortType.DATA
+
+        self._last_processed_key = ''
+        self._last_status = 'Idle'
+
+    def _parse_payload(self, raw_value):
+        if raw_value is None:
+            return None, ''
+        if isinstance(raw_value, dict):
+            return raw_value, json.dumps(raw_value, ensure_ascii=False, sort_keys=True)
+        if isinstance(raw_value, list):
+            signature = json.dumps(raw_value, ensure_ascii=False, sort_keys=True)
+            if raw_value and isinstance(raw_value[-1], dict):
+                return raw_value[-1], signature
+            return None, signature
+        if isinstance(raw_value, str):
+            text = raw_value.strip()
+            if not text:
+                return None, ''
+            try:
+                parsed = json.loads(text)
+                return parsed, text
+            except Exception:
+                return None, text
+        return None, str(raw_value)
+
+    def _extract_near_person(self, detections):
+        near_objects = []
+        person_object = None
+
+        if not isinstance(detections, list):
+            return near_objects, person_object
+
+        for det in detections:
+            if not isinstance(det, dict):
+                continue
+            if str(det.get('risk_level', '')).strip().lower() != 'near':
+                continue
+            near_objects.append(det)
+            if person_object is None and str(det.get('name', '')).strip().lower() == 'person':
+                person_object = det
+
+        return near_objects, person_object
+
+    def _trigger_robot_stop(self):
+        global go1_estop_hold_until
+        go1_node_intent['vx'] = 0.0
+        go1_node_intent['vy'] = 0.0
+        go1_node_intent['wz'] = 0.0
+        go1_node_intent['stop'] = True
+        go1_node_intent['trigger_time'] = time.monotonic()
+        go1_estop_hold_until = time.monotonic() + 2.0
+        go1_auto_avoidance_data['stop_sent'] = True
+
+    def execute(self):
+        raw_value = self.fetch_input_data(self.in_json)
+        payload, signature = self._parse_payload(raw_value)
+        is_new_input = signature != self._last_processed_key
+        self._last_processed_key = signature
+        go1_auto_avoidance_data['stop_sent'] = False
+        go1_auto_avoidance_data['last_error'] = ''
+        go1_auto_avoidance_data['source'] = 'GO1_SERVER_JSON_RECV'
+
+        if not isinstance(payload, dict):
+            go1_auto_avoidance_data['status'] = 'WAITING'
+            go1_auto_avoidance_data['has_near_obstacle'] = False
+            go1_auto_avoidance_data['near_count'] = 0
+            go1_auto_avoidance_data['person_found'] = False
+            go1_auto_avoidance_data['person_id'] = None
+            go1_auto_avoidance_data['person_rel_depth'] = None
+            self._last_status = 'WAITING'
+            self.output_data[self.out_status] = self._last_status
+            self.output_data[self.out_has_near_obstacle] = False
+            self.output_data[self.out_near_count] = 0
+            self.output_data[self.out_person_found] = False
+            self.output_data[self.out_person_id] = None
+            self.output_data[self.out_person_rel_depth] = None
+            return self.out_flow
+
+        has_near_obstacle = _coerce_bool(payload.get('has_near_obstacle', False), False)
+        detections = payload.get('detections', [])
+        near_objects, near_person = self._extract_near_person(detections)
+
+        go1_auto_avoidance_data['has_near_obstacle'] = has_near_obstacle
+        go1_auto_avoidance_data['near_count'] = len(near_objects)
+        go1_auto_avoidance_data['person_found'] = bool(near_person)
+        go1_auto_avoidance_data['person_id'] = near_person.get('id') if near_person else None
+        go1_auto_avoidance_data['person_rel_depth'] = near_person.get('rel_depth') if near_person else None
+        go1_auto_avoidance_data['last_trigger_ts'] = time.time()
+
+        if not has_near_obstacle:
+            go1_auto_avoidance_data['status'] = 'SAFE'
+            self._last_status = 'SAFE'
+            self.output_data[self.out_status] = self._last_status
+            self.output_data[self.out_has_near_obstacle] = False
+            self.output_data[self.out_near_count] = len(near_objects)
+            self.output_data[self.out_person_found] = bool(near_person)
+            self.output_data[self.out_person_id] = go1_auto_avoidance_data['person_id']
+            self.output_data[self.out_person_rel_depth] = go1_auto_avoidance_data['person_rel_depth']
+            return self.out_flow
+
+        if not near_objects:
+            go1_auto_avoidance_data['status'] = 'NEAR_OBSTACLE_NONE'
+            self._last_status = 'NEAR_OBSTACLE_NONE'
+            self.output_data[self.out_status] = self._last_status
+            self.output_data[self.out_has_near_obstacle] = True
+            self.output_data[self.out_near_count] = 0
+            self.output_data[self.out_person_found] = False
+            self.output_data[self.out_person_id] = None
+            self.output_data[self.out_person_rel_depth] = None
+            return self.out_flow
+
+        if near_person is None:
+            if is_new_input:
+                write_log("[GO1 AUTO AVOID] near object detected, but no person found")
+            go1_auto_avoidance_data['status'] = 'NEAR_PERSON_MISSING'
+            self._last_status = 'NEAR_PERSON_MISSING'
+            self.output_data[self.out_status] = self._last_status
+            self.output_data[self.out_has_near_obstacle] = True
+            self.output_data[self.out_near_count] = len(near_objects)
+            self.output_data[self.out_person_found] = False
+            self.output_data[self.out_person_id] = None
+            self.output_data[self.out_person_rel_depth] = None
+            return self.out_flow
+
+        person_id = near_person.get('id')
+        person_rel_depth = near_person.get('rel_depth')
+        if is_new_input or not go1_auto_avoidance_data.get('stop_sent', False):
+            write_log(f"[GO1 AUTO AVOID] near person detected | id={person_id} | rel_depth={person_rel_depth}")
+            write_log("[GO1 AUTO AVOID] 가까운 물체 탐지. 로봇 정지 명령")
+        self._trigger_robot_stop()
+
+        go1_auto_avoidance_data['status'] = 'STOP_SENT'
+        self._last_status = 'STOP_SENT'
+        self.output_data[self.out_status] = self._last_status
+        self.output_data[self.out_has_near_obstacle] = True
+        self.output_data[self.out_near_count] = len(near_objects)
+        self.output_data[self.out_person_found] = True
+        self.output_data[self.out_person_id] = person_id
+        self.output_data[self.out_person_rel_depth] = person_rel_depth
         return self.out_flow
 
 
