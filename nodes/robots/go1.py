@@ -171,6 +171,8 @@ go1_unity_data = {
     'active': False,
 }
 
+go1_estop_hold_until = 0.0
+
 go1_server_json_data = {
     'raw_json': '',
     'seq': 0,
@@ -497,14 +499,17 @@ def get_local_ip():
 
 
 def go1_estop_callback():
+    global go1_estop_hold_until
     go1_node_intent['stop'] = True
     go1_node_intent['vx'] = 0.0
     go1_node_intent['vy'] = 0.0
     go1_node_intent['wz'] = 0.0
+    go1_node_intent['trigger_time'] = time.monotonic()
+    go1_estop_hold_until = time.monotonic() + 2.0
     go1_target_vel['vx'] = 0.0
     go1_target_vel['vy'] = 0.0
     go1_target_vel['vyaw'] = 0.0
-    write_log("Go1 EMERGENCY STOP Activated")
+    write_log("Go1 EMERGENCY STOP Activated (hold 2.0s)")
 
 
 def _prompt_go1_ip(default_ip):
@@ -848,7 +853,7 @@ def sender_manager_thread():
 
 
 def go1_keepalive_thread():
-    global GO1_UNITY_IP
+    global GO1_UNITY_IP, go1_estop_hold_until
 
     if HAS_UNITREE_SDK:
         try:
@@ -914,6 +919,7 @@ def go1_keepalive_thread():
         'wait_started_at': 0.0,
         'wait_mode_seen': False,
     }
+    estop_hold_logged = False
 
     def reset_cmd_base():
         if not cmd:
@@ -1025,6 +1031,25 @@ def go1_keepalive_thread():
         if not unity_active:
             go1_dashboard['unity_link'] = "Waiting"
 
+        estop_hold_active = tnow < float(go1_estop_hold_until)
+        if estop_hold_active:
+            go1_node_intent['vx'] = 0.0
+            go1_node_intent['vy'] = 0.0
+            go1_node_intent['wz'] = 0.0
+            go1_node_intent['stop'] = True
+            go1_node_intent['trigger_time'] = tnow
+            unity_active = False
+            go1_unity_data['active'] = False
+            go1_dashboard['unity_link'] = "E-STOP Hold"
+            yaw_align_active = False
+            stand_only = True
+            if not estop_hold_logged:
+                estop_hold_logged = True
+                write_log("[Go1 E-STOP] hold active: keyboard/unity override blocked")
+        elif estop_hold_logged:
+            estop_hold_logged = False
+            write_log("[Go1 E-STOP] hold released")
+
         since_key = tnow - last_key_time
         since_move = tnow - last_move_cmd_time
         active_walk = (
@@ -1067,7 +1092,13 @@ def go1_keepalive_thread():
         out_vy = 0.0
         out_wz = 0.0
 
-        if yaw_align_active:
+        if estop_hold_active:
+            target_mode = 1
+            out_vx = 0.0
+            out_vy = 0.0
+            out_wz = 0.0
+            go1_state['reason'] = "ESTOP_HOLD"
+        elif yaw_align_active:
             err = _wrap_pi(yaw_rel - yaw_align_target_rel)
             if abs(err) <= yaw_align_tol_rad:
                 yaw_align_active = False
@@ -1521,6 +1552,7 @@ class Go1ServerJsonRecvNode(BaseNode):
         self._motion_vx = 0.0
         self._motion_vy = 0.0
         self._motion_wz = 0.0
+        self._motion_force_stop = False
         self._last_direction = ''
         self._last_motion_trigger_key = ''
         self._last_logged_raw = ''
@@ -1605,12 +1637,13 @@ class Go1ServerJsonRecvNode(BaseNode):
             go1_node_intent['wz'] = 0.0
             go1_node_intent['stop'] = True
             go1_node_intent['trigger_time'] = time.monotonic()
-            self._motion_active = False
-            self._motion_until_mono = 0.0
+            self._motion_active = True
+            self._motion_until_mono = time.monotonic() + max(0.05, move_duration_sec)
             self._motion_vx = 0.0
             self._motion_vy = 0.0
             self._motion_wz = 0.0
-            write_log("[GO1 JSON RX] command=stop -> immediate stop")
+            self._motion_force_stop = True
+            write_log(f"[GO1 JSON RX] command=stop -> hold stop for {move_duration_sec:.2f}s")
             return
 
         vx = 0.0
@@ -1636,6 +1669,7 @@ class Go1ServerJsonRecvNode(BaseNode):
         self._motion_vx = go1_node_intent['vx']
         self._motion_vy = go1_node_intent['vy']
         self._motion_wz = go1_node_intent['wz']
+        self._motion_force_stop = False
         write_log(
             f"[GO1 JSON RX] command={direction} -> move vx={go1_node_intent['vx']:.3f}, "
             f"vy={go1_node_intent['vy']:.3f}, wz={go1_node_intent['wz']:.3f}, duration={move_duration_sec:.2f}s"
@@ -1712,10 +1746,16 @@ class Go1ServerJsonRecvNode(BaseNode):
 
         if self._motion_active:
             if now_mono < self._motion_until_mono:
-                go1_node_intent['vx'] = self._motion_vx
-                go1_node_intent['vy'] = self._motion_vy
-                go1_node_intent['wz'] = self._motion_wz
-                go1_node_intent['stop'] = False
+                if self._motion_force_stop:
+                    go1_node_intent['vx'] = 0.0
+                    go1_node_intent['vy'] = 0.0
+                    go1_node_intent['wz'] = 0.0
+                    go1_node_intent['stop'] = True
+                else:
+                    go1_node_intent['vx'] = self._motion_vx
+                    go1_node_intent['vy'] = self._motion_vy
+                    go1_node_intent['wz'] = self._motion_wz
+                    go1_node_intent['stop'] = False
                 go1_node_intent['trigger_time'] = now_mono
             else:
                 go1_node_intent['vx'] = 0.0
@@ -1728,6 +1768,7 @@ class Go1ServerJsonRecvNode(BaseNode):
                 self._motion_vx = 0.0
                 self._motion_vy = 0.0
                 self._motion_wz = 0.0
+                self._motion_force_stop = False
                 write_log("[GO1 JSON RX] timed motion finished -> stop")
 
         remaining_ms = 0.0
