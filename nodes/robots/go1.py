@@ -1558,6 +1558,12 @@ class Go1ServerJsonRecvNode(BaseNode):
         self._last_logged_raw = ''
         self._last_logged_error = ''
         self._last_execute_mono = 0.0
+        
+        # JSON 백업 기능
+        self.backup_folder = os.path.join(project_root, 'jsonbackup')
+        self._ensure_backup_folder()
+        self._last_backup_timestamp = 0.0
+        self._last_detections = []
 
     def _read_source_text(self, mode, source, timeout_sec):
         source = str(source or '').strip()
@@ -1595,6 +1601,73 @@ class Go1ServerJsonRecvNode(BaseNode):
             if isinstance(last_item, dict):
                 return last_item
         return {}
+
+    def _ensure_backup_folder(self):
+        """jsonbackup 폴더 생성 (없을 경우)"""
+        try:
+            if not os.path.exists(self.backup_folder):
+                os.makedirs(self.backup_folder, exist_ok=True)
+                write_log(f"[GO1 JSON RX] Created backup folder: {self.backup_folder}")
+        except Exception as e:
+            write_log(f"[GO1 JSON RX] Error creating backup folder: {e}")
+
+    def _save_json_backup(self, raw_json_str, parsed_data):
+        """JSON을 시간대별 파일명으로 백업 저장"""
+        try:
+            # 타임스탐프 기반 파일명 생성 (timestamp_camera_id.json)
+            timestamp = parsed_data.get('timestamp', time.time())
+            camera_id = parsed_data.get('camera_id', 'unknown')
+            
+            # timestamp를 깔끔한 형식으로 변환
+            try:
+                ts_float = float(timestamp)
+                ts_str = str(ts_float).replace('.', '_')
+            except:
+                ts_str = str(time.time()).replace('.', '_')
+            
+            filename = f"{ts_str}_{camera_id}.json"
+            filepath = os.path.join(self.backup_folder, filename)
+            
+            # JSON 파일 저장
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(parsed_data, f, ensure_ascii=False, indent=2)
+            
+            return True
+        except Exception as e:
+            write_log(f"[GO1 JSON RX] Error saving JSON backup: {e}")
+            return False
+
+    def _process_detections(self, detections_list):
+        """detections 정보 처리 및 로그 출력"""
+        try:
+            if not isinstance(detections_list, list):
+                return []
+            
+            processed_detections = []
+            for idx, det in enumerate(detections_list):
+                if isinstance(det, dict):
+                    processed_det = {
+                        'id': det.get('id'),
+                        'name': det.get('name'),
+                        'group': det.get('group'),
+                        'rel_depth': det.get('rel_depth'),
+                        'risk_level': det.get('risk_level'),
+                        'bbox_xyxy': det.get('bbox_xyxy'),
+                    }
+                    processed_detections.append(processed_det)
+                    
+                    # 각 detection 로그 출력
+                    write_log(
+                        f"[GO1 JSON RX] Detection {idx}: "
+                        f"id={det.get('id')}, name={det.get('name')}, "
+                        f"group={det.get('group')}, risk={det.get('risk_level')}, "
+                        f"depth={det.get('rel_depth'):.3f}, bbox={det.get('bbox_xyxy')}"
+                    )
+            
+            return processed_detections
+        except Exception as e:
+            write_log(f"[GO1 JSON RX] Error processing detections: {e}")
+            return []
 
     def _extract_direction_text(self, payload):
         allowed = {'left', 'right', 'front', 'back', 'stop'}
@@ -1793,6 +1866,30 @@ class Go1ServerJsonRecvNode(BaseNode):
                 if not isinstance(payload, dict):
                     payload = {}
 
+                # ===== JSON 백업 및 detections 처리 =====
+                self._save_json_backup(raw_json, parsed)
+                
+                # detections 정보 추출 및 처리
+                detections = parsed.get('detections', [])
+                if detections and detections != self._last_detections:
+                    camera_id = parsed.get('camera_id', 'unknown')
+                    timestamp = parsed.get('timestamp', time.time())
+                    has_near_obstacle = parsed.get('has_near_obstacle', False)
+                    
+                    # 헤더 로그
+                    write_log(f"[GO1 JSON RX] JSON Received - timestamp={timestamp}, camera={camera_id}, has_near_obstacle={has_near_obstacle}")
+                    write_log(f"[GO1 JSON RX] Total detections: {len(detections)}")
+                    
+                    # detections 처리 및 로그
+                    self._last_detections = detections
+                    processed_dets = self._process_detections(detections)
+                    
+                    # detections를 payload에 추가 (나중에 로봇 이동에 사용 가능)
+                    payload['detections'] = processed_dets
+                    payload['camera_id'] = camera_id
+                    payload['has_near_obstacle'] = has_near_obstacle
+                # ===== JSON 백업 및 detections 처리 끝 =====
+
                 if direction:
                     if direction == 'front':
                         payload['vx'] = move_speed
@@ -1829,9 +1926,9 @@ class Go1ServerJsonRecvNode(BaseNode):
                 raw_for_log = raw_json.strip()
                 if raw_for_log != self._last_logged_raw:
                     if direction:
-                        write_log(f"[GO1 JSON RX] read ok | source={source} | direction={direction} | raw={raw_for_log}")
+                        write_log(f"[GO1 JSON RX] read ok | source={source} | direction={direction}")
                     else:
-                        write_log(f"[GO1 JSON RX] read ok but no direction token | source={source} | raw={raw_for_log}")
+                        write_log(f"[GO1 JSON RX] read ok | source={source}")
                     self._last_logged_raw = raw_for_log
                 self._last_logged_error = ''
 
