@@ -2140,13 +2140,19 @@ class Go1AutoAvoidanceNode(BaseNode):
             go1_auto_avoidance_data['status'] = 'STOP_SENT'
             self._last_status = 'STOP_SENT'
         else:
-            # 분할 기준: left < 0.4, center 0.4-0.6, right > 0.6
-            if rel < 0.4:
-                pos = 'left'
-            elif rel > 0.6:
-                pos = 'right'
-            else:
-                pos = 'center'
+            # 분할 기준: 정확히 이미지 중앙일 때만 'center'로 판정
+            # 중앙값은 image_w / 2.0
+            try:
+                center_x_exact = float(image_w) / 2.0
+                if cx == center_x_exact:
+                    pos = 'center'
+                elif cx < center_x_exact:
+                    pos = 'left'
+                else:
+                    pos = 'right'
+            except Exception:
+                # 예외 발생 시 안전하게 중앙이 아닌 것으로 취급
+                pos = 'left' if (cx is not None and cx < (float(image_w) / 2.0)) else 'right'
 
             # left/center이면 오른쪽으로 회피, right이면 왼쪽으로 회피
             if pos in ('left', 'center'):
