@@ -2114,13 +2114,73 @@ class Go1AutoAvoidanceNode(BaseNode):
 
         person_id = near_person.get('id')
         person_rel_depth = near_person.get('rel_depth')
-        if is_new_input or not go1_auto_avoidance_data.get('stop_sent', False):
-            write_log(f"[GO1 AUTO AVOID] near person detected | id={person_id} | rel_depth={person_rel_depth}")
-            write_log("[GO1 AUTO AVOID] 가까운 물체 탐지. 로봇 정지 명령")
-        self._trigger_robot_stop()
+        # 위치 기반 회피: bbox 중심 x로 left/center/right 분류
+        bbox = near_person.get('bbox_xyxy')
+        image_w = 464
+        move_duration = 0.5
+        move_speed = 0.2
 
-        go1_auto_avoidance_data['status'] = 'STOP_SENT'
-        self._last_status = 'STOP_SENT'
+        if bbox and len(bbox) >= 4:
+            try:
+                cx = (float(bbox[0]) + float(bbox[2])) / 2.0
+                rel = cx / float(image_w)
+            except Exception:
+                cx = None
+                rel = None
+        else:
+            cx = None
+            rel = None
+
+        if is_new_input:
+            write_log(f"[GO1 AUTO AVOID] near person detected | id={person_id} | rel_depth={person_rel_depth}")
+
+        if cx is None or rel is None:
+            write_log("[GO1 AUTO AVOID] bbox 정보 없음 — 안전을 위해 정지 명령 전송")
+            self._trigger_robot_stop()
+            go1_auto_avoidance_data['status'] = 'STOP_SENT'
+            self._last_status = 'STOP_SENT'
+        else:
+            # 분할 기준: left < 0.4, center 0.4-0.6, right > 0.6
+            if rel < 0.4:
+                pos = 'left'
+            elif rel > 0.6:
+                pos = 'right'
+            else:
+                pos = 'center'
+
+            # left/center이면 오른쪽으로 회피, right이면 왼쪽으로 회피
+            if pos in ('left', 'center'):
+                inject_dir = 'right'
+                dir_msg = '오른쪽'
+            else:
+                inject_dir = 'left'
+                dir_msg = '왼쪽'
+
+            write_log(f"[GO1 AUTO AVOID] {dir_msg}으로 이동 (id={person_id} | rel_depth={person_rel_depth})")
+
+            # 기존의 움직임 주입 로직을 가진 Go1ServerJsonRecvNode 인스턴스를 찾아 호출합니다.
+            json_node = None
+            try:
+                json_node = next((n for n in node_registry.values() if getattr(n, 'type_str', None) == 'GO1_SERVER_JSON_RECV'), None)
+            except Exception:
+                json_node = None
+
+            if json_node and hasattr(json_node, '_inject_direction_motion'):
+                try:
+                    json_node._inject_direction_motion(inject_dir, move_speed, move_duration, signature)
+                    go1_auto_avoidance_data['status'] = f'MOVE_{inject_dir.upper()}'
+                    self._last_status = go1_auto_avoidance_data['status']
+                except Exception:
+                    write_log('[GO1 AUTO AVOID] 움직임 주입 실패 — 정지 명령 대체 실행')
+                    self._trigger_robot_stop()
+                    go1_auto_avoidance_data['status'] = 'STOP_SENT'
+                    self._last_status = 'STOP_SENT'
+            else:
+                write_log('[GO1 AUTO AVOID] JSON RX 노드의 움직임 주입 메서드를 찾을 수 없음 — 정지 명령 전송')
+                self._trigger_robot_stop()
+                go1_auto_avoidance_data['status'] = 'STOP_SENT'
+                self._last_status = 'STOP_SENT'
+
         self.output_data[self.out_status] = self._last_status
         self.output_data[self.out_has_near_obstacle] = True
         self.output_data[self.out_near_count] = len(near_objects)
