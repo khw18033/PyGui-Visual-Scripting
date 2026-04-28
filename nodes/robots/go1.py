@@ -1944,7 +1944,7 @@ class FisheyeUndistortNode(BaseNode):
 
             out_frame = undistorted
             crop_enabled = _coerce_bool(self.state.get('crop_enabled', True), True)
-            if use_calib and crop_enabled and out_frame is not None and len(out_frame.shape) >= 2:
+            if crop_enabled and out_frame is not None and len(out_frame.shape) >= 2:
                 h, w = out_frame.shape[:2]
                 if w > 1:
                     crop_mode = str(self.state.get('crop_mode', 'left_half')).strip().lower()
