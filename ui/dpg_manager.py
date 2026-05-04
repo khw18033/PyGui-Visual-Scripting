@@ -716,10 +716,6 @@ class NodeUIRenderer:
                 node.chk_enable = dpg.add_checkbox(label="Enable Teleop Rx", default_value=True)
                 node.chk_aruco = dpg.add_checkbox(label="Send ArUco Data (JSON)", default_value=False)
             with dpg.node_attribute(tag=node.data_in_id, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("JSON")
-            with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vx")
-            with dpg.node_attribute(tag=node.out_vy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vy")
-            with dpg.node_attribute(tag=node.out_vyaw, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Yaw")
-            with dpg.node_attribute(tag=node.out_body_height, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Body Height")
             with dpg.node_attribute(tag=node.out_active, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Is Active?")
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
