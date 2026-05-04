@@ -176,6 +176,7 @@ go1_unity_data = {
 }
 
 go1_estop_hold_until = 0.0
+go1_last_yaw0_reset_mono = 0.0
 
 go1_server_json_data = {
     'raw_json': '',
@@ -1000,9 +1001,13 @@ def go1_keepalive_thread():
             yaw0 = raw_yaw
             last_dr_time = time.monotonic()
             go1_node_intent['reset_yaw'] = False
+            # Debounce repeated resets/logs: only log if sufficient time passed since last reset.
             try:
-                yaw0_deg = yaw0 * 180.0 / math.pi
-                write_log(f"[YAW0] reset: {yaw0:.3f} rad ({yaw0_deg:.2f} deg)")
+                now_mono = time.monotonic()
+                if now_mono - globals().get('go1_last_yaw0_reset_mono', 0.0) > 0.5:
+                    yaw0_deg = yaw0 * 180.0 / math.pi
+                    write_log(f"[YAW0] reset: {yaw0:.3f} rad ({yaw0_deg:.2f} deg)")
+                    globals()['go1_last_yaw0_reset_mono'] = now_mono
             except Exception:
                 write_log("[YAW0] reset")
 
@@ -1444,9 +1449,7 @@ def _apply_go1_keyboard_intent(state):
     if state.get('E'):
         wz = -WZ_CMD
 
-    if state.get('Z'):
-        go1_node_intent['body_height'] = _clamp(go1_node_intent.get('body_height', 0.0) + BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
-        write_log("Go1: Z key pressed - increasing body height to {:.3f}".format(go1_node_intent['body_height']))
+    # Z is reserved for yaw0 reset (autonomy/C++ behavior). Do not use Z for body height here.
     if state.get('X'):
         go1_node_intent['body_height'] = _clamp(go1_node_intent.get('body_height', 0.0) - BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
 
@@ -1951,9 +1954,14 @@ class Go1UnityAutonomyNode(BaseNode):
                 write_log("Go1 Autonomy: R pressed - request yaw align (intent set)")
             if self.state.get('Z'):
                 # Z behaves as 'reset yaw' (C++ reference: reset yaw0)
-                go1_node_intent['reset_yaw'] = True
-                go1_node_intent['trigger_time'] = time.monotonic()
-                write_log("Go1 Autonomy: Z pressed - request yaw reset (intent set)")
+                # Debounce requests so a single keypress doesn't generate repeated intents/logs.
+                last = getattr(self, '_last_request_yaw_reset_mono', 0.0)
+                now_m = time.monotonic()
+                if now_m - last > 0.2:
+                    go1_node_intent['reset_yaw'] = True
+                    go1_node_intent['trigger_time'] = time.monotonic()
+                    write_log("Go1 Autonomy: Z pressed - request yaw reset (intent set)")
+                    self._last_request_yaw_reset_mono = now_m
             if self.state.get('C_pressed'):
                 go1_node_intent['reset_yaw'] = True
                 go1_node_intent['trigger_time'] = time.monotonic()
