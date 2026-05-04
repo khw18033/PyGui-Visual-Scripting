@@ -1015,6 +1015,7 @@ def go1_keepalive_thread():
             grace_deadline = tnow
             use_grace = True
             go1_node_intent['yaw_align'] = False
+            write_log("Go1: Processing yaw align (R) - starting alignment")
 
         if go1_node_intent['stop']:
             yaw_align_active = False
@@ -1432,6 +1433,7 @@ def _apply_go1_keyboard_intent(state):
 
     if state.get('Z'):
         go1_node_intent['body_height'] = _clamp(go1_node_intent.get('body_height', 0.0) + BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+        write_log("Go1: Z key pressed - increasing body height to {:.3f}".format(go1_node_intent['body_height']))
     if state.get('X'):
         go1_node_intent['body_height'] = _clamp(go1_node_intent.get('body_height', 0.0) - BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
 
@@ -1439,8 +1441,10 @@ def _apply_go1_keyboard_intent(state):
         go1_node_intent['stop'] = True
     if state.get('R_pressed'):
         go1_node_intent['yaw_align'] = True
+        write_log("Go1: R key pressed - request yaw align (intent set)")
     if state.get('C_pressed'):
         go1_node_intent['reset_yaw'] = True
+        write_log("Go1: C key pressed - request yaw reset (intent set)")
 
     if vx or vy or wz:
         go1_node_intent['vx'] = vx
@@ -1913,7 +1917,8 @@ class Go1UnityAutonomyNode(BaseNode):
         self._ensure_sockets()
 
         # Log guidance message when path follower becomes active.
-        if self._path_active and not hasattr(self, '_guidance_logged'):
+        # Show once per activation: check boolean flag (not hasattr) so default False works.
+        if self._path_active and not getattr(self, '_guidance_logged', False):
             write_log("\n" + "="*70)
             write_log("[GO1 UNITY AUTONOMY] 자율주행 명령 대기 중")
             write_log("R / Z 버튼을 눌러 현실과 가상 로봇의 각도를 맞추세요.")
