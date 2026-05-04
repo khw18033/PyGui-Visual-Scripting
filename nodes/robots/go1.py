@@ -918,8 +918,8 @@ def go1_keepalive_thread():
     yaw0 = 0.0
     unity_yaw_offset_rad = math.pi / 2.0
     # Fine tune bias to correct Unity vs. real GO1 initial yaw (degrees -> radians)
-    YAW_FINE_TUNE_RAD = - 4.2 * math.pi / 180.0
-
+    # YAW_FINE_TUNE_RAD = - 4.2 * math.pi / 180.0 # 보정 O
+    YAW_FINE_TUNE_RAD = math.pi / 180.0 # 보정 X
     world_x = 0.0
     world_z = 0.0
     last_dr_time = now
@@ -1985,7 +1985,8 @@ class Go1UnityAutonomyNode(BaseNode):
             path_id, points = self._parse_path_json(latest_raw)
             if path_id >= 0 and len(points) >= 2:
                 # Apply same fine-tune used in the C++ reference implementation
-                YAW_FINE_TUNE_RAD = -4.2 * math.pi / 180.0
+                # YAW_FINE_TUNE_RAD = - 4.2 * math.pi / 180.0 # 보정 O
+                YAW_FINE_TUNE_RAD = math.pi / 180.0 # 보정 X
 
                 # Current unity-relative yaw from shared state; include fine-tune
                 yaw_now = float(go1_state.get('yaw_unity', 0.0))
