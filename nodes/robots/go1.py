@@ -1480,12 +1480,7 @@ class Go1KeyboardNode(BaseNode):
         super().__init__(node_id, "Keyboard (Go1)", "GO1_KEYBOARD")
         self.in_flow = generate_uuid()
         self.inputs[self.in_flow] = PortType.FLOW
-        self.out_vx = generate_uuid()
-        self.outputs[self.out_vx] = PortType.DATA
-        self.out_vy = generate_uuid()
-        self.outputs[self.out_vy] = PortType.DATA
-        self.out_vyaw = generate_uuid()
-        self.outputs[self.out_vyaw] = PortType.DATA
+        # Target velocity/yaw outputs removed (Unity Connection no longer provides targets)
         self.out_body_height = generate_uuid()
         self.outputs[self.out_body_height] = PortType.DATA
         self.out_flow = generate_uuid()
@@ -1573,9 +1568,6 @@ class Go1UnityNode(BaseNode):
             except Exception as e:
                 write_log(f"Go1 Unity JSON Error: {e}")
 
-        self.output_data[self.out_vx] = go1_unity_data['vx']
-        self.output_data[self.out_vy] = go1_unity_data['vy']
-        self.output_data[self.out_vyaw] = go1_unity_data['wz']
         self.output_data[self.out_body_height] = go1_state.get('body_height_cmd', 0.0)
         self.output_data[self.out_active] = go1_unity_data.get('active', False)
         return self.out_flow
