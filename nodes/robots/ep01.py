@@ -2,6 +2,7 @@ import time
 import socket
 import threading
 import math
+import json
 import sys
 import os
 import glob
@@ -86,6 +87,16 @@ ep_sender_active = False
 EP_SENDER_TARGET_FPS = 30
 EP_SENDER_INTERVAL = 1.0 / EP_SENDER_TARGET_FPS
 _ep_sender_manager_started = False
+
+ep_server_json_data = {
+    'raw_json': '',
+    'seq': 0,
+    'ts': 0.0,
+    'connected': False,
+    'fresh': False,
+    'status': 'Idle',
+    'source': '',
+}
 
 ep_arm_state = {
     "x": 100.0,
@@ -1017,6 +1028,128 @@ class EPServerSenderNode(common.ServerSenderNode):
     """EP01 Server Sender 노드 (Core Nodes에서 상속)"""
     def __init__(self, node_id):
         super().__init__(node_id, robot_type='EP01', node_name="EP Server Sender", node_type="EP_SERVER_SENDER")
+
+
+class EPServerJsonRecvNode(BaseNode):
+    """EP01 JSON 파일 수신 노드 (Go1 JSON Receiver의 파일 수신 로직 기반)."""
+    def __init__(self, node_id):
+        super().__init__(node_id, "EP JSON Receiver", "EP_SERVER_JSON_RECV")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.out_raw_json = generate_uuid()
+        self.outputs[self.out_raw_json] = PortType.DATA
+
+        self.state['source'] = 'test_payloads/sample.json'
+        self.state['poll_interval_sec'] = 0.1
+        self.state['fresh_timeout_sec'] = 0.3
+
+        self._last_poll_mono = 0.0
+        self._last_ok_mono = 0.0
+        self._last_raw_json = ''
+        self._last_payload = {}
+        self._last_seq = 0
+        self._last_error = ''
+        self._last_logged_raw = ''
+        self._last_logged_error = ''
+
+    def _read_source_text(self, source):
+        source = str(source or '').strip()
+        if not source:
+            raise RuntimeError('source is empty')
+        if not os.path.exists(source):
+            raise FileNotFoundError(source)
+        with open(source, 'r', encoding='utf-8') as f:
+            return f.read()
+
+    def _pick_payload(self, payload):
+        if isinstance(payload, dict):
+            for key in ('cmd', 'data', 'payload', 'command'):
+                nested = payload.get(key)
+                if isinstance(nested, dict):
+                    return nested
+            return payload
+        if isinstance(payload, list) and payload:
+            last_item = payload[-1]
+            if isinstance(last_item, dict):
+                return last_item
+        return {}
+
+    def _publish_state(self, raw_json, payload, connected, fresh, status, source):
+        try:
+            seq = int(payload.get('seq', self._last_seq))
+        except Exception:
+            seq = self._last_seq
+
+        try:
+            ts = float(payload.get('ts', payload.get('timestamp', time.time())))
+        except Exception:
+            ts = time.time()
+
+        self._last_seq = seq
+        self._last_raw_json = raw_json
+        self._last_payload = dict(payload)
+        if connected and fresh:
+            self._last_ok_mono = time.monotonic()
+
+        ep_server_json_data.update({
+            'raw_json': raw_json,
+            'seq': seq,
+            'ts': ts,
+            'connected': bool(connected),
+            'fresh': bool(fresh),
+            'status': status,
+            'source': source,
+        })
+
+        self.output_data[self.out_raw_json] = raw_json
+
+    def execute(self):
+        source = str(self.state.get('source', '')).strip()
+        poll_interval_sec = max(0.0, float(self.state.get('poll_interval_sec', 0.1)))
+        fresh_timeout_sec = max(0.05, float(self.state.get('fresh_timeout_sec', 0.3)))
+
+        now_mono = time.monotonic()
+        should_poll = (now_mono - self._last_poll_mono) >= poll_interval_sec or not self._last_raw_json
+
+        if should_poll:
+            self._last_poll_mono = now_mono
+            try:
+                raw_json = self._read_source_text(source)
+                parsed = json.loads(raw_json)
+                payload = self._pick_payload(parsed)
+                if not isinstance(payload, dict):
+                    payload = {}
+
+                if 'ts' not in payload and 'timestamp' not in payload:
+                    payload['ts'] = time.time()
+
+                self._last_error = ''
+                self._publish_state(raw_json, payload, True, True, 'OK', source)
+
+                raw_for_log = raw_json.strip()
+                if raw_for_log != self._last_logged_raw:
+                    write_log(f"[EP JSON RX] read ok | source={source}")
+                    self._last_logged_raw = raw_for_log
+                self._last_logged_error = ''
+            except Exception as e:
+                self._last_error = str(e)
+                fresh = (now_mono - self._last_ok_mono) <= fresh_timeout_sec if self._last_ok_mono else False
+                status = f'ERR: {e.__class__.__name__}'
+                self._publish_state(self._last_raw_json, self._last_payload, False, fresh, status, source)
+                if self._last_error != self._last_logged_error:
+                    write_log(f"[EP JSON RX] read error | source={source} | {e.__class__.__name__}: {self._last_error}")
+                    self._last_logged_error = self._last_error
+        else:
+            fresh = (now_mono - self._last_ok_mono) <= fresh_timeout_sec if self._last_ok_mono else False
+            status = ep_server_json_data.get('status', 'Idle')
+            if not fresh and status == 'OK':
+                status = 'STALE'
+            self._publish_state(self._last_raw_json, self._last_payload, bool(self._last_raw_json), fresh, status, source)
+
+        return self.out_flow
 
 class EPActionNode(BaseNode):
     def __init__(self, node_id):

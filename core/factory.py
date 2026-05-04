@@ -21,6 +21,7 @@ from nodes.robots.ep01 import (
     EPCameraStreamNode,
     EPVideoFrameSaveNode,
     EPServerSenderNode,
+    EPServerJsonRecvNode,
 )
 
 class NodeFactory:
@@ -72,6 +73,7 @@ class NodeFactory:
         elif node_type == "EP_CAM_STREAM": node = EPCameraStreamNode(node_id)
         elif node_type == "EP_VIS_SAVE": node = EPVideoFrameSaveNode(node_id)
         elif node_type == "EP_SERVER_SENDER": node = EPServerSenderNode(node_id)
+        elif node_type == "EP_SERVER_JSON_RECV": node = EPServerJsonRecvNode(node_id)
         
         if node: 
             node_registry[node_id] = node

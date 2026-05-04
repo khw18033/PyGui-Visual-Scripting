@@ -236,6 +236,10 @@ class NodeUIRenderer:
                 node.state['fresh_timeout_sec'] = dpg.get_value(node.field_fresh)
                 node.state['move_speed'] = dpg.get_value(node.field_move_speed)
                 node.state['move_duration_sec'] = dpg.get_value(node.field_move_duration)
+            elif t == "EP_SERVER_JSON_RECV" and hasattr(node, 'field_source'):
+                node.state['source'] = dpg.get_value(node.field_source)
+                node.state['poll_interval_sec'] = dpg.get_value(node.field_poll)
+                node.state['fresh_timeout_sec'] = dpg.get_value(node.field_fresh)
             elif t == "GO1_UNITY" and hasattr(node, 'field_ip'):
                 node.state['unity_ip'] = dpg.get_value(node.field_ip)
                 node.state['enable_teleop_rx'] = dpg.get_value(node.chk_enable)
@@ -351,6 +355,10 @@ class NodeUIRenderer:
             dpg.set_value(node.field_fresh, float(node.state.get('fresh_timeout_sec', 0.2)))
             dpg.set_value(node.field_move_speed, float(node.state.get('move_speed', 0.2)))
             dpg.set_value(node.field_move_duration, float(node.state.get('move_duration_sec', 0.5)))
+        elif t == "EP_SERVER_JSON_RECV" and hasattr(node, 'field_source'):
+            dpg.set_value(node.field_source, node.state.get('source', 'test_payloads/sample.json'))
+            dpg.set_value(node.field_poll, float(node.state.get('poll_interval_sec', 0.1)))
+            dpg.set_value(node.field_fresh, float(node.state.get('fresh_timeout_sec', 0.3)))
         elif t == "GO1_UNITY" and hasattr(node, 'field_ip'):
             dpg.set_value(node.field_ip, node.state.get('unity_ip', getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246')))
             dpg.set_value(node.chk_enable, node.state.get('enable_teleop_rx', True))
@@ -472,6 +480,7 @@ class NodeUIRenderer:
         elif t == "EP_CAM_STREAM": NodeUIRenderer._render_ep_cam_stream(node)
         elif t == "EP_VIS_SAVE": NodeUIRenderer._render_video_save(node)
         elif t == "EP_SERVER_SENDER": NodeUIRenderer._render_ep_server_sender(node)
+        elif t == "EP_SERVER_JSON_RECV": NodeUIRenderer._render_ep_server_json_recv(node)
 
 
     @staticmethod
@@ -756,6 +765,34 @@ class NodeUIRenderer:
                 dpg.add_text("Source can be a JSON URL or a local JSON file.", color=(180,180,180))
             with dpg.node_attribute(tag=node.out_raw_json, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Raw JSON")
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_ep_server_json_recv(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="EP JSON Receiver"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.field_source = dpg.add_input_text(
+                    width=240,
+                    default_value=node.state.get('source', 'test_payloads/sample.json')
+                )
+                node.field_poll = dpg.add_input_float(
+                    label="Poll (sec)",
+                    width=100,
+                    default_value=float(node.state.get('poll_interval_sec', 0.1)),
+                    step=0.01,
+                )
+                node.field_fresh = dpg.add_input_float(
+                    label="Fresh Timeout",
+                    width=120,
+                    default_value=float(node.state.get('fresh_timeout_sec', 0.3)),
+                    step=0.05,
+                )
+                dpg.add_text("Source must be a local JSON file path.", color=(180, 180, 180))
+            with dpg.node_attribute(tag=node.out_raw_json, attribute_type=dpg.mvNode_Attr_Output):
+                dpg.add_text("Raw JSON")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output):
+                dpg.add_text("Flow Out")
 
     @staticmethod
     def _render_go1_auto_avoidance(node):
@@ -1322,6 +1359,7 @@ def __init_ui__():
                 dpg.add_button(label="EP STREAM", callback=add_node_cb, user_data="EP_CAM_STREAM")
                 dpg.add_button(label="EP SAVE", callback=add_node_cb, user_data="EP_VIS_SAVE")
                 dpg.add_button(label="EP SENDER", callback=add_node_cb, user_data="EP_SERVER_SENDER")
+                dpg.add_button(label="EP JSON RX", callback=add_node_cb, user_data="EP_SERVER_JSON_RECV")
 
         with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
