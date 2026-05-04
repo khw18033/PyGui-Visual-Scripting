@@ -694,8 +694,6 @@ class NodeUIRenderer:
         with dpg.node(tag=node.node_id, parent="node_editor", label="Auto Avoidance"):
             with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(tag=node.in_json, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("JSON In")
-            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                dpg.add_text("JSON Receiver 뒤에 연결", color=(180, 180, 180))
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
