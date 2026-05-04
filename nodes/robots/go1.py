@@ -1915,10 +1915,9 @@ class Go1UnityAutonomyNode(BaseNode):
 
         GO1_UNITY_IP = self.state.get('unity_ip', GO1_UNITY_IP)
         self._ensure_sockets()
-
-        # Log guidance message when path follower becomes active.
-        # Show once per activation: check boolean flag (not hasattr) so default False works.
-        if self._path_active and not getattr(self, '_guidance_logged', False):
+        # If this is the first execute after the graph/run started, show guidance
+        # so users can perform R/Z calibration BEFORE pressing M in Unity.
+        if not getattr(self, '_guidance_logged', False):
             write_log("\n" + "="*70)
             write_log("[GO1 UNITY AUTONOMY] 자율주행 명령 대기 중")
             write_log("R / Z 버튼을 눌러 현실과 가상 로봇의 각도를 맞추세요.")
