@@ -907,3 +907,212 @@ odes/robots/go1.py (함수/클래스 추가)
 - 수정 파일:
   - `ui/dpg_manager.py`
   - `code_fix_log/code_fix_go1.md`
+
+### [2026-04-03] GO1 Server Sender 핵심 발견 사항 및 최적화 포인트
+- 문제 분석:
+  - Server Sender 구현의 3가지 숨겨진 위험요소 발견:
+    1) 최신 프레임 선택이 `os.path.getctime` 기준이라 파일시스템 타이밍 이슈 가능
+    2) 업로드 파일명이 고정(`{camera_id}_calib.jpg`)되어 클라이언트 캐시 충돌 가능
+    3) 예외 무시로 인해 드롭 원인 은닉
+    4) GStreamer 수신과 Video Save가 동일 폴더 쓰기로 경합 위험
+    5) 표시 프레임이 의도적으로 1프레임 늦음
+
+- 조치 방안 및 개선점:
+  - 파일 선택: 생성시간 외에도 파일명 인덱스 기반 선택 fallback 추가 예정
+  - 업로드 파일명: 타임스탬프 또는 시퀀스 번호 포함 권장
+  - 예외 처리: 주요 구간 `except Exception: pass`를 `except Exception as e: write_log(...)` 형태로 개선
+  - 폴더 분리: GStreamer와 Video Save 폴더를 분리하거나 동기화 메커니즘 필요
+  - 캐싱: `_last_frame` 메커니즘 검토 (안정성 vs 지연)
+
+- 근거 코드:
+  - 최신 파일 선택: `valid_files.append((os.path.getctime(f), f))`, `_, latest_file = max(valid_files)`
+  - 고정 파일명: `filename=f"{camera_id}_calib.jpg"`
+  - 예외 무시: 라인 448, 483, 493 등에서 `except Exception: pass`
+  - 표시 프레임: `target_file = files[-2]` (최신이 아닌 이전 프레임)
+
+- 수정 파일:
+  - `nodes/robots/go1.py`
+
+### [2026-04-XX] Go1 Avoid 그래프 작동 로직 분석 및 정리
+- 목적:
+  - PyGui에서 Go1 카메라 이미지 서버 송출 + 서버로부터 전달받은 JSON 기반 회피 로직의 전체 흐름을 문서화.
+  - 카메라 프레임 수집/저장/업로드 축 + 조종 입력/서버 JSON 수신/자동 회피 축의 두 축 흐름 분석.
+
+- 핵심 노드 역할 정리:
+  - `GO1_SERVER_SENDER`: 저장된 프레임을 서버로 업로드하는 비동기 관리 노드
+    - 통신: HTTP POST, multipart/form-data, aiohttp 라이브러리
+    - 동작: START/STOP 명령 큐 처리 → 카메라별 워커 스레드 생성 → 저장 폴더 감시 → 새 파일 감지 → 비동기 업로드
+    - 파일 감시: 폴더 기반 JPG 파일 모니터링, 파일 크기 안정화 확인 후 업로드
+    - 상태: `sender_state['status']`, `multi_sender_active` 플래그로 관리
+  
+  - `GO1_SERVER_JSON_RECV`: 서버 JSON 폴링 및 로봇 명령 변환
+    - 통신: HTTP GET 폴링 또는 파일 읽기 모드
+    - 동작: 폴링 주기마다 JSON 조회 → 파싱 → 백업 저장 → direction 해석 → 방향 명령 주입
+    - Direction 해석: JSON 내 `cmd`, `command`, `direction`, `action` 필드 검사, `left`/`right`/`front`/`back`/`stop` 판정
+    - 방향 명령 주입: `_inject_direction_motion()`을 통해 기존 제어 경로 재사용, 펄스형(지속시간 제한) 명령
+    - 정지 처리: `stop` 방향은 E-STOP hold 상태(2초) 전환 → 안전 우선 정책
+    - 상태 출력: `raw_json`, `seq`, `ts`, `vx`, `vy`, `wz`, `stop`, `confidence`, `connected`, `fresh`, `status`
+  
+  - `GO1_AUTO_AVOIDANCE`: 서버 JSON의 `detections` 분석 및 자동 회피
+    - 입력: JSON 전체 또는 payload, 핵심 판단 기준은 `has_near_obstacle`, `detections`, `risk_level`, `name`, `bbox_xyxy`, `rel_depth`
+    - 동작: JSON 파싱 → 중복 실행 방지 → `has_near_obstacle` 체크 → `risk_level==near` 필터링 → `name==person` 우선 → bbox 중심 위치 판정 → 방향 기반 회피 명령 주입
+    - 위치 판정: 이미지 너비 464px 기준, `center_x = (x1+x2)/2`, 화면 중심=232.0, `center_x<232`→오른쪽 회피, `center_x>232`→왼쪽 회피
+    - 회피 주입: `SERVER_JSON_RECV`의 `_inject_direction_motion()` 재사용, 동일 시그니처는 중복 주입 차단
+    - 안전 폴백: bbox가 없거나 계산 실패 시 즉시 정지 명령
+    - 상태 출력: `status` (SAFE/NEAR_OBSTACLE_NONE/NEAR_PERSON_MISSING/MOVE_LEFT/MOVE_RIGHT/STOP_SENT), `has_near_obstacle`, `near_count`, `person_found`, `person_id`, `person_rel_depth`
+
+- 흐름의 폐루프 특성:
+  - 영상 업로드 (GO1_SERVER_SENDER) → 서버 분석 → JSON 생성 → 수신 (GO1_SERVER_JSON_RECV) → 회피 판단 (GO1_AUTO_AVOIDANCE) → 명령 주입 → 로봇 움직임 → 다음 프레임 촬영
+
+- 그래프 설정값 해석:
+  - 카메라 저장: VIDEO_SRC.target_ip=192.168.50.63, receiver_folder=Captured_Images/go1_front, VIS_SAVE.folder=/dev/shm/test11111, VIS_SAVE.duration=10.0, max_frames=300
+  - 서버 송신: GO1_SERVER_SENDER.server_url=http://210.110.250.33:5001/upload
+  - 조종/수신: GO1_KEYBOARD.keys=WASD, JSON 폴링 주기/타임아웃/신선도 설정
+
+- 수정 파일:
+  - `nodes/robots/go1.py`
+
+### [2026-04-27] Depth Anything V2 통합 분석 및 구현 로드맵
+- 문제 분석:
+  - Go1.py 기반 Depth Anything V2 추가 시 제어 구조/성능/안전성 관점의 통합 지점 정의 필요.
+  - 기존 비전 파이프라인(VideoSource → Fisheye → ArUco → Flask → Save)에 Depth 노드를 어떻게 조화시킬지 설계 필요.
+
+- 현재 go1.py 구조:
+  - 제어 상태 허브: `go1_node_intent` (주행 의도 입력), `go1_state` (제어 상태 출력), `go1_dashboard` (표시용 집계)
+  - 주 제어 루프: go1_keepalive_thread()에서 상시 동작, 그래프 틱은 50Hz (0.02s)
+  - 현재 비전 파이프라인: VideoSourceNode → FisheyeUndistortNode → ArUcoDetectNode → FlaskStreamNode, VideoFrameSaveNode
+
+- 추천 통합 방식: VIS_DEPTH_DA2 신규 노드 추가
+  - 권장 체인: Video Source → Fisheye Undistort → **Depth Anything V2** → (ArUco/Flask/Save 또는 제어 분기)
+  - 이유: 원본/보정 노드 재사용 가능, BaseNode 데이터 포트 기반 철학 유지, 결과 프레임과 수치 동시 제공
+  
+- 신규 노드 I/O 설계:
+  - 입력: `in_frame` (보정 완료 BGR 프레임)
+  - 출력: `out_depth_raw` (float32 HxW), `out_depth_vis` (BGR uint8 시각화), `out_risk_json` (위험도 JSON), `out_flow`
+  - 상태: `model_variant` (vits/vitb/vitl), `device` (auto/cuda/cpu), `input_size` (기본 518), `roi_mode` (center_bottom), ROI 좌표, 임계값, 연속프레임조건, JSON 저장경로
+
+- 모델 로딩/추론 구조 (50Hz 제어루프 보호):
+  - 1회 초기화: 모델 로드
+  - Execute 주기: 최신 프레임을 비동기 큐에만 전달 (즉시 반환)
+  - 별도 추론 스레드: 마지막 프레임 처리, 결과 캐시 갱신
+  - Execute 반환: 캐시된 최신 결과 즉시 전달
+  - 효과: 50Hz 그래프 틱 비보호, 추론 지연에도 제어 루프 안정성 유지
+
+- 제어 연결 (단계적 적용):
+  - 1단계: go1_state, go1_dashboard에 위험도만 표시, 자동 정지 비활성
+  - 2단계: 위험 연속 N프레임 검출 시 go1_node_intent stop 설정, 히스테리시스 적용 (정지/해제 임계값 분리)
+  - 안전: 기존 즉시 정지 경로와 충돌 없이 합류 설계
+
+- 출력 데이터 및 파일/네트워크 경로:
+  - out_depth_raw: 상대 또는 metric depth, float32 HxW
+  - out_depth_vis: BGR uint8, FlaskStreamNode 입력으로 웹 송출 가능
+  - out_risk_json: 타임스탐프, ROI, min/p10/유효비율, 위험도, 정지권장, 추론지연 필드
+  - 저장: VideoFrameSaveNode를 통해 시각화 프레임 저장
+  - 스트리밍: FlaskStreamNode로 웹 송출
+  - JSON: ArUco 패턴처럼 depth JSON 확장 가능
+
+- 대시보드 표출 권장: Depth Status (Ready/Running/Disabled), Risk (SAFE/WARN/STOP), ROI Min Depth, 추론 지연, 실효 FPS
+
+- 정확도/안전성 결론:
+  - Depth V2의 강점: 상대 깊이 추정
+  - 즉시 정지 계층: 절대거리 정밀도보다 일관된 위험 분류와 저지연 중요
+  - 초기 목표: 거리 계측보다 근접 위험 감지 신뢰도 확보
+  - 운영 권장: 경고 전용 → 로그 임계값 탐색 → 자동 정지 활성화, 연속프레임 조건과 히스테리시스 필수
+
+- 구현 체크리스트:
+  1. go1.py에 VIS_DEPTH_DA2 노드 클래스 추가
+  2. core/factory.py에 노드 타입 등록
+  3. ui/dpg_manager.py에 UI 렌더, 동기화, 팔레트 버튼 추가
+  4. 비동기 추론 스레드 및 결과 캐시 설계
+  5. depth JSON 스키마 확정 및 로그 저장
+  6. 정지 정책 (N프레임, 히스테리시스, fail-safe) 정의
+  7. End-to-end latency 계측
+
+- 수정 파일:
+  - `nodes/robots/go1.py`
+  - `core/factory.py`
+  - `ui/dpg_manager.py`
+
+### [2026-04-28] Go1 Auto Avoidance 변경 보고서 및 구현 완료
+- 문제 분석:
+  - JSON 수신 시 근접 인물에 대해 즉시 정지 대신 위치 기반 횡회피 명령을 0.5초간 주입하도록 변경 필요.
+
+- 조치 방안:
+  - `nodes/robots/go1.py` Auto Avoidance 노드 로직 수정:
+    - 입력: JSON payload의 `detections` 배열에서 `risk_level=='near'` 이며 `name=='person'` 항목만 처리
+    - Bbox 중심 계산: `center_x = (x1 + x2) / 2.0` (이미지 너비 = 464px)
+    - 위치 분류: `center_x == 232.0` (정확히 중앙)일 때만 `center`, `center_x < 232.0`→`left`, `center_x > 232.0`→`right`
+    - 회피 매핑: `left` 또는 `center` → 오른쪽으로 0.5s 이동, `right` → 왼쪽으로 0.5s 이동
+    - 명령 주입: `GO1_SERVER_JSON_RECV`의 `_inject_direction_motion(dir, speed, duration, signature)` 호출, 실패 시 안전 정지 폴백
+  - `core/engine.py`: `GO1_AUTO_AVOIDANCE`를 주기 실행 목록에서 제거 (중복 실행 방지)
+
+- 샘플 JSON 분석 및 검증:
+  - 파일: `jsonbackup/1777363709_8966951_go1_front.json`
+  - 관심 대상: id=5 (person, risk_level=near)
+  - Bbox: [387, 152, 406, 222] → center_x = (387+406)/2 = 396.5
+  - 상대 위치: 396.5 / 464 ≈ 0.8545 → `right` 판정
+  - 결론: 로봇은 왼쪽으로 0.5초간 회피 명령 수신
+
+- 예상 로그:
+  - [GO1 AUTO AVOID] near person detected | id=5 | rel_depth=0.981680154800415
+  - [GO1 AUTO AVOID] 왼쪽으로 이동 (id=5 | rel_depth=0.981680154800415)
+  - [GO1 JSON RX] command=left → move vx=0.000, vy=0.200, wz=0.000, duration=0.50s
+
+- 주의사항 및 권장:
+  - 현재 `center` 판정이 매우 엄격함(정확히 중앙일 때만) → 실환경 대응을 위해 임계값(±2px 등) 완화 권장
+  - 동일 이벤트 중복 실행 완벽 방지를 위해 노드 내부 디바운스 병행 권장
+
+- 재현 방법:
+  1. 엔진과 노드 실행, `GO1_SERVER_JSON_RECV`가 해당 JSON을 읽도록 배치
+  2. 로그에서 예상 로그 라인들 확인
+
+- 수정 파일:
+  - `nodes/robots/go1.py`
+  - `core/engine.py`
+
+### [2026-05-04 00:00:00] Server Sender 가이드 및 통합 정리
+- 목적:
+  - Go1 Server Sender의 전체 동작 원리, 아키텍처, 노드 간 관계를 한 문서에서 종합적으로 가이드.
+  - 이미지 업로드 → 서버 처리 → JSON 수신 → 로봇 제어의 폐루프 흐름을 시각화.
+
+- 핵심 가이드 내용:
+  - **Server Sender 노드 개요**: GO1_SERVER_SENDER, 원격 서버 URL 설정, START/STOP 제어, 비동기 multipart 업로드, Flow 포트 지원
+  
+  - **작동 원리 - 4개 핵심 구성 요소**:
+    1) MultiSenderNode (사용자 UI): Action(Start/Stop), Server URL 입력 → `sender_command_queue` 큐잉
+    2) sender_manager_thread(): 큐에서 START/STOP 명령 추출 → `multi_sender_active` 플래그 → 카메라별 워커 스레드 생성/정리
+    3) camera_async_worker(): 저장 폴더 모니터링 → 최신 JPG 파일 감지 → 중복 업로드 방지 → 비동기 HTTP multipart 전송 (10Hz)
+    4) send_image_async(): 이미지 파일 읽기 → form-data 구성 → asyncio 기반 POST 요청 (타임아웃 2초)
+
+  - **아키텍처 다이어그램**: UI Layer → Background Thread Layer (sender_manager_thread) → 카메라별 AsyncIO Worker → HTTP Streaming Server
+  
+  - **카메라 노드와의 연결**: VIDEO_SRC (스트리밍 시작/중지) → VIS_SAVE (폴더 저장) → GO1_SERVER_SENDER (업로드 워커 관리)
+  
+  - **실행 흐름 (START)**:
+    1. 사용자가 "Start Sender" 선택
+    2. sender_command_queue에 ('START', url) 추가
+    3. sender_manager_thread()가 START 명령 처리
+    4. multi_sender_active = True, 카메라별 워커 스레드 생성
+    5. start_async_loop()로 asyncio 이벤트루프 생성
+    6. camera_async_worker() 루프 시작 (폴더 감시 + 파일 업로드)
+  
+  - **실행 흐름 (STOP)**:
+    1. 사용자가 "Stop Sender" 선택
+    2. sender_command_queue에 ('STOP', url) 추가
+    3. sender_manager_thread()가 STOP 명령 처리
+    4. multi_sender_active = False → 모든 워커 루프 종료
+  
+  - **사용 예시 (카메라 프레임 저장 및 업로드)**:
+    - 파이프라인: START → VIDEO_SRC → FISHEYE(선택) → ARUCO(선택) → VIS_SAVE → GO1_SERVER_SENDER → 후속노드
+    - 설정: 저장 폴더(폴더명), 타이머(초), Start Stream 버튼 → 서버 URL 입력 → Start/Stop Sender 선택
+    - 검증: 로그에서 upload 성공/실패 확인, 서버에서 업로드된 파일 확인
+
+- 개선 사항 통합:
+  - 저장-송신 파이프라인을 Go1 기준으로 한 번에 추적 가능
+  - 경로 불일치/상태 불일치 원인을 빠르게 확인 가능
+  - VIS_SAVE 경로 우선 동기화로 폴더 분리 관리
+  - Start 재트리거 보강으로 재실행 시 송신 누락 방지
+
+- 수정 파일:
+  - `code_fix_log/SERVER_SENDER_GUIDE.md`
+  - `code_fix_log/code_fix_go1.md`
