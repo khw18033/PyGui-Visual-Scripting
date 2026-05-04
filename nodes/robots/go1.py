@@ -1566,8 +1566,7 @@ class Go1UnityNode(BaseNode):
                 write_log(f"Go1 Unity JSON Error: {e}")
 
         # Unity Connection no longer exposes target velocity outputs here.
-        # Provide only body height and active flag for downstream nodes.
-        self.output_data[self.out_body_height] = go1_state.get('body_height_cmd', 0.0)
+        # Provide only active flag for downstream nodes.
         self.output_data[self.out_active] = go1_unity_data.get('active', False)
         return self.out_flow
 
