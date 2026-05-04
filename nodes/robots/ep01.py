@@ -86,6 +86,7 @@ ep_sender_active = False
 EP_SENDER_TARGET_FPS = 30
 EP_SENDER_INTERVAL = 1.0 / EP_SENDER_TARGET_FPS
 _ep_sender_manager_started = False
+_ep_sender_manager_lock = threading.Lock()
 
 # EP Sender 실시간 폴더 (ref_code와 일치 - /dev/shm 사용 가능할 경우)
 EP_SENDER_WATCH_FOLDER = "/dev/shm/ep01" if os.path.isdir("/dev/shm") else "Captured_Images/ep01_saved"
@@ -359,6 +360,17 @@ def _ep_is_file_stable(path, wait_sec=0.02):
         return False
 
 
+def _ensure_ep_sender_manager_started():
+    """EP sender manager를 단 한 번만 시작"""
+    global _ep_sender_manager_started
+    with _ep_sender_manager_lock:
+        if _ep_sender_manager_started:
+            return
+        _ep_sender_manager_started = True
+        threading.Thread(target=_ep_sender_manager_thread, daemon=True).start()
+        write_log("[EP] Sender manager thread started")
+
+
 async def _ep_send_image_async(session, filepath, camera_id, server_url):
     try:
         if not os.path.exists(filepath):
@@ -386,6 +398,7 @@ async def _ep_camera_async_worker(config, server_url):
     camera_id = config["id"]
     last_processed_file = None
     last_processed_idx = -1
+    last_processed_mtime = 0.0
 
     os.makedirs(folder, exist_ok=True)
 
@@ -417,10 +430,22 @@ async def _ep_camera_async_worker(config, server_url):
                                 last_processed_file = latest_file
                                 await _ep_send_image_async(session, latest_file, camera_id, server_url)
                     else:
-                        if best_idx > last_processed_idx and _ep_is_file_stable(best_file):
+                        try:
+                            current_mtime = os.path.getmtime(best_file)
+                        except OSError:
+                            current_mtime = 0.0
+
+                        has_new_frame = (
+                            (best_idx > last_processed_idx)
+                            or (best_file != last_processed_file)
+                            or (current_mtime > last_processed_mtime)
+                        )
+
+                        if has_new_frame and _ep_is_file_stable(best_file):
                             await _ep_send_image_async(session, best_file, camera_id, server_url)
                             last_processed_idx = best_idx
                             last_processed_file = best_file
+                            last_processed_mtime = current_mtime
 
                 await asyncio.sleep(max(0, EP_SENDER_INTERVAL - (time.time() - cycle_start)))
     except Exception as e:
@@ -438,8 +463,7 @@ def _ep_start_async_loop(config, server_url):
 
 def _ep_sender_manager_thread():
     """EP Sender 매니저: 큐 명령을 처리하고 비동기 워커 관리"""
-    global ep_sender_active, ep_sender_state, _ep_sender_manager_started
-    _ep_sender_manager_started = True
+    global ep_sender_active, ep_sender_state
     sender_threads = []
 
     write_log("[EP Sender Manager] Started")
@@ -449,8 +473,8 @@ def _ep_sender_manager_thread():
             cmd, url = ep_sender_command_queue.popleft()
 
             if cmd == 'START' and not ep_sender_active:
-                # ref_code 기본값 사용
-                upload_folder = EP_SENDER_WATCH_FOLDER
+                # 저장 노드의 실제 폴더를 우선 사용하고, 없으면 기본 폴더로 fallback
+                upload_folder = str(ep_camera_save_state.get('folder', '')).strip() or EP_SENDER_WATCH_FOLDER
                 os.makedirs(upload_folder, exist_ok=True)
                 ep_sender_active = True
                 ep_sender_state['status'] = 'Running'
@@ -473,10 +497,8 @@ def ep_status_thread():
     """EP 상태 모니터 및 통신 스레드 시작"""
     global _ep_arm_worker_started
     
-    # Sender 매니저 스레드 시작 (ref_code와 일치)
-    sender_mgr_thread = threading.Thread(target=_ep_sender_manager_thread, daemon=True)
-    sender_mgr_thread.start()
-    write_log("[EP] Sender manager thread started")
+    # Sender 매니저는 중복 없이 한 번만 시작
+    _ensure_ep_sender_manager_started()
     
     # 통신 루프 실행
     ep_comm_thread()
@@ -1058,14 +1080,12 @@ class EPServerSenderNode(BaseNode):
         self._last_request_ts = 0.0
 
     def execute(self):
-        global ep_sender_state, ep_sender_active, _ep_sender_manager_started
+        global ep_sender_state, ep_sender_active
 
         if not HAS_AIOHTTP:
             return self.out_flow
 
-        if not _ep_sender_manager_started:
-            _ep_sender_manager_started = True
-            threading.Thread(target=_ep_sender_manager_thread, daemon=True).start()
+        _ensure_ep_sender_manager_started()
 
         action = self.state.get('action', 'Start Sender')
         url = self.state.get('server_url', "http://210.110.250.33:5002/upload")
