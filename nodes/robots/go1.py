@@ -1607,6 +1607,7 @@ class Go1UnityAutonomyNode(BaseNode):
         self._path_anchor_world_x = 0.0
         self._path_anchor_world_z = 0.0
         self._path_anchor_world_yaw = 0.0
+        self._guidance_logged = False
 
     def _make_udp_sender(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1794,6 +1795,7 @@ class Go1UnityAutonomyNode(BaseNode):
         self._active_waypoints = []
         self._current_waypoint_idx = 0
         self._current_path_id = -1
+        self._guidance_logged = False
 
     def _send_waypoints_to_unity(self):
         if self._tx_sock is None or not _coerce_bool(self.state.get('send_waypoints', True), True):
@@ -1909,6 +1911,19 @@ class Go1UnityAutonomyNode(BaseNode):
 
         GO1_UNITY_IP = self.state.get('unity_ip', GO1_UNITY_IP)
         self._ensure_sockets()
+
+        # Log guidance message when path follower becomes active.
+        if self._path_active and not hasattr(self, '_guidance_logged'):
+            write_log("\n" + "="*70)
+            write_log("[GO1 UNITY AUTONOMY] 자율주행 명령 대기 중")
+            write_log("R / Z 버튼을 눌러 현실과 가상 로봇의 각도를 맞추세요.")
+            write_log("")
+            write_log("  R : Unity 각도를 90도로 맞추고 그것에 맞춰 현실 로봇의 각도 이동")
+            write_log("  Z : Unity 각도만 90도로 조정")
+            write_log("")
+            write_log("각도 조정이 끝났다면 Unity에서 M 버튼을 눌러 자율 주행을 시작하세요.")
+            write_log("="*70)
+            self._guidance_logged = True
 
         latest_raw = None
         while True:
