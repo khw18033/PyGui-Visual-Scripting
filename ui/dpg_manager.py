@@ -240,6 +240,20 @@ class NodeUIRenderer:
                 node.state['unity_ip'] = dpg.get_value(node.field_ip)
                 node.state['enable_teleop_rx'] = dpg.get_value(node.chk_enable)
                 node.state['send_aruco'] = dpg.get_value(node.chk_aruco)
+            elif t == "GO1_UNITY_AUTO" and hasattr(node, 'field_ip'):
+                node.state['unity_ip'] = dpg.get_value(node.field_ip)
+                node.state['path_port'] = dpg.get_value(node.field_path_port)
+                node.state['waypoint_tx_port'] = dpg.get_value(node.field_waypoint_port)
+                node.state['send_waypoints'] = dpg.get_value(node.chk_send_waypoints)
+                node.state['wp_reach_radius'] = dpg.get_value(node.field_wp_reach)
+                node.state['path_kp_dist'] = dpg.get_value(node.field_kp_dist)
+                node.state['path_kp_yaw'] = dpg.get_value(node.field_kp_yaw)
+                node.state['path_max_vx'] = dpg.get_value(node.field_max_vx)
+                node.state['path_max_wz'] = dpg.get_value(node.field_max_wz)
+                node.state['path_turn_only_thresh'] = dpg.get_value(node.field_turn_only)
+                node.state['path_yaw_reach_tol_deg'] = dpg.get_value(node.field_yaw_tol)
+            elif t == "GO1_UNITY_KEYBOARD" and hasattr(node, 'combo_keys'):
+                node.state['keys'] = dpg.get_value(node.combo_keys)
             elif t == "VIS_ARUCO" and hasattr(node, 'ui_camera_id'):
                 node.state['camera_id'] = dpg.get_value(node.ui_camera_id)
                 node.state['marker_size_m'] = dpg.get_value(node.ui_marker_size_m)
@@ -319,6 +333,8 @@ class NodeUIRenderer:
         # --- [Vision & Go1] State -> UI ---
         elif t == "GO1_KEYBOARD" and hasattr(node, 'combo_keys'): 
             dpg.set_value(node.combo_keys, node.state.get('keys', 'WASD'))
+        elif t == "GO1_UNITY_KEYBOARD" and hasattr(node, 'combo_keys'):
+            dpg.set_value(node.combo_keys, node.state.get('keys', 'WASD'))
         elif t == "EP_KEYBOARD" and hasattr(node, 'combo_keys'):
             dpg.set_value(node.combo_keys, node.state.get('keys', 'WASD'))
         elif t == "GO1_ACTION" and hasattr(node, 'combo_id'):
@@ -339,6 +355,18 @@ class NodeUIRenderer:
             dpg.set_value(node.field_ip, node.state.get('unity_ip', getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246')))
             dpg.set_value(node.chk_enable, node.state.get('enable_teleop_rx', True))
             dpg.set_value(node.chk_aruco, node.state.get('send_aruco', False))
+        elif t == "GO1_UNITY_AUTO" and hasattr(node, 'field_ip'):
+            dpg.set_value(node.field_ip, node.state.get('unity_ip', getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246')))
+            dpg.set_value(node.field_path_port, int(node.state.get('path_port', 15110)))
+            dpg.set_value(node.field_waypoint_port, int(node.state.get('waypoint_tx_port', 15104)))
+            dpg.set_value(node.chk_send_waypoints, node.state.get('send_waypoints', True))
+            dpg.set_value(node.field_wp_reach, float(node.state.get('wp_reach_radius', 0.12)))
+            dpg.set_value(node.field_kp_dist, float(node.state.get('path_kp_dist', 0.5)))
+            dpg.set_value(node.field_kp_yaw, float(node.state.get('path_kp_yaw', 1.5)))
+            dpg.set_value(node.field_max_vx, float(node.state.get('path_max_vx', 0.12)))
+            dpg.set_value(node.field_max_wz, float(node.state.get('path_max_wz', 0.60)))
+            dpg.set_value(node.field_turn_only, float(node.state.get('path_turn_only_thresh', 0.35)))
+            dpg.set_value(node.field_yaw_tol, float(node.state.get('path_yaw_reach_tol_deg', 8.0)))
         elif t == "VIS_ARUCO" and hasattr(node, 'ui_camera_id'):
             dpg.set_value(node.ui_camera_id, node.state.get('camera_id', 'go1_front'))
             dpg.set_value(node.ui_marker_size_m, node.state.get('marker_size_m', 0.03))
@@ -426,6 +454,8 @@ class NodeUIRenderer:
         elif t == "GO1_KEYBOARD": NodeUIRenderer._render_go1_keyboard(node)
         elif t == "EP_KEYBOARD": NodeUIRenderer._render_ep_keyboard(node)
         elif t == "GO1_UNITY": NodeUIRenderer._render_go1_unity(node)
+        elif t == "GO1_UNITY_KEYBOARD": NodeUIRenderer._render_go1_unity_keyboard(node)
+        elif t == "GO1_UNITY_AUTO": NodeUIRenderer._render_go1_unity_auto(node)
         elif t == "GO1_ACTION": NodeUIRenderer._render_go1_action(node)
         elif t == "GO1_SERVER_SENDER": NodeUIRenderer._render_go1_server_sender(node)
         elif t == "GO1_SERVER_JSON_RECV": NodeUIRenderer._render_go1_server_json_recv(node)
@@ -623,8 +653,46 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
+    def _render_go1_unity_keyboard(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Unity Keyboard (Go1)"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
+                dpg.add_text("Unity-side key mapping\nMove / QE: Turn\nZ/X: Body Height +/-\nSpace: Stop / R: Yaw Align / C: Reset Yaw", color=(255,150,150))
+            with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vx")
+            with dpg.node_attribute(tag=node.out_vy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vy")
+            with dpg.node_attribute(tag=node.out_vyaw, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Yaw")
+            with dpg.node_attribute(tag=node.out_body_height, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Body Height")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_go1_unity_auto(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Unity Autonomy (Go1)"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_text("Unity Path UDP", color=(100,255,100))
+                node.field_ip = dpg.add_input_text(width=140, default_value=getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246'))
+                node.field_path_port = dpg.add_input_int(label="Path Port", width=100, default_value=15110)
+                node.field_waypoint_port = dpg.add_input_int(label="Waypoint Port", width=100, default_value=15104)
+                node.chk_send_waypoints = dpg.add_checkbox(label="Send Waypoints", default_value=True)
+                node.field_wp_reach = dpg.add_input_float(label="Reach Radius", width=100, default_value=0.12, step=0.01)
+                node.field_kp_dist = dpg.add_input_float(label="Kp Dist", width=100, default_value=0.5, step=0.05)
+                node.field_kp_yaw = dpg.add_input_float(label="Kp Yaw", width=100, default_value=1.5, step=0.05)
+                node.field_max_vx = dpg.add_input_float(label="Max Vx", width=100, default_value=0.12, step=0.01)
+                node.field_max_wz = dpg.add_input_float(label="Max Wz", width=100, default_value=0.60, step=0.01)
+                node.field_turn_only = dpg.add_input_float(label="Turn Only Thresh", width=120, default_value=0.35, step=0.01)
+                node.field_yaw_tol = dpg.add_input_float(label="Yaw Tol (deg)", width=120, default_value=8.0, step=0.5)
+                dpg.add_text("Parses go1_path JSON and follows waypoints.", color=(180,180,180))
+            with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vx")
+            with dpg.node_attribute(tag=node.out_vy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vy")
+            with dpg.node_attribute(tag=node.out_vyaw, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Yaw")
+            with dpg.node_attribute(tag=node.out_active, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Is Active?")
+            with dpg.node_attribute(tag=node.out_path_done, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Path Done")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
     def _render_go1_unity(node):
-        with dpg.node(tag=node.node_id, parent="node_editor", label="Unity Logic (Go1)"):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Unity Connection (Go1)"):
             with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_text("Unity PC IP", color=(100,255,100))
@@ -1229,6 +1297,8 @@ def __init_ui__():
                 dpg.add_text("Go1 & Vision:", color=(100,200,255))
                 dpg.add_button(label="GO1 KEY", callback=add_node_cb, user_data="GO1_KEYBOARD")
                 dpg.add_button(label="GO1 UNITY", callback=add_node_cb, user_data="GO1_UNITY")
+                dpg.add_button(label="GO1 U-KBD", callback=add_node_cb, user_data="GO1_UNITY_KEYBOARD")
+                dpg.add_button(label="GO1 PATH", callback=add_node_cb, user_data="GO1_UNITY_AUTO")
                 dpg.add_button(label="GO1 DRIVER", callback=add_node_cb, user_data="GO1_DRIVER")
                 dpg.add_button(label="GO1 ACTION", callback=add_node_cb, user_data="GO1_ACTION")
                 dpg.add_button(label="GO1 SENDER", callback=add_node_cb, user_data="GO1_SERVER_SENDER")

@@ -9,7 +9,7 @@ from nodes.robots.mt4 import (
     MT4GravitySagNode, MT4CalibrationNode, MT4TooltipNode, MT4BacklashNode
 )
 
-from nodes.robots.go1 import (Go1RobotDriver, Go1ActionNode, VideoSourceNode, Go1KeyboardNode, Go1UnityNode,
+from nodes.robots.go1 import (Go1RobotDriver, Go1ActionNode, VideoSourceNode, Go1KeyboardNode, Go1UnityNode, Go1UnityKeyboardNode, Go1UnityAutonomyNode,
                               FisheyeUndistortNode, DepthAnythingV2Node, ArUcoDetectNode, FlaskStreamNode, VideoFrameSaveNode,
                               ServerSenderNode, Go1ServerJsonRecvNode, Go1AutoAvoidanceNode)
 
@@ -51,7 +51,9 @@ class NodeFactory:
         elif node_type == "MT4_TOOLTIP": node = MT4TooltipNode(node_id)
         elif node_type == "MT4_BACKLASH": node = MT4BacklashNode(node_id)
         elif node_type == "GO1_KEYBOARD": node = Go1KeyboardNode(node_id)
+        elif node_type == "GO1_UNITY_KEYBOARD": node = Go1UnityKeyboardNode(node_id)
         elif node_type == "GO1_UNITY": node = Go1UnityNode(node_id)
+        elif node_type == "GO1_UNITY_AUTO": node = Go1UnityAutonomyNode(node_id)
         elif node_type == "GO1_DRIVER": node = UniversalRobotNode(node_id, Go1RobotDriver(), "Go1 Driver", "GO1_DRIVER")
         elif node_type == "GO1_ACTION": node = Go1ActionNode(node_id)
         elif node_type == "VIDEO_SRC": node = VideoSourceNode(node_id)

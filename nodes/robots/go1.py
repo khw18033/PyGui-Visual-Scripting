@@ -9,6 +9,7 @@ import platform
 import subprocess
 import glob
 import asyncio
+import re
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -109,6 +110,8 @@ GO1_UNITY_IP = "192.168.50.246"
 UNITY_STATE_PORT = 15101
 UNITY_CMD_PORT = 15102
 UNITY_RX_PORT = 15100
+UNITY_WAYPOINT_TX_PORT = 15104
+UNITY_PATH_PORT = 15110
 
 DT = 0.02
 V_MAX = 0.4
@@ -1388,6 +1391,60 @@ class Go1ActionNode(BaseNode):
         return self.out_flow
 
 
+def _apply_go1_keyboard_intent(state):
+    if state.get('is_focused', False):
+        return 0.0, 0.0, 0.0, go1_node_intent.get('body_height', 0.0)
+
+    vx = 0.0
+    vy = 0.0
+    wz = 0.0
+
+    key_mode = state.get('keys', 'WASD')
+    if key_mode == 'WASD':
+        if state.get('W'):
+            vx = VX_CMD
+        if state.get('S'):
+            vx = -VX_CMD
+        if state.get('A'):
+            vy = VY_CMD
+        if state.get('D'):
+            vy = -VY_CMD
+    else:
+        if state.get('UP'):
+            vx = VX_CMD
+        if state.get('DOWN'):
+            vx = -VX_CMD
+        if state.get('LEFT'):
+            vy = VY_CMD
+        if state.get('RIGHT'):
+            vy = -VY_CMD
+
+    if state.get('Q'):
+        wz = WZ_CMD
+    if state.get('E'):
+        wz = -WZ_CMD
+
+    if state.get('Z'):
+        go1_node_intent['body_height'] = _clamp(go1_node_intent.get('body_height', 0.0) + BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+    if state.get('X'):
+        go1_node_intent['body_height'] = _clamp(go1_node_intent.get('body_height', 0.0) - BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+
+    if state.get('SPACE'):
+        go1_node_intent['stop'] = True
+    if state.get('R_pressed'):
+        go1_node_intent['yaw_align'] = True
+    if state.get('C_pressed'):
+        go1_node_intent['reset_yaw'] = True
+
+    if vx or vy or wz:
+        go1_node_intent['vx'] = vx
+        go1_node_intent['vy'] = vy
+        go1_node_intent['wz'] = wz
+        go1_node_intent['trigger_time'] = time.monotonic()
+
+    return vx, vy, wz, go1_node_intent.get('body_height', 0.0)
+
+
 class Go1KeyboardNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Keyboard (Go1)", "GO1_KEYBOARD")
@@ -1405,66 +1462,44 @@ class Go1KeyboardNode(BaseNode):
         self.outputs[self.out_flow] = PortType.FLOW
 
     def execute(self):
-        if self.state.get('is_focused', False):
-            return self.out_flow
-
-        vx = 0.0
-        vy = 0.0
-        wz = 0.0
-
-        key_mode = self.state.get('keys', 'WASD')
-        if key_mode == 'WASD':
-            if self.state.get('W'):
-                vx = VX_CMD
-            if self.state.get('S'):
-                vx = -VX_CMD
-            if self.state.get('A'):
-                vy = VY_CMD
-            if self.state.get('D'):
-                vy = -VY_CMD
-        else:
-            if self.state.get('UP'):
-                vx = VX_CMD
-            if self.state.get('DOWN'):
-                vx = -VX_CMD
-            if self.state.get('LEFT'):
-                vy = VY_CMD
-            if self.state.get('RIGHT'):
-                vy = -VY_CMD
-
-        if self.state.get('Q'):
-            wz = WZ_CMD
-        if self.state.get('E'):
-            wz = -WZ_CMD
-
-        if self.state.get('Z'):
-            go1_node_intent['body_height'] = _clamp(go1_node_intent.get('body_height', 0.0) + BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
-        if self.state.get('X'):
-            go1_node_intent['body_height'] = _clamp(go1_node_intent.get('body_height', 0.0) - BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
-
-        if self.state.get('SPACE'):
-            go1_node_intent['stop'] = True
-        if self.state.get('R_pressed'):
-            go1_node_intent['yaw_align'] = True
-        if self.state.get('C_pressed'):
-            go1_node_intent['reset_yaw'] = True
-
-        if vx or vy or wz:
-            go1_node_intent['vx'] = vx
-            go1_node_intent['vy'] = vy
-            go1_node_intent['wz'] = wz
-            go1_node_intent['trigger_time'] = time.monotonic()
+        vx, vy, wz, body_height = _apply_go1_keyboard_intent(self.state)
 
         self.output_data[self.out_vx] = vx
         self.output_data[self.out_vy] = vy
         self.output_data[self.out_vyaw] = wz
-        self.output_data[self.out_body_height] = go1_node_intent.get('body_height', 0.0)
+        self.output_data[self.out_body_height] = body_height
+        return self.out_flow
+
+
+class Go1UnityKeyboardNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Unity Keyboard (Go1)", "GO1_UNITY_KEYBOARD")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_vx = generate_uuid()
+        self.outputs[self.out_vx] = PortType.DATA
+        self.out_vy = generate_uuid()
+        self.outputs[self.out_vy] = PortType.DATA
+        self.out_vyaw = generate_uuid()
+        self.outputs[self.out_vyaw] = PortType.DATA
+        self.out_body_height = generate_uuid()
+        self.outputs[self.out_body_height] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+    def execute(self):
+        vx, vy, wz, body_height = _apply_go1_keyboard_intent(self.state)
+
+        self.output_data[self.out_vx] = vx
+        self.output_data[self.out_vy] = vy
+        self.output_data[self.out_vyaw] = wz
+        self.output_data[self.out_body_height] = body_height
         return self.out_flow
 
 
 class Go1UnityNode(BaseNode):
     def __init__(self, node_id):
-        super().__init__(node_id, "Unity Logic (Go1)", "GO1_UNITY")
+        super().__init__(node_id, "Unity Connection (Go1)", "GO1_UNITY")
         self.in_flow = generate_uuid()
         self.inputs[self.in_flow] = PortType.FLOW
         self.data_in_id = generate_uuid()
@@ -1513,6 +1548,397 @@ class Go1UnityNode(BaseNode):
         self.output_data[self.out_vyaw] = go1_unity_data['wz']
         self.output_data[self.out_body_height] = go1_state.get('body_height_cmd', 0.0)
         self.output_data[self.out_active] = go1_unity_data.get('active', False)
+        return self.out_flow
+
+
+class Go1UnityAutonomyNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Unity Autonomy (Go1)", "GO1_UNITY_AUTO")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+
+        self.out_vx = generate_uuid()
+        self.outputs[self.out_vx] = PortType.DATA
+        self.out_vy = generate_uuid()
+        self.outputs[self.out_vy] = PortType.DATA
+        self.out_vyaw = generate_uuid()
+        self.outputs[self.out_vyaw] = PortType.DATA
+        self.out_active = generate_uuid()
+        self.outputs[self.out_active] = PortType.DATA
+        self.out_path_done = generate_uuid()
+        self.outputs[self.out_path_done] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['unity_ip'] = GO1_UNITY_IP
+        self.state['path_port'] = UNITY_PATH_PORT
+        self.state['waypoint_tx_port'] = UNITY_WAYPOINT_TX_PORT
+        self.state['send_waypoints'] = True
+        self.state['wp_reach_radius'] = 0.12
+        self.state['path_kp_dist'] = 0.5
+        self.state['path_kp_yaw'] = 1.5
+        self.state['path_max_vx'] = 0.12
+        self.state['path_max_wz'] = 0.60
+        self.state['path_turn_only_thresh'] = 0.35
+        self.state['path_yaw_reach_tol_deg'] = 8.0
+
+        self._rx_sock = None
+        self._tx_sock = None
+        self._rx_port_open = None
+        self._tx_port_open = None
+        self._chunk_pid = -1
+        self._chunk_total = 0
+        self._chunk_parts = {}
+        self._last_raw_path = ''
+        self._last_pf_print_mono = 0.0
+        self._path_active = False
+        self._path_done_pulse = False
+        self._raw_path_points = []
+        self._active_waypoints = []
+        self._current_waypoint_idx = 0
+        self._current_path_id = -1
+        self._path_anchor_world_x = 0.0
+        self._path_anchor_world_z = 0.0
+        self._path_anchor_world_yaw = 0.0
+
+    def _make_udp_sender(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setblocking(False)
+        return s
+
+    def _make_udp_receiver(self, port):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("0.0.0.0", int(port)))
+            s.setblocking(False)
+            return s
+        except Exception:
+            try:
+                s.close()
+            except Exception:
+                pass
+            return None
+
+    def _ensure_sockets(self):
+        path_port = int(self.state.get('path_port', UNITY_PATH_PORT))
+        waypoint_port = int(self.state.get('waypoint_tx_port', UNITY_WAYPOINT_TX_PORT))
+
+        if self._rx_sock is None or self._rx_port_open != path_port:
+            try:
+                if self._rx_sock is not None:
+                    self._rx_sock.close()
+            except Exception:
+                pass
+            self._rx_sock = self._make_udp_receiver(path_port)
+            self._rx_port_open = path_port
+
+        if self._tx_sock is None or self._tx_port_open != waypoint_port:
+            try:
+                if self._tx_sock is not None:
+                    self._tx_sock.close()
+            except Exception:
+                pass
+            self._tx_sock = self._make_udp_sender()
+            self._tx_port_open = waypoint_port
+
+    def _recv_path_packet(self):
+        if self._rx_sock is None:
+            return None
+
+        try:
+            data, _ = self._rx_sock.recvfrom(4096)
+        except BlockingIOError:
+            return None
+        except Exception:
+            return None
+
+        packet = data.decode('utf-8', errors='ignore').strip()
+        if not packet:
+            return None
+
+        if packet.startswith('CHUNK '):
+            meta_end = packet.find(' ', 6)
+            if meta_end < 0:
+                return None
+
+            meta = packet[6:meta_end]
+            try:
+                pid_str, total_str, idx_str = meta.split('/')
+                pid = int(pid_str)
+                total = int(total_str)
+                idx = int(idx_str)
+            except Exception:
+                return None
+
+            if total <= 0 or idx < 0 or idx >= total:
+                return None
+
+            payload = packet[meta_end + 1:]
+            if pid != self._chunk_pid or total != self._chunk_total:
+                self._chunk_pid = pid
+                self._chunk_total = total
+                self._chunk_parts = {}
+                write_log(f"[GO1 UNITY PATH] chunk start pid={pid} total={total}")
+
+            self._chunk_parts[idx] = payload
+            if len(self._chunk_parts) == self._chunk_total:
+                assembled = []
+                for i in range(self._chunk_total):
+                    if i not in self._chunk_parts:
+                        return None
+                    assembled.append(self._chunk_parts[i])
+                raw_json = ''.join(assembled)
+                self._chunk_pid = -1
+                self._chunk_total = 0
+                self._chunk_parts = {}
+                write_log(f"[GO1 UNITY PATH] chunk reassembled pid={pid} bytes={len(raw_json)}")
+                return raw_json
+            return None
+
+        return packet
+
+    def _parse_start_yaw_deg(self, payload):
+        if isinstance(payload, dict):
+            start_pose = payload.get('start_pose')
+            if isinstance(start_pose, dict):
+                return _coerce_float(start_pose.get('yaw_deg', 0.0), 0.0)
+        text = json.dumps(payload, ensure_ascii=False) if isinstance(payload, (dict, list)) else str(payload or '')
+        match = re.search(r'"start_pose"\s*:\s*\{[^\}]*"yaw_deg"\s*:\s*([-+]?[0-9]*\.?[0-9]+)', text)
+        return float(match.group(1)) if match else 0.0
+
+    def _parse_path_json(self, raw_json):
+        if not raw_json:
+            return -1, []
+
+        payload = None
+        try:
+            payload = json.loads(raw_json)
+        except Exception:
+            payload = None
+
+        path_id = -1
+        points = []
+
+        if isinstance(payload, dict):
+            if str(payload.get('type', '')).strip() != 'go1_path':
+                return -1, []
+            if str(payload.get('frame', '')).strip() != 'go1_local_start':
+                return -1, []
+            path_id = _coerce_int(payload.get('path_id', -1), -1)
+            point_list = payload.get('points')
+            if not isinstance(point_list, list):
+                point_list = payload.get('waypoints')
+            if not isinstance(point_list, list):
+                point_list = []
+
+            for item in point_list:
+                if not isinstance(item, dict):
+                    continue
+                points.append({
+                    'index': _coerce_int(item.get('index', len(points)), len(points)),
+                    'x': _coerce_float(item.get('x', 0.0), 0.0),
+                    'z': _coerce_float(item.get('z', 0.0), 0.0),
+                    'yaw_deg': _coerce_float(item.get('yaw_deg', 0.0), 0.0),
+                    'use_yaw': _coerce_bool(item.get('use_yaw', False), False),
+                })
+
+        if not points:
+            text = raw_json if isinstance(raw_json, str) else json.dumps(raw_json, ensure_ascii=False)
+            if '"type"' not in text or '"go1_path"' not in text or '"go1_local_start"' not in text:
+                return -1, []
+            pid_match = re.search(r'"path_id"\s*:\s*([0-9]+)', text)
+            if pid_match:
+                path_id = int(pid_match.group(1))
+            point_re = re.compile(
+                r'\{\s*"index"\s*:\s*([0-9]+)\s*,\s*'
+                r'"x"\s*:\s*([-+]?[0-9]*\.?[0-9]+)\s*,\s*'
+                r'"z"\s*:\s*([-+]?[0-9]*\.?[0-9]+)\s*,\s*'
+                r'"yaw_deg"\s*:\s*([-+]?[0-9]*\.?[0-9]+)\s*,\s*'
+                r'"use_yaw"\s*:\s*(true|false)\s*\}',
+                re.IGNORECASE,
+            )
+            for match in point_re.finditer(text):
+                points.append({
+                    'index': int(match.group(1)),
+                    'x': float(match.group(2)),
+                    'z': float(match.group(3)),
+                    'yaw_deg': float(match.group(4)),
+                    'use_yaw': match.group(5).lower() == 'true',
+                })
+
+        points.sort(key=lambda item: item.get('index', 0))
+        if len(points) < 2:
+            return -1, []
+
+        return path_id, points
+
+    def _local_to_world(self, lx, lz, sx, sz, sy):
+        ox = sx + math.cos(sy) * lz - math.sin(sy) * lx
+        oz = sz + math.sin(sy) * lz + math.cos(sy) * lx
+        return ox, oz
+
+    def _local_yaw_to_world(self, yaw_deg, start_yaw):
+        return _wrap_pi(start_yaw + math.radians(yaw_deg))
+
+    def _cancel_path(self):
+        self._path_active = False
+        self._raw_path_points = []
+        self._active_waypoints = []
+        self._current_waypoint_idx = 0
+        self._current_path_id = -1
+
+    def _send_waypoints_to_unity(self):
+        if self._tx_sock is None or not _coerce_bool(self.state.get('send_waypoints', True), True):
+            return
+
+        waypoint_port = int(self.state.get('waypoint_tx_port', UNITY_WAYPOINT_TX_PORT))
+        unity_ip = str(self.state.get('unity_ip', GO1_UNITY_IP)).strip() or GO1_UNITY_IP
+        msg = ["WAYPOINTS", str(len(self._active_waypoints))]
+        for wp in self._active_waypoints:
+            msg.append(f"{wp['x_world']:.6f}")
+            msg.append(f"{wp['z_world']:.6f}")
+        try:
+            payload = ' '.join(msg).encode('utf-8')
+            self._tx_sock.sendto(payload, (unity_ip, waypoint_port))
+            write_log(f"[GO1 UNITY PATH] waypoint send: {len(self._active_waypoints)}")
+        except Exception as e:
+            write_log(f"[GO1 UNITY PATH] waypoint send error: {e}")
+
+    def _activate_path_from_points(self, path_id, points, yaw_now):
+        self._cancel_path()
+        if len(points) < 2:
+            return
+
+        self._raw_path_points = list(points)
+        self._current_path_id = path_id
+        self._path_anchor_world_x = float(go1_state.get('world_x', 0.0))
+        self._path_anchor_world_z = float(go1_state.get('world_z', 0.0))
+        self._path_anchor_world_yaw = yaw_now
+
+        p0 = points[0]
+        for idx, point in enumerate(points[1:], start=1):
+            dx = _coerce_float(point.get('x', 0.0), 0.0) - _coerce_float(p0.get('x', 0.0), 0.0)
+            dz = _coerce_float(point.get('z', 0.0), 0.0) - _coerce_float(p0.get('z', 0.0), 0.0)
+            wx, wz = self._local_to_world(dx, dz, self._path_anchor_world_x, self._path_anchor_world_z, self._path_anchor_world_yaw)
+            wyaw = self._local_yaw_to_world(_coerce_float(point.get('yaw_deg', 0.0), 0.0) - _coerce_float(p0.get('yaw_deg', 0.0), 0.0), self._path_anchor_world_yaw)
+            self._active_waypoints.append({
+                'x_world': wx,
+                'z_world': wz,
+                'yaw_world': wyaw,
+                'use_yaw': bool(point.get('use_yaw', False)),
+            })
+
+            if idx <= 3 or idx == len(points) - 1:
+                write_log(f"[GO1 UNITY PATH] wp[{idx - 1}] local=({dx:.3f},{dz:.3f}) -> world=({wx:.3f},{wz:.3f})")
+
+        self._path_active = len(self._active_waypoints) > 0
+        self._current_waypoint_idx = 0
+        self._path_done_pulse = False
+        write_log(f"[GO1 UNITY PATH] activated id={self._current_path_id} waypoints={len(self._active_waypoints)}")
+        self._send_waypoints_to_unity()
+
+    def _run_path_follower(self, yaw_now):
+        if not self._path_active:
+            return 0.0, 0.0, 0.0, False
+
+        if self._current_waypoint_idx < 0 or self._current_waypoint_idx >= len(self._active_waypoints):
+            self._cancel_path()
+            return 0.0, 0.0, 0.0, False
+
+        target = self._active_waypoints[self._current_waypoint_idx]
+        world_x = float(go1_state.get('world_x', 0.0))
+        world_z = float(go1_state.get('world_z', 0.0))
+        dx = float(target['x_world']) - world_x
+        dz = float(target['z_world']) - world_z
+        dist = math.sqrt(dx * dx + dz * dz)
+
+        wp_reach_radius = float(self.state.get('wp_reach_radius', 0.12))
+        path_kp_dist = float(self.state.get('path_kp_dist', 0.5))
+        path_kp_yaw = float(self.state.get('path_kp_yaw', 1.5))
+        path_max_vx = float(self.state.get('path_max_vx', 0.12))
+        path_max_wz = float(self.state.get('path_max_wz', 0.60))
+        path_turn_only_thresh = float(self.state.get('path_turn_only_thresh', 0.35))
+
+        if dist > wp_reach_radius:
+            ty = math.atan2(dz, dx)
+            ye = _wrap_pi(ty - yaw_now)
+            vx = path_kp_dist * dist
+            wz = path_kp_yaw * ye
+            vx = max(0.0, min(vx, path_max_vx))
+            wz = max(-path_max_wz, min(wz, path_max_wz))
+
+            abs_ye = abs(ye)
+            if abs_ye > path_turn_only_thresh:
+                vx = 0.0
+            else:
+                yaw_scale = 1.0 - abs_ye / path_turn_only_thresh
+                vx *= max(0.0, yaw_scale)
+
+            now_mono = time.monotonic()
+            if now_mono - self._last_pf_print_mono >= 1.0:
+                self._last_pf_print_mono = now_mono
+                write_log(
+                    f"[GO1 UNITY PATH] wp[{self._current_waypoint_idx}/{len(self._active_waypoints)}] "
+                    f"dist={dist:.3f} ye={math.degrees(ye):.1f}deg vx={vx:.3f} wz={wz:.3f} pos=({world_x:.3f},{world_z:.3f})"
+                )
+
+            return vx, 0.0, wz, True
+
+        if self._current_waypoint_idx % 5 == 0 or self._current_waypoint_idx >= len(self._active_waypoints) - 1:
+            write_log(f"[GO1 UNITY PATH] reached wp[{self._current_waypoint_idx}/{len(self._active_waypoints)}]")
+
+        self._current_waypoint_idx += 1
+        if self._current_waypoint_idx >= len(self._active_waypoints):
+            write_log("[GO1 UNITY PATH] finished")
+            self._cancel_path()
+            self._path_done_pulse = True
+            return 0.0, 0.0, 0.0, False
+
+        return self._run_path_follower(yaw_now)
+
+    def execute(self):
+        global GO1_UNITY_IP
+
+        GO1_UNITY_IP = self.state.get('unity_ip', GO1_UNITY_IP)
+        self._ensure_sockets()
+
+        latest_raw = None
+        while True:
+            packet = self._recv_path_packet()
+            if packet is None:
+                break
+            latest_raw = packet
+
+        if latest_raw and latest_raw != self._last_raw_path:
+            self._last_raw_path = latest_raw
+            path_id, points = self._parse_path_json(latest_raw)
+            if path_id >= 0 and len(points) >= 2:
+                yaw_now = float(go1_state.get('yaw_unity', 0.0))
+                start_yaw_deg = self._parse_start_yaw_deg(latest_raw)
+                start_yaw_rad = math.radians(start_yaw_deg)
+                yaw_correction = _wrap_pi(yaw_now - start_yaw_rad)
+                write_log(
+                    f"[GO1 UNITY PATH] start_yaw={start_yaw_deg:.2f}deg yaw_now={math.degrees(yaw_now):.2f}deg yaw_correction={yaw_correction:.3f}rad"
+                )
+                if points:
+                    points[0]['yaw_deg'] = start_yaw_deg
+                self._activate_path_from_points(path_id, points, _wrap_pi(yaw_now - yaw_correction))
+
+        yaw_now = float(go1_state.get('yaw_unity', 0.0))
+        vx = vy = wz = 0.0
+        path_active = self._path_active
+        if path_active:
+            vx, vy, wz, path_active = self._run_path_follower(yaw_now)
+
+        path_done = self._path_done_pulse
+        self._path_done_pulse = False
+
+        self.output_data[self.out_vx] = float(vx)
+        self.output_data[self.out_vy] = float(vy)
+        self.output_data[self.out_vyaw] = float(wz)
+        self.output_data[self.out_active] = bool(self._path_active)
+        self.output_data[self.out_path_done] = bool(path_done)
         return self.out_flow
 
 
