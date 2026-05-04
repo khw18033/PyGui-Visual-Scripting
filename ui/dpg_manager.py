@@ -256,6 +256,13 @@ class NodeUIRenderer:
                 node.state['path_max_wz'] = dpg.get_value(node.field_max_wz)
                 node.state['path_turn_only_thresh'] = dpg.get_value(node.field_turn_only)
                 node.state['path_yaw_reach_tol_deg'] = dpg.get_value(node.field_yaw_tol)
+                # Forward key events to autonomy node so it can react even when no GO1_KEYBOARD node is in the graph.
+                node.state['is_focused'] = is_focused
+                node.state['R_pressed'] = dpg.is_key_pressed(dpg.mvKey_R)
+                node.state['C_pressed'] = dpg.is_key_pressed(dpg.mvKey_C)
+                node.state['Z'] = dpg.is_key_down(dpg.mvKey_Z)
+                node.state['X'] = dpg.is_key_down(dpg.mvKey_X)
+                node.state['SPACE'] = dpg.is_key_down(dpg.mvKey_Spacebar)
             elif t == "GO1_UNITY_KEYBOARD" and hasattr(node, 'combo_keys'):
                 node.state['keys'] = dpg.get_value(node.combo_keys)
             elif t == "VIS_ARUCO" and hasattr(node, 'ui_camera_id'):

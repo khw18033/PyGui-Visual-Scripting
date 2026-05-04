@@ -1930,6 +1930,25 @@ class Go1UnityAutonomyNode(BaseNode):
             write_log("="*70)
             self._guidance_logged = True
 
+        # Handle local key events forwarded from UI (R/Z/C/etc.) so autonomy can react
+        # even when no separate keyboard node is present in the graph.
+        try:
+            if self.state.get('R_pressed'):
+                go1_node_intent['yaw_align'] = True
+                go1_node_intent['trigger_time'] = time.monotonic()
+                write_log("Go1 Autonomy: R pressed - request yaw align (intent set)")
+            if self.state.get('Z'):
+                # Z behaves as 'reset yaw' (C++ reference: reset yaw0)
+                go1_node_intent['reset_yaw'] = True
+                go1_node_intent['trigger_time'] = time.monotonic()
+                write_log("Go1 Autonomy: Z pressed - request yaw reset (intent set)")
+            if self.state.get('C_pressed'):
+                go1_node_intent['reset_yaw'] = True
+                go1_node_intent['trigger_time'] = time.monotonic()
+                write_log("Go1 Autonomy: C pressed - request yaw reset (intent set)")
+        except Exception:
+            pass
+
         latest_raw = None
         while True:
             packet = self._recv_path_packet()
