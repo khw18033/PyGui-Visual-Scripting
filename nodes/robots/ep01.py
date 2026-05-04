@@ -88,6 +88,9 @@ EP_SENDER_TARGET_FPS = 30
 EP_SENDER_INTERVAL = 1.0 / EP_SENDER_TARGET_FPS
 _ep_sender_manager_started = False
 
+# EP Sender 실시간 폴더 (ref_code와 일치 - /dev/shm 사용 가능할 경우)
+EP_SENDER_WATCH_FOLDER = "/dev/shm/ep01" if os.path.isdir("/dev/shm") else "Captured_Images/ep01_saved"
+
 ep_server_json_data = {
     'raw_json': '',
     'seq': 0,
@@ -368,8 +371,11 @@ async def _ep_send_image_async(session, filepath, camera_id, server_url):
         form.add_field('camera_id', camera_id)
         form.add_field('file', file_data, filename=f"{camera_id}.jpg", content_type='image/jpeg')
 
-        async with session.post(server_url, data=form, timeout=aiohttp.ClientTimeout(total=3.5)):
-            pass
+        async with session.post(server_url, data=form, timeout=aiohttp.ClientTimeout(total=2.0)) as resp:
+            if resp.status != 200:
+                write_log(f"[EP Sender] Server error: {resp.status}")
+    except asyncio.TimeoutError:
+        write_log(f"[EP Sender] Timeout (skipping frame)")
     except Exception as e:
         write_log(f"[EP Sender] upload error: {e}")
 
@@ -432,18 +438,24 @@ def _ep_start_async_loop(config, server_url):
 
 
 def _ep_sender_manager_thread():
-    global ep_sender_active, ep_sender_state
+    """EP Sender 매니저: 큐 명령을 처리하고 비동기 워커 관리"""
+    global ep_sender_active, ep_sender_state, _ep_sender_manager_started
+    _ep_sender_manager_started = True
     sender_threads = []
+
+    write_log("[EP Sender Manager] Started")
 
     while True:
         if ep_sender_command_queue:
             cmd, url = ep_sender_command_queue.popleft()
 
             if cmd == 'START' and not ep_sender_active:
-                upload_folder = str(ep_camera_save_state.get('folder', '')).strip() or 'Captured_Images/ep01_saved'
+                # ref_code 기본값 사용
+                upload_folder = EP_SENDER_WATCH_FOLDER
+                os.makedirs(upload_folder, exist_ok=True)
                 ep_sender_active = True
                 ep_sender_state['status'] = 'Running'
-                write_log(f"[EP Sender] 연결: {url} | folder={upload_folder}")
+                write_log(f"[EP Sender] START | url={url} | folder={upload_folder}")
 
                 config = {"folder": upload_folder, "id": "ep01_front"}
                 s_thread = threading.Thread(target=_ep_start_async_loop, args=(config, url), daemon=True)
@@ -453,7 +465,7 @@ def _ep_sender_manager_thread():
             elif cmd == 'STOP' and ep_sender_active:
                 ep_sender_active = False
                 ep_sender_state['status'] = 'Stopped'
-                write_log("[EP Sender] 연결 해제")
+                write_log("[EP Sender] STOP")
                 sender_threads.clear()
 
         time.sleep(0.1)
@@ -461,6 +473,13 @@ def _ep_sender_manager_thread():
 def ep_status_thread():
     """EP 상태 모니터 및 통신 스레드 시작"""
     global _ep_arm_worker_started
+    
+    # Sender 매니저 스레드 시작 (ref_code와 일치)
+    sender_mgr_thread = threading.Thread(target=_ep_sender_manager_thread, daemon=True)
+    sender_mgr_thread.start()
+    write_log("[EP] Sender manager thread started")
+    
+    # 통신 루프 실행
     ep_comm_thread()
 
 def ep_comm_thread():
