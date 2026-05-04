@@ -1046,8 +1046,8 @@ def go1_keepalive_thread():
             grace_deadline = tnow
             use_grace = True
             go1_node_intent['stop'] = False
-        elif is_node_active:
-            yaw_align_active = False
+        elif is_node_active and not yaw_align_active:
+            # Only override yaw_align if it's not currently active
             stand_only = False
             last_key_time = tnow
             grace_deadline = tnow + repeat_grace_sec
@@ -1460,6 +1460,7 @@ def _apply_go1_keyboard_intent(state):
         go1_node_intent['stop'] = True
     if state.get('R_pressed'):
         go1_node_intent['yaw_align'] = True
+        go1_node_intent['trigger_time'] = time.monotonic()
         write_log("Go1: R key pressed - request yaw align (intent set)")
     if state.get('C_pressed'):
         go1_node_intent['reset_yaw'] = True
