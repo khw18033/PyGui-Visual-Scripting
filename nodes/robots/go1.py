@@ -18,7 +18,6 @@ from collections import deque
 from nodes.base import BaseNode, BaseRobotDriver
 from core.engine import generate_uuid, PortType, write_log, node_registry
 import core.engine as engine_module
-import nodes.common as common
 
 try:
     import cv2
@@ -3244,8 +3243,49 @@ class VideoFrameSaveNode(BaseNode):
 
 
 # ================= [Server Sender Node] =================
-class ServerSenderNode(common.ServerSenderNode):
-    """Go1 Server Sender 노드 (Core Nodes에서 상속)"""
+class ServerSenderNode(BaseNode):
+    """원격 서버로 이미지 업로드하는 노드
+    - VideoFrameSaveNode에서 저장한 이미지 감지
+    - HTTP multipart/form-data로 비동기 업로드
+    - 시작/중지 제어
+    """
     def __init__(self, node_id):
-        super().__init__(node_id, robot_type='GO1', node_name="Server Sender", node_type="GO1_SERVER_SENDER")
+        super().__init__(node_id, "Server Sender", "GO1_SERVER_SENDER")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+        
+        self.state['action'] = 'Start Sender'  # "Start Sender" / "Stop Sender"
+        self.state['server_url'] = "http://192.168.1.100:5001/upload"
+        
+        self._last_action = None
+        self._last_request_ts = 0.0
+
+    def execute(self):
+        global sender_state, multi_sender_active
+        
+        action = self.state.get('action', 'Start Sender')
+        url = self.state.get('server_url', "http://192.168.1.100:5001/upload")
+        now = time.monotonic()
+        cooldown_ok = (now - self._last_request_ts) > 0.5
+        
+        # 액션 변경 기록(디버깅/상태 추적용)
+        if action != self._last_action:
+            self._last_action = action
+
+        # 토글 변경이 없어도 현재 의도 상태를 유지하도록 재요청 가능하게 처리
+        if action == "Start Sender":
+            if (not multi_sender_active) and sender_state['status'] in ['Stopped', 'Stopping...'] and cooldown_ok:
+                sender_state['status'] = 'Starting...'
+                sender_command_queue.append(('START', url))
+                self._last_request_ts = now
+
+        elif action == "Stop Sender":
+            if multi_sender_active and sender_state['status'] in ['Running', 'Starting...'] and cooldown_ok:
+                sender_state['status'] = 'Stopping...'
+                sender_command_queue.append(('STOP', url))
+                self._last_request_ts = now
+        
+        return self.out_flow
 
