@@ -996,10 +996,15 @@ def go1_keepalive_thread():
             last_dr_time = time.monotonic()
 
         if go1_node_intent['reset_yaw']:
+            # Immediately reset yaw0 to current raw_yaw, mirror C++ behavior and logging.
             yaw0 = raw_yaw
             last_dr_time = time.monotonic()
             go1_node_intent['reset_yaw'] = False
-            write_log("Go1 YAW0 Reset")
+            try:
+                yaw0_deg = yaw0 * 180.0 / math.pi
+                write_log(f"[YAW0] reset: {yaw0:.3f} rad ({yaw0_deg:.2f} deg)")
+            except Exception:
+                write_log("[YAW0] reset")
 
         yaw_rel = _wrap_pi(raw_yaw - yaw0)
         yaw_unity = _wrap_pi(yaw_rel + unity_yaw_offset_rad)
@@ -1008,13 +1013,21 @@ def go1_keepalive_thread():
         is_node_active = (tnow - go1_node_intent['trigger_time']) < 0.1
 
         if go1_node_intent['yaw_align']:
+            # Mirror C++: start yaw align immediately with same state updates.
             yaw_align_active = True
+            yaw_align_target_rel = 0.0
             stand_only = False
             last_key_time = tnow
             last_move_cmd_time = tnow
             grace_deadline = tnow
             use_grace = True
+            # Ensure any movement commands are zeroed and mark trigger time.
+            go1_node_intent['vx'] = 0.0
+            go1_node_intent['vy'] = 0.0
+            go1_node_intent['wz'] = 0.0
+            go1_node_intent['trigger_time'] = time.monotonic()
             go1_node_intent['yaw_align'] = False
+            write_log("[YAW_ALIGN] start")
             write_log("Go1: Processing yaw align (R) - starting alignment")
 
         if go1_node_intent['stop']:
