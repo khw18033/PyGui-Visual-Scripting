@@ -147,7 +147,8 @@ go1_node_intent = {
     'yaw_align': False,
     'reset_yaw': False,
     'stop': False,
-    'use_unity_cmd': True,
+    # Unity teleop should be opt-in via GO1_UNITY node.
+    'use_unity_cmd': False,
     'send_aruco': False,
     'trigger_time': time.monotonic(),
 }
@@ -485,6 +486,10 @@ def _serialize_marker_pose(rvec, tvec):
 
 def _has_go1_nodes():
     return any(n.type_str.startswith("GO1_") for n in node_registry.values())
+
+
+def _has_go1_unity_node():
+    return any(getattr(n, 'type_str', '') == "GO1_UNITY" for n in node_registry.values())
 
 
 def request_go1_special_action(action_name):
@@ -1042,7 +1047,9 @@ def go1_keepalive_thread():
             go1_dashboard['unity_link'] = "Active"
             go1_unity_data['vx'], go1_unity_data['vy'], go1_unity_data['wz'], go1_unity_data['estop'] = got
 
-        unity_active = go1_node_intent['use_unity_cmd'] and ((tnow - last_unity_cmd_time) <= unity_timeout_sec)
+        # Unity teleop is only considered when GO1_UNITY node is present and enabled.
+        unity_teleop_enabled = _has_go1_unity_node() and bool(go1_node_intent.get('use_unity_cmd', False))
+        unity_active = unity_teleop_enabled and ((tnow - last_unity_cmd_time) <= unity_timeout_sec)
         go1_unity_data['active'] = unity_active
         if not unity_active:
             go1_dashboard['unity_link'] = "Waiting"
@@ -1580,6 +1587,7 @@ class Go1UnityAutonomyNode(BaseNode):
         self.state['path_max_wz'] = 0.60
         self.state['path_turn_only_thresh'] = 0.35
         self.state['path_yaw_reach_tol_deg'] = 8.0
+        self.state['suppress_unity_teleop_when_active'] = True
 
         self._rx_sock = None
         self._tx_sock = None
@@ -1929,6 +1937,10 @@ class Go1UnityAutonomyNode(BaseNode):
         path_active = self._path_active
         if path_active:
             vx, vy, wz, path_active = self._run_path_follower(yaw_now)
+
+        if bool(self.state.get('suppress_unity_teleop_when_active', True)) and self._path_active:
+            # Prevent stale Unity teleop packets from overriding autonomy outputs.
+            go1_node_intent['use_unity_cmd'] = False
 
         path_done = self._path_done_pulse
         self._path_done_pulse = False
