@@ -687,16 +687,6 @@ class NodeUIRenderer:
                 node.field_move_duration = dpg.add_input_float(label="Move Duration", width=120, default_value=float(node.state.get('move_duration_sec', 0.5)), step=0.05)
                 dpg.add_text("Source can be a JSON URL or a local JSON file.", color=(180,180,180))
             with dpg.node_attribute(tag=node.out_raw_json, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Raw JSON")
-            with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Vx")
-            with dpg.node_attribute(tag=node.out_vy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Vy")
-            with dpg.node_attribute(tag=node.out_wz, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Wz")
-            with dpg.node_attribute(tag=node.out_stop, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Stop")
-            with dpg.node_attribute(tag=node.out_seq, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Seq")
-            with dpg.node_attribute(tag=node.out_ts, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Ts")
-            with dpg.node_attribute(tag=node.out_confidence, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Confidence")
-            with dpg.node_attribute(tag=node.out_connected, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Connected")
-            with dpg.node_attribute(tag=node.out_fresh, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Fresh")
-            with dpg.node_attribute(tag=node.out_status, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Status")
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
@@ -706,12 +696,6 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.in_json, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("JSON In")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_text("JSON Receiver 뒤에 연결", color=(180, 180, 180))
-            with dpg.node_attribute(tag=node.out_status, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Status")
-            with dpg.node_attribute(tag=node.out_has_near_obstacle, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Has Near Obstacle")
-            with dpg.node_attribute(tag=node.out_near_count, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Near Count")
-            with dpg.node_attribute(tag=node.out_person_found, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Person Found")
-            with dpg.node_attribute(tag=node.out_person_id, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Person ID")
-            with dpg.node_attribute(tag=node.out_person_rel_depth, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Person Depth")
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod

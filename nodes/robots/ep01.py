@@ -10,6 +10,7 @@ from collections import deque
 from unittest.mock import MagicMock
 from nodes.base import BaseNode, BaseRobotDriver
 from core.engine import generate_uuid, PortType, write_log, HwStatus
+import nodes.common as common
 
 try:
     import cv2
@@ -1012,51 +1013,10 @@ class EPVideoFrameSaveNode(BaseNode):
         return self.out_flow
 
 
-class EPServerSenderNode(BaseNode):
-    """EP 저장 폴더 이미지를 원격 서버로 업로드하는 노드"""
+class EPServerSenderNode(common.ServerSenderNode):
+    """EP01 Server Sender 노드 (Core Nodes에서 상속)"""
     def __init__(self, node_id):
-        super().__init__(node_id, "EP Server Sender", "EP_SERVER_SENDER")
-        self.in_flow = generate_uuid()
-        self.inputs[self.in_flow] = PortType.FLOW
-        self.out_flow = generate_uuid()
-        self.outputs[self.out_flow] = PortType.FLOW
-
-        self.state['action'] = 'Start Sender'
-        self.state['server_url'] = "http://210.110.250.33:5002/upload"
-
-        self._last_action = None
-        self._last_request_ts = 0.0
-
-    def execute(self):
-        global ep_sender_state, ep_sender_active, _ep_sender_manager_started
-
-        if not HAS_AIOHTTP:
-            return self.out_flow
-
-        if not _ep_sender_manager_started:
-            _ep_sender_manager_started = True
-            threading.Thread(target=_ep_sender_manager_thread, daemon=True).start()
-
-        action = self.state.get('action', 'Start Sender')
-        url = self.state.get('server_url', "http://210.110.250.33:5002/upload")
-        now = time.monotonic()
-        cooldown_ok = (now - self._last_request_ts) > 0.5
-
-        if action != self._last_action:
-            self._last_action = action
-
-        if action == "Start Sender":
-            if (not ep_sender_active) and ep_sender_state['status'] in ['Stopped', 'Stopping...'] and cooldown_ok:
-                ep_sender_state['status'] = 'Starting...'
-                ep_sender_command_queue.append(('START', url))
-                self._last_request_ts = now
-        elif action == "Stop Sender":
-            if ep_sender_active and ep_sender_state['status'] in ['Running', 'Starting...'] and cooldown_ok:
-                ep_sender_state['status'] = 'Stopping...'
-                ep_sender_command_queue.append(('STOP', url))
-                self._last_request_ts = now
-
-        return self.out_flow
+        super().__init__(node_id, robot_type='EP01', node_name="EP Server Sender", node_type="EP_SERVER_SENDER")
 
 class EPActionNode(BaseNode):
     def __init__(self, node_id):
