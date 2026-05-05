@@ -6,9 +6,11 @@ import socket
 import json
 import threading
 import subprocess
+import importlib
 
 from core.engine import node_registry, link_registry, system_log_buffer, generate_uuid, PortType, HwStatus
 from core.input_manager import input_manager
+from core.config import GO1_MODULE_NAME
 from core.factory import NodeFactory
 from core.serializer import save_graph, load_graph, get_save_files
 from nodes.robots.mt4 import (
@@ -19,16 +21,34 @@ from nodes.robots.mt4 import (
 import core.engine as engine_module
 import nodes.robots.mt4 as mt4_module
 
-# --- [추가] Go1 연동 ---
+# --- [추가] Go1 연동 (Dynamic Import) ---
 try:
-    from nodes.robots.go1 import (
-        go1_dashboard, go1_target_vel, go1_state, go1_node_intent,
-        camera_state, aruco_settings, go1_estop_callback, ServerSenderNode
-    )
-    import nodes.robots.go1 as go1_module
+    go1_module = importlib.import_module(f'nodes.robots.{GO1_MODULE_NAME}')
+    go1_dashboard = getattr(go1_module, 'go1_dashboard')
+    go1_target_vel = getattr(go1_module, 'go1_target_vel')
+    go1_state = getattr(go1_module, 'go1_state')
+    go1_node_intent = getattr(go1_module, 'go1_node_intent')
+    camera_state = getattr(go1_module, 'camera_state')
+    aruco_settings = getattr(go1_module, 'aruco_settings')
+    go1_estop_callback = getattr(go1_module, 'go1_estop_callback')
+    ServerSenderNode = getattr(go1_module, 'ServerSenderNode')
     HAS_GO1 = True
-except ImportError:
+except (ImportError, AttributeError):
     HAS_GO1 = False
+    go1_dashboard = None
+    go1_target_vel = None
+    go1_state = None
+    go1_node_intent = None
+    camera_state = None
+    aruco_settings = None
+    go1_estop_callback = None
+    ServerSenderNode = None
+
+# Re-import as module for dynamic attributes
+try:
+    go1_module = importlib.import_module(f'nodes.robots.{GO1_MODULE_NAME}')
+except (ImportError, AttributeError):
+    go1_module = None
 
 # --- [추가] RoboMaster EP 연동 ---
 try:
