@@ -99,7 +99,6 @@
   - Go1 IP 확인을 DS와 동일하게 항상 수행하고, 콘솔 미지원 시 `EOF` 처리로 기본값 사용.
   - 초기화 단계에서 `Go1 SDK Ready/Missing` 로그를 출력해 Simulation fallback 원인을 즉시 확인 가능하게 개선.
 
-
 ### [2026-03-31 14:30:00] 카메라 프레임 저장 노드 구현 (Go1_DS.py 저장 로직 이식)
 - 문제 분석:
   - `VideoSourceNode`, `FisheyeUndistortNode`, `ArUcoDetectNode`, `FlaskStreamNode`는 존재했으나, **프레임을 지정된 폴더에 저장하는 노드가 없음**.
@@ -1116,3 +1115,26 @@ odes/robots/go1.py (함수/클래스 추가)
 - 수정 파일:
   - `code_fix_log/SERVER_SENDER_GUIDE.md`
   - `code_fix_log/code_fix_go1.md`
+
+### [2026-05-05 22:05:00] Go1 모듈 선택 동적 로드 시스템 구현 (go1_team1.py, go1_team2.py 등 다중 변형 지원)
+- 문제 분석:
+  - 기존에는 `go1.py` 파일 이름이 하드코딩되어, `go1_team1.py`, `go1_team2.py` 같은 다양한 변형 모듈을 사용하려면 모든 import 문을 수동으로 수정해야 했음.
+  - 여러 팀이 협업하거나 여러 Go1 구현 버전을 테스트할 때 비효율적이었으며, 실수로 인한 import 오류 위험이 높았음.
+  - `main.py`, `core/factory.py`, `ui/dpg_manager.py` 3개 파일에 분산된 go1 import로 인해 변경 시 누락되기 쉬웠음.
+- 조치 방안:
+  - 중앙 설정 파일 `core/config.py`를 신규로 생성하여 `GO1_MODULE_NAME` 전역 설정 변수를 관리함.
+  - `main.py`에 `select_go1_module()` 함수를 추가하여 프로그램 시작 시 `nodes/robots/` 폴더의 `go1*.py` 파일 목록을 스캔하고, 사용자에게 선택 프롬프트를 표시함.
+  - 사용자 선택 후 `config.GO1_MODULE_NAME` 값을 업데이트하고 `core/config.py` 파일에 저장하여 다른 모듈들이 참조할 수 있도록 함.
+  - `import_go1_modules()` 함수를 추가하여 `importlib`로 선택된 모듈을 동적으로 import하고, 필요한 함수(`go1_keepalive_thread`, `init_go1_connection`)를 `getattr()`로 추출함.
+  - `core/factory.py`의 Go1 클래스 import를 동적으로 변경:
+    - `GO1_MODULE_NAME`을 읽고 `importlib.import_module()`로 모듈을 로드
+    - 12개의 Go1 노드 클래스(`Go1RobotDriver`, `Go1ActionNode`, 등)를 `getattr()`로 추출
+    - Import 실패 시 `HAS_GO1 = False`로 graceful handling
+  - `ui/dpg_manager.py`의 Go1 UI 변수 import를 동적으로 변경:
+    - `GO1_MODULE_NAME`을 참조하여 `go1_dashboard`, `go1_target_vel`, `go1_state` 등을 동적으로 로드
+    - Try/Except로 실패 시 UI가 비활성화되도록 처리
+- 수정 및 추가 파일:
+  - `core/config.py` (신규): 중앙 Go1 모듈 설정 파일
+  - `main.py` (수정): `select_go1_module()`, `import_go1_modules()` 함수 추가 및 실행 순서 조정
+  - `core/factory.py` (수정): Go1 클래스를 동적 import로 변경
+  - `ui/dpg_manager.py` (수정): Go1 변수를 동적 import로 변경
