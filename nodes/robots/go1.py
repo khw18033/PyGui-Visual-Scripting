@@ -269,10 +269,10 @@ GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC = 0.5
 
 def _normalize_go1_detection_group(name, group):
     normalized_group = str(group or '').strip().upper()
-    if normalized_group:
+    if normalized_group and normalized_group in GO1_AUTO_AVOIDANCE_POLICY:
         return normalized_group
     name_key = str(name or '').strip().lower()
-    return GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP.get(name_key, '')
+    return GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP.get(name_key, 'UNKNOWN_OBSTACLE')
 
 go1_dashboard = {
     "status": "Idle",
