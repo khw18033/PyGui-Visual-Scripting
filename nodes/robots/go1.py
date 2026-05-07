@@ -200,14 +200,79 @@ go1_auto_avoidance_data = {
     'status': 'Idle',
     'has_near_obstacle': False,
     'near_count': 0,
-    'person_found': False,
-    'person_id': None,
-    'person_rel_depth': None,
+    'target_found': False,
+    'target_id': None,
+    'target_name': None,
+    'target_group': None,
+    'target_rel_depth': None,
+    'target_action': '',
     'stop_sent': False,
     'source': '',
     'last_error': '',
     'last_trigger_ts': 0.0,
 }
+
+GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP = {
+    'person': 'AGENT',
+    'robot': 'AGENT',
+    'animal': 'AGENT',
+    'wheelchair': 'AGENT',
+    'stroller': 'AGENT',
+    'chair': 'HARD_OBSTACLE',
+    'box': 'HARD_OBSTACLE',
+    'trash bin': 'HARD_OBSTACLE',
+    'cart': 'HARD_OBSTACLE',
+    'suitcase': 'HARD_OBSTACLE',
+    'backpack': 'MOVABLE_OBSTACLE',
+    'paper bag': 'MOVABLE_OBSTACLE',
+    'bag': 'MOVABLE_OBSTACLE',
+    'umbrella': 'MOVABLE_OBSTACLE',
+    'bottle': 'SMALL_OBSTACLE',
+    'tissue box': 'SMALL_OBSTACLE',
+    'toilet paper roll': 'SMALL_OBSTACLE',
+    'card': 'SMALL_OBSTACLE',
+    'small object on the floor': 'SMALL_OBSTACLE',
+    'power strip': 'ELECTRICAL_RISK',
+    'laptop': 'ELECTRICAL_RISK',
+    'cable or wire on the floor': 'TANGLED_RISK',
+    'extension cord on the floor': 'TANGLED_RISK',
+    'unknown obstacle blocking path': 'UNKNOWN_OBSTACLE',
+    'fire extinguisher': 'SPECIAL_OBJECT',
+}
+
+GO1_AUTO_AVOIDANCE_POLICY = {
+    'AGENT': {'action': 'stop', 'hold_sec': 4.0},
+    'HARD_OBSTACLE': {'action': 'avoid'},
+    'MOVABLE_OBSTACLE': {'action': 'stop', 'hold_sec': 4.0},
+    'SMALL_OBSTACLE': {'action': 'observe'},
+    'ELECTRICAL_RISK': {'action': 'stop', 'hold_sec': 2.0},
+    'TANGLED_RISK': {'action': 'stop', 'hold_sec': 2.0},
+    'UNKNOWN_OBSTACLE': {'action': 'stop', 'hold_sec': 4.0},
+    'SPECIAL_OBJECT': {'action': 'stop', 'hold_sec': 2.0},
+}
+
+GO1_AUTO_AVOIDANCE_GROUP_PRIORITY = {
+    'AGENT': 0,
+    'ELECTRICAL_RISK': 1,
+    'TANGLED_RISK': 2,
+    'MOVABLE_OBSTACLE': 3,
+    'UNKNOWN_OBSTACLE': 4,
+    'SPECIAL_OBJECT': 5,
+    'HARD_OBSTACLE': 6,
+    'SMALL_OBSTACLE': 7,
+}
+
+GO1_AUTO_AVOIDANCE_IMAGE_WIDTH = 464
+GO1_AUTO_AVOIDANCE_MOVE_SPEED = 0.2
+GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC = 0.5
+
+
+def _normalize_go1_detection_group(name, group):
+    normalized_group = str(group or '').strip().upper()
+    if normalized_group:
+        return normalized_group
+    name_key = str(name or '').strip().lower()
+    return GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP.get(name_key, '')
 
 go1_dashboard = {
     "status": "Idle",
@@ -2143,10 +2208,17 @@ class Go1ServerJsonRecvNode(BaseNode):
             processed_detections = []
             for idx, det in enumerate(detections_list):
                 if isinstance(det, dict):
+                    normalized_group = _normalize_go1_detection_group(det.get('name'), det.get('group'))
+                    rel_depth = det.get('rel_depth')
+                    try:
+                        rel_depth_text = f"{float(rel_depth):.3f}"
+                    except Exception:
+                        rel_depth_text = str(rel_depth)
+
                     processed_det = {
                         'id': det.get('id'),
                         'name': det.get('name'),
-                        'group': det.get('group'),
+                        'group': normalized_group or det.get('group'),
                         'rel_depth': det.get('rel_depth'),
                         'risk_level': det.get('risk_level'),
                         'bbox_xyxy': det.get('bbox_xyxy'),
@@ -2157,8 +2229,8 @@ class Go1ServerJsonRecvNode(BaseNode):
                     write_log(
                         f"[GO1 JSON RX] Detection {idx}: "
                         f"id={det.get('id')}, name={det.get('name')}, "
-                        f"group={det.get('group')}, risk={det.get('risk_level')}, "
-                        f"depth={det.get('rel_depth'):.3f}, bbox={det.get('bbox_xyxy')}"
+                        f"group={processed_det['group']}, risk={det.get('risk_level')}, "
+                        f"depth={rel_depth_text}, bbox={det.get('bbox_xyxy')}"
                     )
             
             return processed_detections
@@ -2474,33 +2546,90 @@ class Go1AutoAvoidanceNode(BaseNode):
                 return None, text
         return None, str(raw_value)
 
-    def _extract_near_person(self, detections):
-        near_objects = []
-        person_object = None
+    def _collect_policy_targets(self, detections):
+        matched_objects = []
+        action_candidates = []
 
         if not isinstance(detections, list):
-            return near_objects, person_object
+            return matched_objects, None
 
-        for det in detections:
+        for idx, det in enumerate(detections):
             if not isinstance(det, dict):
                 continue
             if str(det.get('risk_level', '')).strip().lower() != 'near':
                 continue
-            near_objects.append(det)
-            if person_object is None and str(det.get('name', '')).strip().lower() == 'person':
-                person_object = det
+            group = _normalize_go1_detection_group(det.get('name'), det.get('group'))
+            policy = GO1_AUTO_AVOIDANCE_POLICY.get(group)
+            if not group or policy is None:
+                continue
 
-        return near_objects, person_object
+            rel_depth = det.get('rel_depth')
+            try:
+                rel_depth_value = float(rel_depth)
+            except Exception:
+                rel_depth_value = float('inf')
 
-    def _trigger_robot_stop(self):
+            entry = {
+                'index': idx,
+                'det': det,
+                'group': group,
+                'policy': policy,
+                'rel_depth': rel_depth_value,
+            }
+            matched_objects.append(entry)
+            if str(policy.get('action', '')).strip().lower() != 'observe':
+                action_candidates.append(entry)
+
+        def _sort_key(entry):
+            return (
+                GO1_AUTO_AVOIDANCE_GROUP_PRIORITY.get(entry['group'], 999),
+                entry['rel_depth'],
+                entry['index'],
+            )
+
+        matched_objects.sort(key=_sort_key)
+        action_candidates.sort(key=_sort_key)
+        return matched_objects, (action_candidates[0] if action_candidates else None)
+
+    def _choose_escape_direction(self, bbox):
+        if not bbox or len(bbox) < 4:
+            return None
+        try:
+            cx = (float(bbox[0]) + float(bbox[2])) / 2.0
+        except Exception:
+            return None
+        center_x = float(GO1_AUTO_AVOIDANCE_IMAGE_WIDTH) / 2.0
+        return 'right' if cx <= center_x else 'left'
+
+    def _format_near_targets_for_log(self, near_objects):
+        if not near_objects:
+            return 'none'
+
+        parts = []
+        for entry in near_objects:
+            det = entry.get('det', {})
+            name = str(det.get('name', 'unknown')).strip() or 'unknown'
+            group = str(entry.get('group', '')).strip() or 'UNKNOWN'
+            rel_depth = det.get('rel_depth')
+            try:
+                rel_depth_text = f"{float(rel_depth):.3f}"
+            except Exception:
+                rel_depth_text = str(rel_depth)
+            parts.append(f"{name}[{group}]@{rel_depth_text}")
+        return ', '.join(parts)
+
+    def _trigger_robot_stop(self, hold_sec=2.0, status='STOP_SENT'):
         global go1_estop_hold_until
         go1_node_intent['vx'] = 0.0
         go1_node_intent['vy'] = 0.0
         go1_node_intent['wz'] = 0.0
         go1_node_intent['stop'] = True
         go1_node_intent['trigger_time'] = time.monotonic()
-        go1_estop_hold_until = time.monotonic() + 2.0
+        go1_estop_hold_until = time.monotonic() + max(0.0, float(hold_sec))
         go1_auto_avoidance_data['stop_sent'] = True
+        go1_auto_avoidance_data['target_action'] = 'stop'
+        go1_auto_avoidance_data['status'] = status
+        self._last_status = status
 
     def execute(self):
         raw_value = self.fetch_input_data(self.in_json)
@@ -2515,24 +2644,35 @@ class Go1AutoAvoidanceNode(BaseNode):
             go1_auto_avoidance_data['status'] = 'WAITING'
             go1_auto_avoidance_data['has_near_obstacle'] = False
             go1_auto_avoidance_data['near_count'] = 0
-            go1_auto_avoidance_data['person_found'] = False
-            go1_auto_avoidance_data['person_id'] = None
-            go1_auto_avoidance_data['person_rel_depth'] = None
+            go1_auto_avoidance_data['target_found'] = False
+            go1_auto_avoidance_data['target_id'] = None
+            go1_auto_avoidance_data['target_name'] = None
+            go1_auto_avoidance_data['target_group'] = None
+            go1_auto_avoidance_data['target_rel_depth'] = None
+            go1_auto_avoidance_data['target_action'] = ''
             self._last_status = 'WAITING'
             return self.out_flow
 
         has_near_obstacle = _coerce_bool(payload.get('has_near_obstacle', False), False)
         detections = payload.get('detections', [])
-        near_objects, near_person = self._extract_near_person(detections)
+        near_objects, action_target = self._collect_policy_targets(detections)
 
-        go1_auto_avoidance_data['has_near_obstacle'] = has_near_obstacle
+        go1_auto_avoidance_data['has_near_obstacle'] = bool(has_near_obstacle or near_objects)
         go1_auto_avoidance_data['near_count'] = len(near_objects)
-        go1_auto_avoidance_data['person_found'] = bool(near_person)
-        go1_auto_avoidance_data['person_id'] = near_person.get('id') if near_person else None
-        go1_auto_avoidance_data['person_rel_depth'] = near_person.get('rel_depth') if near_person else None
         go1_auto_avoidance_data['last_trigger_ts'] = time.time()
+        go1_auto_avoidance_data['target_found'] = bool(action_target)
+        go1_auto_avoidance_data['target_id'] = action_target['det'].get('id') if action_target else None
+        go1_auto_avoidance_data['target_name'] = action_target['det'].get('name') if action_target else None
+        go1_auto_avoidance_data['target_group'] = action_target['group'] if action_target else None
+        go1_auto_avoidance_data['target_rel_depth'] = action_target['det'].get('rel_depth') if action_target else None
+        go1_auto_avoidance_data['target_action'] = str(action_target['policy'].get('action', '')).strip().lower() if action_target else ''
 
-        if not has_near_obstacle:
+        if is_new_input:
+            write_log(
+                f"[GO1 AUTO AVOID] near detections: {self._format_near_targets_for_log(near_objects)}"
+            )
+
+        if not has_near_obstacle and not near_objects:
             go1_auto_avoidance_data['status'] = 'SAFE'
             self._last_status = 'SAFE'
             return self.out_flow
@@ -2542,66 +2682,51 @@ class Go1AutoAvoidanceNode(BaseNode):
             self._last_status = 'NEAR_OBSTACLE_NONE'
             return self.out_flow
 
-        if near_person is None:
+        if action_target is None:
             if is_new_input:
-                write_log("[GO1 AUTO AVOID] near object detected, but no person found")
-            go1_auto_avoidance_data['status'] = 'NEAR_PERSON_MISSING'
-            self._last_status = 'NEAR_PERSON_MISSING'
+                write_log("[GO1 AUTO AVOID] action=observe | result=pass-through (no robot motion)")
+            go1_auto_avoidance_data['status'] = 'SMALL_OBSTACLE_OBSERVED'
+            self._last_status = 'SMALL_OBSTACLE_OBSERVED'
             return self.out_flow
 
-        person_id = near_person.get('id')
-        person_rel_depth = near_person.get('rel_depth')
-        # 위치 기반 회피: bbox 중심 x로 left/center/right 분류
-        bbox = near_person.get('bbox_xyxy')
-        image_w = 464
-        move_duration = 0.5
-        move_speed = 0.2
-
-        if bbox and len(bbox) >= 4:
-            try:
-                cx = (float(bbox[0]) + float(bbox[2])) / 2.0
-                rel = cx / float(image_w)
-            except Exception:
-                cx = None
-                rel = None
-        else:
-            cx = None
-            rel = None
+        target = action_target['det']
+        target_group = action_target['group']
+        target_action = str(action_target['policy'].get('action', '')).strip().lower()
+        target_id = target.get('id')
+        target_name = target.get('name')
+        target_rel_depth = target.get('rel_depth')
+        bbox = target.get('bbox_xyxy')
 
         if is_new_input:
-            write_log(f"[GO1 AUTO AVOID] near person detected | id={person_id} | rel_depth={person_rel_depth}")
+            write_log(
+                f"[GO1 AUTO AVOID] near target detected | id={target_id} | name={target_name} | "
+                f"group={target_group} | action={target_action} | rel_depth={target_rel_depth}"
+            )
 
-        if cx is None or rel is None:
-            write_log("[GO1 AUTO AVOID] bbox 정보 없음 — 안전을 위해 정지 명령 전송")
-            self._trigger_robot_stop()
-            go1_auto_avoidance_data['status'] = 'STOP_SENT'
-            self._last_status = 'STOP_SENT'
-        else:
-            # 분할 기준: 정확히 이미지 중앙일 때만 'center'로 판정
-            # 중앙값은 image_w / 2.0
-            try:
-                center_x_exact = float(image_w) / 2.0
-                if cx == center_x_exact:
-                    pos = 'center'
-                elif cx < center_x_exact:
-                    pos = 'left'
-                else:
-                    pos = 'right'
-            except Exception:
-                # 예외 발생 시 안전하게 중앙이 아닌 것으로 취급
-                pos = 'left' if (cx is not None and cx < (float(image_w) / 2.0)) else 'right'
+        if target_action == 'stop':
+            hold_sec = float(action_target['policy'].get('hold_sec', 2.0))
+            status = f"STOP_SENT_{target_group}"
+            if is_new_input:
+                write_log(
+                    f"[GO1 AUTO AVOID] action=stop | target={target_name}[{target_group}] | hold={hold_sec:.1f}s"
+                )
+            self._trigger_robot_stop(hold_sec=hold_sec, status=status)
+            return self.out_flow
 
-            # left/center이면 오른쪽으로 회피, right이면 왼쪽으로 회피
-            if pos in ('left', 'center'):
-                inject_dir = 'right'
-                dir_msg = '오른쪽'
-            else:
-                inject_dir = 'left'
-                dir_msg = '왼쪽'
+        if target_action == 'avoid':
+            inject_dir = self._choose_escape_direction(bbox)
+            if inject_dir is None:
+                write_log('[GO1 AUTO AVOID] bbox 정보 없음 — 안전을 위해 정지 명령 전송')
+                self._trigger_robot_stop(hold_sec=4.0, status='HARD_OBSTACLE_NO_BBOX_STOP')
+                return self.out_flow
 
-            write_log(f"[GO1 AUTO AVOID] {dir_msg}으로 이동 (id={person_id} | rel_depth={person_rel_depth})")
+            dir_msg = '오른쪽' if inject_dir == 'right' else '왼쪽'
+            if is_new_input:
+                write_log(
+                    f"[GO1 AUTO AVOID] action=avoid | target={target_name}[{target_group}] | "
+                    f"escape={dir_msg} | bbox={bbox}"
+                )
 
-            # 기존의 움직임 주입 로직을 가진 Go1ServerJsonRecvNode 인스턴스를 찾아 호출합니다.
             json_node = None
             try:
                 json_node = next((n for n in node_registry.values() if getattr(n, 'type_str', None) == 'GO1_SERVER_JSON_RECV'), None)
@@ -2610,19 +2735,30 @@ class Go1AutoAvoidanceNode(BaseNode):
 
             if json_node and hasattr(json_node, '_inject_direction_motion'):
                 try:
-                    json_node._inject_direction_motion(inject_dir, move_speed, move_duration, signature)
-                    go1_auto_avoidance_data['status'] = f'MOVE_{inject_dir.upper()}'
+                    json_node._inject_direction_motion(
+                        inject_dir,
+                        GO1_AUTO_AVOIDANCE_MOVE_SPEED,
+                        GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC,
+                        signature,
+                    )
+                    go1_auto_avoidance_data['status'] = f"MOVE_{inject_dir.upper()}_{target_group}"
                     self._last_status = go1_auto_avoidance_data['status']
+                    if is_new_input:
+                        write_log(
+                            f"[GO1 AUTO AVOID] result=move {inject_dir.upper()} | target={target_name}[{target_group}] | "
+                            f"duration={GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC:.1f}s"
+                        )
                 except Exception:
                     write_log('[GO1 AUTO AVOID] 움직임 주입 실패 — 정지 명령 대체 실행')
-                    self._trigger_robot_stop()
-                    go1_auto_avoidance_data['status'] = 'STOP_SENT'
-                    self._last_status = 'STOP_SENT'
+                    self._trigger_robot_stop(hold_sec=4.0, status='HARD_OBSTACLE_MOVE_FAIL_STOP')
             else:
                 write_log('[GO1 AUTO AVOID] JSON RX 노드의 움직임 주입 메서드를 찾을 수 없음 — 정지 명령 전송')
-                self._trigger_robot_stop()
-                go1_auto_avoidance_data['status'] = 'STOP_SENT'
-                self._last_status = 'STOP_SENT'
+                self._trigger_robot_stop(hold_sec=4.0, status='HARD_OBSTACLE_NO_INJECTOR_STOP')
+
+            return self.out_flow
+
+        go1_auto_avoidance_data['status'] = 'POLICY_UNKNOWN'
+        self._last_status = 'POLICY_UNKNOWN'
 
         return self.out_flow
 

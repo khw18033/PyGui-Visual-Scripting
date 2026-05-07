@@ -1138,3 +1138,23 @@ odes/robots/go1.py (함수/클래스 추가)
   - `main.py` (수정): `select_go1_module()`, `import_go1_modules()` 함수 추가 및 실행 순서 조정
   - `core/factory.py` (수정): Go1 클래스를 동적 import로 변경
   - `ui/dpg_manager.py` (수정): Go1 변수를 동적 import로 변경
+
+  ### [2026-05-07 00:00:00] Go1 Auto Avoidance 정책표 기반 확장 및 로그 강화
+- 문제 분석:
+  - 기존 `Go1AutoAvoidanceNode`는 `person`만 대상으로 회피/정지 로직을 수행하고 있어, `avoidance_prompt.md`에 정의된 그룹 정책을 반영하지 못했음.
+  - 탐지 후 어떤 `name`, `group`의 객체가 잡혔는지와 그에 따라 어떤 행동을 했는지 로그에서 바로 확인하기 어려웠음.
+  - `go1_auto_avoidance_data`에 남아 있던 `person_*` 상태는 정책 기반 로직 전환 후에도 잔재로 남아 있었음.
+- 조치 방안:
+  - `nodes/robots/go1.py`의 Auto Avoidance 로직을 그룹 정책표 기반으로 전환함.
+    - `LABELED_CLASSES` / `ZEROSHOT_EXTENDED_CLASSES` 대응 그룹을 내부 정책 테이블로 정규화.
+    - `AGENT`, `MOVABLE_OBSTACLE`, `UNKNOWN_OBSTACLE`는 4초 정지.
+    - `HARD_OBSTACLE`는 기존 person 회피 방식과 동일한 bbox 중심 기반 좌/우 반대 회피.
+    - `ELECTRICAL_RISK`, `TANGLED_RISK`, `SPECIAL_OBJECT`는 2초 정지.
+    - `SMALL_OBSTACLE`는 인식만 하고 동작 없이 통과.
+  - `go1_auto_avoidance_data`에서 `person_found`, `person_id`, `person_rel_depth`를 제거하고, `target_*` 상태만 유지하도록 정리함.
+  - 로그를 강화하여 새 입력마다 아래 정보를 확인할 수 있게 함.
+    - 탐지 요약: `name[group]@depth`
+    - 정책 행동: `action=stop` / `action=avoid` / `action=observe`
+    - 결과 행동: `hold=4.0s`, `escape=왼쪽/오른쪽`, `result=move`, `result=pass-through`
+- 수정 파일:
+  - `nodes/robots/go1.py`
