@@ -2226,12 +2226,12 @@ class Go1ServerJsonRecvNode(BaseNode):
                     processed_detections.append(processed_det)
                     
                     # 각 detection 로그 출력
-                    write_log(
-                        f"[GO1 JSON RX] Detection {idx}: "
-                        f"id={det.get('id')}, name={det.get('name')}, "
-                        f"group={processed_det['group']}, risk={det.get('risk_level')}, "
-                        f"depth={rel_depth_text}, bbox={det.get('bbox_xyxy')}"
-                    )
+                    # write_log(
+                    #     f"[GO1 JSON RX] Detection {idx}: "
+                    #     f"id={det.get('id')}, name={det.get('name')}, "
+                    #     f"group={processed_det['group']}, risk={det.get('risk_level')}, "
+                    #     f"depth={rel_depth_text}, bbox={det.get('bbox_xyxy')}"
+                    # )
             
             return processed_detections
         except Exception as e:
@@ -2436,8 +2436,8 @@ class Go1ServerJsonRecvNode(BaseNode):
                     has_near_obstacle = parsed.get('has_near_obstacle', False)
                     
                     # 헤더 로그
-                    write_log(f"[GO1 JSON RX] JSON Received - timestamp={timestamp}, camera={camera_id}, has_near_obstacle={has_near_obstacle}")
-                    write_log(f"[GO1 JSON RX] Total detections: {len(detections)}")
+                    # write_log(f"[GO1 JSON RX] JSON Received - timestamp={timestamp}, camera={camera_id}, has_near_obstacle={has_near_obstacle}")
+                    # write_log(f"[GO1 JSON RX] Total detections: {len(detections)}")
                     
                     # detections 처리 및 로그
                     self._last_detections = detections
@@ -2484,10 +2484,10 @@ class Go1ServerJsonRecvNode(BaseNode):
 
                 raw_for_log = raw_json.strip()
                 if raw_for_log != self._last_logged_raw:
-                    if direction:
-                        write_log(f"[GO1 JSON RX] read ok | source={source} | direction={direction}")
-                    else:
-                        write_log(f"[GO1 JSON RX] read ok | source={source}")
+                    # if direction:
+                    #     write_log(f"[GO1 JSON RX] read ok | source={source} | direction={direction}")
+                    # else:
+                    #     write_log(f"[GO1 JSON RX] read ok | source={source}")
                     self._last_logged_raw = raw_for_log
                 self._last_logged_error = ''
 
@@ -2667,10 +2667,10 @@ class Go1AutoAvoidanceNode(BaseNode):
         go1_auto_avoidance_data['target_rel_depth'] = action_target['det'].get('rel_depth') if action_target else None
         go1_auto_avoidance_data['target_action'] = str(action_target['policy'].get('action', '')).strip().lower() if action_target else ''
 
-        if is_new_input:
-            write_log(
-                f"[GO1 AUTO AVOID] near detections: {self._format_near_targets_for_log(near_objects)}"
-            )
+        # if is_new_input:
+        #     write_log(
+        #         f"[GO1 AUTO AVOID] near detections: {self._format_near_targets_for_log(near_objects)}"
+        #     )
 
         if not has_near_obstacle and not near_objects:
             go1_auto_avoidance_data['status'] = 'SAFE'
@@ -2697,11 +2697,11 @@ class Go1AutoAvoidanceNode(BaseNode):
         target_rel_depth = target.get('rel_depth')
         bbox = target.get('bbox_xyxy')
 
-        if is_new_input:
-            write_log(
-                f"[GO1 AUTO AVOID] near target detected | id={target_id} | name={target_name} | "
-                f"group={target_group} | action={target_action} | rel_depth={target_rel_depth}"
-            )
+        # if is_new_input:
+        #     write_log(
+        #         f"[GO1 AUTO AVOID] near target detected | id={target_id} | name={target_name} | "
+        #         f"group={target_group} | action={target_action} | rel_depth={target_rel_depth}"
+        #     )
 
         if target_action == 'stop':
             hold_sec = float(action_target['policy'].get('hold_sec', 2.0))
@@ -2743,11 +2743,11 @@ class Go1AutoAvoidanceNode(BaseNode):
                     )
                     go1_auto_avoidance_data['status'] = f"MOVE_{inject_dir.upper()}_{target_group}"
                     self._last_status = go1_auto_avoidance_data['status']
-                    if is_new_input:
-                        write_log(
-                            f"[GO1 AUTO AVOID] result=move {inject_dir.upper()} | target={target_name}[{target_group}] | "
-                            f"duration={GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC:.1f}s"
-                        )
+                    # if is_new_input:
+                    #     write_log(
+                    #         f"[GO1 AUTO AVOID] result=move {inject_dir.upper()} | target={target_name}[{target_group}] | "
+                    #         f"duration={GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC:.1f}s"
+                    #     )
                 except Exception:
                     write_log('[GO1 AUTO AVOID] 움직임 주입 실패 — 정지 명령 대체 실행')
                     self._trigger_robot_stop(hold_sec=4.0, status='HARD_OBSTACLE_MOVE_FAIL_STOP')
