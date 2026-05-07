@@ -745,7 +745,8 @@ def camera_worker_thread():
 
                 time.sleep(1.0)
                 camera_state['status'] = 'Running'
-                camera_state['start_time'] = time.time()
+                # Start timer only after the first valid frame is actually received.
+                camera_state['start_time'] = 0.0
                 camera_state['timer_started_logged'] = False
                 camera_state['last_interval_count'] = 0
 
@@ -775,7 +776,11 @@ def camera_worker_thread():
                 camera_state['status'] = 'Stopped'
 
         if camera_state['status'] == 'Running' and float(camera_state.get('duration', 0.0)) > 0.0:
-            elapsed = time.time() - float(camera_state.get('start_time', 0.0))
+            start_time = float(camera_state.get('start_time', 0.0) or 0.0)
+            if start_time <= 0.0:
+                time.sleep(0.1)
+                continue
+            elapsed = time.time() - start_time
             if not camera_state.get('timer_started_logged', False):
                 write_log("[Cam Timer] 카메라 타이머 시작")
                 camera_state['timer_started_logged'] = True
@@ -800,7 +805,11 @@ def camera_worker_thread():
                 camera_command_queue.append(('STOP', camera_state.get('target_ip', '')))
 
         if camera_state['status'] == 'Running':
-            elapsed = time.time() - float(camera_state.get('start_time', 0.0))
+            start_time = float(camera_state.get('start_time', 0.0) or 0.0)
+            if start_time <= 0.0:
+                time.sleep(0.1)
+                continue
+            elapsed = time.time() - start_time
             interval_count = int(elapsed // 10)
             if interval_count > camera_state.get('last_interval_count', 0) and interval_count > 0:
                 write_log(f"[Cam Running] {interval_count * 10}초 경과")
@@ -2842,6 +2851,7 @@ class VideoSourceNode(BaseNode):
 
         # 수신 전용 폴더에서 최신 안정 프레임 읽기 (VIS_SAVE 출력 폴더와 분리)
         frame = self._last_frame
+        got_fresh_frame = False
         try:
             source_folder = str(self.state.get('receiver_folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
             files = glob.glob(os.path.join(source_folder, "front_*.jpg"))
@@ -2856,9 +2866,17 @@ class VideoSourceNode(BaseNode):
                     if loaded is not None and len(loaded.shape) >= 2 and loaded.shape[1] > 1:
                         self._last_frame = loaded
                         frame = loaded
+                        got_fresh_frame = True
                         break
         except Exception:
             frame = self._last_frame
+
+        # Delay camera timer start until the first valid frame is actually available.
+        if got_fresh_frame and camera_state.get('status') == 'Running' and float(camera_state.get('start_time', 0.0) or 0.0) <= 0.0:
+            camera_state['start_time'] = time.time()
+            camera_state['timer_started_logged'] = False
+            camera_state['last_interval_count'] = 0
+            write_log("[Cam Timer] 첫 프레임 수신 - 타이머 시작")
 
         self.output_data[self.out_frame] = frame
         return None
@@ -3338,6 +3356,7 @@ class VideoFrameSaveNode(BaseNode):
         self._frame_count = 0
         self._timer_completed_this_run = False
         self._frame_index = 0
+        self._save_armed = False
 
     def _extract_frame_index(self, path):
         name = os.path.basename(path)
@@ -3391,6 +3410,7 @@ class VideoFrameSaveNode(BaseNode):
 
         if not is_saving:
             self._timer_completed_this_run = False
+            self._save_armed = False
 
         # 저장 상태 업데이트
         camera_save_state['folder'] = folder
@@ -3400,21 +3420,22 @@ class VideoFrameSaveNode(BaseNode):
             if self._save_start_time is not None:
                 write_log("[VIS_SAVE] 저장 중단")
                 self._save_start_time = None
+                self._save_armed = False
                 camera_save_state['status'] = 'Stopped'
                 camera_save_state['start_time'] = None
                 camera_save_state['frame_count'] = 0
             return self.out_flow
 
-        # 저장 시작
-        if is_saving and not self._save_start_time and not self._timer_completed_this_run:
-            self._save_start_time = time.time()
+        # 저장 준비: 타이머는 첫 유효 프레임 수신 시점에 시작한다.
+        if is_saving and not self._save_start_time and not self._timer_completed_this_run and not self._save_armed:
             self._frame_count = 0
-            camera_save_state['status'] = 'Running'
-            camera_save_state['start_time'] = self._save_start_time
+            camera_save_state['status'] = 'Arming'
+            camera_save_state['start_time'] = None
             try:
                 os.makedirs(folder, exist_ok=True)
                 self._sync_frame_index_from_folder(folder)
-                write_log(f"[VIS_SAVE] 저장 시작: {folder}")
+                self._save_armed = True
+                write_log(f"[VIS_SAVE] 저장 준비: {folder} (첫 프레임 수신 후 타이머 시작)")
             except Exception as e:
                 write_log(f"[VIS_SAVE] 폴더 생성 실패: {e}")
                 return self.out_flow
@@ -3438,12 +3459,19 @@ class VideoFrameSaveNode(BaseNode):
 
         # 프레임 저장
         frame = self.fetch_input_data(self.in_frame)
-        if frame is not None and HAS_CV2 and self._save_start_time is not None:
+        if frame is not None and HAS_CV2 and (self._save_start_time is not None or self._save_armed):
             try:
+                if self._save_start_time is None:
+                    self._save_start_time = time.time()
+                    camera_save_state['status'] = 'Running'
+                    camera_save_state['start_time'] = self._save_start_time
+                    write_log("[VIS_SAVE] 첫 프레임 수신 - 타이머 시작")
+
                 self._frame_index += 1
                 filename = os.path.join(folder, f"front_{self._frame_index:06d}.jpg")
                 success = cv2.imwrite(filename, frame)
                 if success:
+                    self._save_armed = False
                     self._frame_count += 1
                     camera_save_state['frame_count'] = self._frame_count
             except Exception as e:
