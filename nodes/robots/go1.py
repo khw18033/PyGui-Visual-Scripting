@@ -2667,10 +2667,10 @@ class Go1AutoAvoidanceNode(BaseNode):
         go1_auto_avoidance_data['target_rel_depth'] = action_target['det'].get('rel_depth') if action_target else None
         go1_auto_avoidance_data['target_action'] = str(action_target['policy'].get('action', '')).strip().lower() if action_target else ''
 
-        # if is_new_input:
-        #     write_log(
-        #         f"[GO1 AUTO AVOID] near detections: {self._format_near_targets_for_log(near_objects)}"
-        #     )
+        if is_new_input:
+            write_log(
+                f"[GO1 AUTO AVOID] near detections: {self._format_near_targets_for_log(near_objects)}"
+            )
 
         if not has_near_obstacle and not near_objects:
             go1_auto_avoidance_data['status'] = 'SAFE'
