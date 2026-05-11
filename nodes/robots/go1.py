@@ -229,24 +229,49 @@ GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP = {
     'bus': 'VEHICLE',
     'motorcycle': 'VEHICLE',
     'bicycle': 'VEHICLE',
+    'scooter': 'VEHICLE',
     
     # HARD_OBSTACLE group
+    'large_obstacle': 'HARD_OBSTACLE',
     'box': 'HARD_OBSTACLE',
+    'cardboard box': 'HARD_OBSTACLE',
     'chair': 'HARD_OBSTACLE',
     'table': 'HARD_OBSTACLE',
+    'bench': 'HARD_OBSTACLE',
     'barrier': 'HARD_OBSTACLE',
     'fence': 'HARD_OBSTACLE',
+    'guardrail': 'HARD_OBSTACLE',
+    'wall': 'HARD_OBSTACLE',
+    'pillar': 'HARD_OBSTACLE',
+    'door': 'HARD_OBSTACLE',
+    'pole': 'HARD_OBSTACLE',
+    'bollard': 'HARD_OBSTACLE',
+    'trash bin': 'HARD_OBSTACLE',
+    'fire extinguisher': 'HARD_OBSTACLE',
     'umbrella': 'HARD_OBSTACLE',
+    'rock': 'HARD_OBSTACLE',
     
+    # SOFT_PUSHABLE group
+    'backpack': 'SOFT_PUSHABLE',
+    'bag': 'SOFT_PUSHABLE',
+    'paper bag': 'SOFT_PUSHABLE',
+    'tissue box': 'SOFT_PUSHABLE',
+    'toilet paper roll': 'SOFT_PUSHABLE',
+    'trash': 'SOFT_PUSHABLE',
+    'plastic bag': 'SOFT_PUSHABLE',
+
     # LOW_OBSTACLE group
-    'bottle': 'LOW_OBSTACLE',
     'laptop': 'LOW_OBSTACLE',
     'card': 'LOW_OBSTACLE',
+    'power strip': 'LOW_OBSTACLE',
+    'small_object': 'LOW_OBSTACLE',
+    'movable_object': 'LOW_OBSTACLE',
     
     # THIN_OBSTACLE group
     'wire': 'THIN_OBSTACLE',
     'cable': 'THIN_OBSTACLE',
     'hose': 'THIN_OBSTACLE',
+    'branch': 'THIN_OBSTACLE',
     
     # GROUND_HAZARD group
     'curb': 'GROUND_HAZARD',
@@ -255,38 +280,16 @@ GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP = {
     'speed bump': 'GROUND_HAZARD',
     'puddle': 'GROUND_HAZARD',
     
-    # UNKNOWN_OBSTACLE group (finetune classes)
-    'power strip': 'UNKNOWN_OBSTACLE',
-    'backpack': 'UNKNOWN_OBSTACLE',
-    'fire extinguisher': 'UNKNOWN_OBSTACLE',
-    'tissue box': 'UNKNOWN_OBSTACLE',
-    'toilet paper roll': 'UNKNOWN_OBSTACLE',
-    'trash bin': 'UNKNOWN_OBSTACLE',
-    'paper bag': 'UNKNOWN_OBSTACLE',
-    
-    # UNKNOWN_OBSTACLE group (zeroshot classes not mapped above)
-    'scooter': 'UNKNOWN_OBSTACLE',
+    # UNKNOWN_OBSTACLE group (fallback-only)
     'traffic cone': 'UNKNOWN_OBSTACLE',
-    'bollard': 'UNKNOWN_OBSTACLE',
-    'pole': 'UNKNOWN_OBSTACLE',
-    'guardrail': 'UNKNOWN_OBSTACLE',
-    'rock': 'UNKNOWN_OBSTACLE',
-    'branch': 'UNKNOWN_OBSTACLE',
-    'trash': 'UNKNOWN_OBSTACLE',
-    'plastic bag': 'UNKNOWN_OBSTACLE',
-    'cardboard box': 'UNKNOWN_OBSTACLE',
-    'bench': 'UNKNOWN_OBSTACLE',
-    'door': 'UNKNOWN_OBSTACLE',
-    'wall': 'UNKNOWN_OBSTACLE',
-    'pillar': 'UNKNOWN_OBSTACLE',
-    'bag': 'UNKNOWN_OBSTACLE',
 }
 
 GO1_AUTO_AVOIDANCE_POLICY = {
     'AGENT': {'action': 'stop', 'hold_sec': 4.0},
     'VEHICLE': {'action': 'stop', 'hold_sec': 4.0},
     'HARD_OBSTACLE': {'action': 'avoid'},
-    'LOW_OBSTACLE': {'action': 'observe'},
+    'SOFT_PUSHABLE': {'action': 'avoid'},
+    'LOW_OBSTACLE': {'action': 'avoid'},
     'THIN_OBSTACLE': {'action': 'stop_then_back', 'stop_sec': 1.0, 'back_sec': 0.5},
     'GROUND_HAZARD': {'action': 'stop_then_back', 'stop_sec': 2.0, 'back_sec': 0.5},
     'UNKNOWN_OBSTACLE': {'action': 'stop', 'hold_sec': 2.0},
@@ -296,13 +299,19 @@ GO1_AUTO_AVOIDANCE_GROUP_PRIORITY = {
     'AGENT': 0,
     'VEHICLE': 1,
     'GROUND_HAZARD': 2,
-    'HARD_OBSTACLE': 3,
-    'THIN_OBSTACLE': 4,
-    'UNKNOWN_OBSTACLE': 5,
-    'LOW_OBSTACLE': 6,
+    'THIN_OBSTACLE': 3,
+    'UNKNOWN_OBSTACLE': 4,
+    'HARD_OBSTACLE': 5,
+    'SOFT_PUSHABLE': 6,
+    'LOW_OBSTACLE': 7,
 }
 
 GO1_AUTO_AVOIDANCE_IMAGE_WIDTH = 464
+GO1_AUTO_AVOIDANCE_IMAGE_HEIGHT = 400
+GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X = 100
+GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X = 350
+GO1_AUTO_AVOIDANCE_MIN_BBOX_WIDTH = 24
+GO1_AUTO_AVOIDANCE_MIN_BBOX_HEIGHT = 24
 GO1_AUTO_AVOIDANCE_MOVE_SPEED = 0.2
 GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC = 0.5
 
@@ -2647,8 +2656,27 @@ class Go1AutoAvoidanceNode(BaseNode):
             cx = (float(bbox[0]) + float(bbox[2])) / 2.0
         except Exception:
             return None
+        left_limit = float(GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X)
+        right_limit = float(GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X)
+        if cx <= left_limit or cx >= right_limit:
+            return ''
         center_x = float(GO1_AUTO_AVOIDANCE_IMAGE_WIDTH) / 2.0
-        return 'right' if cx <= center_x else 'left'
+        return 'right' if cx < center_x else 'left'
+
+    def _is_small_bbox(self, bbox):
+        if not bbox or len(bbox) < 4:
+            return False
+        try:
+            x0 = float(bbox[0])
+            y0 = float(bbox[1])
+            x1 = float(bbox[2])
+            y1 = float(bbox[3])
+        except Exception:
+            return False
+
+        width = abs(x1 - x0)
+        height = abs(y1 - y0)
+        return width < GO1_AUTO_AVOIDANCE_MIN_BBOX_WIDTH or height < GO1_AUTO_AVOIDANCE_MIN_BBOX_HEIGHT
 
     def _format_near_targets_for_log(self, near_objects):
         if not near_objects:
@@ -2690,6 +2718,8 @@ class Go1AutoAvoidanceNode(BaseNode):
         go1_auto_avoidance_data['source'] = 'GO1_SERVER_JSON_RECV'
 
         if not isinstance(payload, dict):
+            if is_new_input:
+                write_log("[GO1 AUTO AVOID] status=WAITING | payload is not dict")
             go1_auto_avoidance_data['status'] = 'WAITING'
             go1_auto_avoidance_data['has_near_obstacle'] = False
             go1_auto_avoidance_data['near_count'] = 0
@@ -2722,11 +2752,15 @@ class Go1AutoAvoidanceNode(BaseNode):
             )
 
         if not has_near_obstacle and not near_objects:
+            if is_new_input:
+                write_log("[GO1 AUTO AVOID] status=SAFE | no near detections")
             go1_auto_avoidance_data['status'] = 'SAFE'
             self._last_status = 'SAFE'
             return self.out_flow
 
         if not near_objects:
+            if is_new_input:
+                write_log("[GO1 AUTO AVOID] status=NEAR_OBSTACLE_NONE | has_near_obstacle=true but no actionable targets")
             go1_auto_avoidance_data['status'] = 'NEAR_OBSTACLE_NONE'
             self._last_status = 'NEAR_OBSTACLE_NONE'
             return self.out_flow
@@ -2746,6 +2780,15 @@ class Go1AutoAvoidanceNode(BaseNode):
         target_rel_depth = target.get('rel_depth')
         bbox = target.get('bbox_xyxy')
 
+        if self._is_small_bbox(bbox):
+            if is_new_input:
+                write_log(
+                    f"[GO1 AUTO AVOID] action=observe | target={target_name}[{target_group}] | bbox too small={bbox}"
+                )
+            go1_auto_avoidance_data['status'] = f"SMALL_BBOX_OBSERVED_{target_group}"
+            self._last_status = go1_auto_avoidance_data['status']
+            return self.out_flow
+
         # if is_new_input:
         #     write_log(
         #         f"[GO1 AUTO AVOID] near target detected | id={target_id} | name={target_name} | "
@@ -2760,13 +2803,23 @@ class Go1AutoAvoidanceNode(BaseNode):
                     f"[GO1 AUTO AVOID] action=stop | target={target_name}[{target_group}] | hold={hold_sec:.1f}s"
                 )
             self._trigger_robot_stop(hold_sec=hold_sec, status=status)
+            write_log(f"[GO1 AUTO AVOID] status={status} | stop hold={hold_sec:.1f}s applied")
             return self.out_flow
 
         if target_action == 'avoid':
             inject_dir = self._choose_escape_direction(bbox)
             if inject_dir is None:
-                write_log('[GO1 AUTO AVOID] bbox 정보 없음 — 안전을 위해 정지 명령 전송')
+                write_log(f"[GO1 AUTO AVOID] action=avoid | target={target_name}[{target_group}] | bbox missing -> emergency stop")
                 self._trigger_robot_stop(hold_sec=4.0, status='HARD_OBSTACLE_NO_BBOX_STOP')
+                return self.out_flow
+
+            if inject_dir == '':
+                write_log(
+                    f"[GO1 AUTO AVOID] action=avoid | target={target_name}[{target_group}] | "
+                    f"escape not needed (cx outside {GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X}..{GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X})"
+                )
+                go1_auto_avoidance_data['status'] = f"ESCAPE_NOT_NEEDED_{target_group}"
+                self._last_status = go1_auto_avoidance_data['status']
                 return self.out_flow
 
             dir_msg = '오른쪽' if inject_dir == 'right' else '왼쪽'
@@ -2792,11 +2845,10 @@ class Go1AutoAvoidanceNode(BaseNode):
                     )
                     go1_auto_avoidance_data['status'] = f"MOVE_{inject_dir.upper()}_{target_group}"
                     self._last_status = go1_auto_avoidance_data['status']
-                    # if is_new_input:
-                    #     write_log(
-                    #         f"[GO1 AUTO AVOID] result=move {inject_dir.upper()} | target={target_name}[{target_group}] | "
-                    #         f"duration={GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC:.1f}s"
-                    #     )
+                    write_log(
+                        f"[GO1 AUTO AVOID] result=move {inject_dir.upper()} | target={target_name}[{target_group}] | "
+                        f"speed={GO1_AUTO_AVOIDANCE_MOVE_SPEED:.2f} | duration={GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC:.1f}s"
+                    )
                 except Exception:
                     write_log('[GO1 AUTO AVOID] 움직임 주입 실패 — 정지 명령 대체 실행')
                     self._trigger_robot_stop(hold_sec=4.0, status='HARD_OBSTACLE_MOVE_FAIL_STOP')
@@ -2806,6 +2858,10 @@ class Go1AutoAvoidanceNode(BaseNode):
 
             return self.out_flow
 
+        write_log(
+            f"[GO1 AUTO AVOID] policy=UNKNOWN | target={target_name}[{target_group}] | "
+            f"group action={target_action}"
+        )
         go1_auto_avoidance_data['status'] = 'POLICY_UNKNOWN'
         self._last_status = 'POLICY_UNKNOWN'
 
