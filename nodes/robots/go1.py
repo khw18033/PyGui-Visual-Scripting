@@ -2653,15 +2653,19 @@ class Go1AutoAvoidanceNode(BaseNode):
         if not bbox or len(bbox) < 4:
             return None
         try:
-            cx = (float(bbox[0]) + float(bbox[2])) / 2.0
+            x0 = float(bbox[0])
+            x1 = float(bbox[2])
         except Exception:
             return None
         left_limit = float(GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X)
         right_limit = float(GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X)
-        if cx <= left_limit or cx >= right_limit:
+        # 좌측은 bbox의 오른쪽 끝(x1), 우측은 bbox의 왼쪽 끝(x0) 기준으로
+        # 회피가 더 이상 필요 없는지를 판단한다.
+        if x1 <= left_limit or x0 >= right_limit:
             return ''
         center_x = float(GO1_AUTO_AVOIDANCE_IMAGE_WIDTH) / 2.0
-        return 'right' if cx < center_x else 'left'
+        bbox_center_x = (x0 + x1) / 2.0
+        return 'right' if bbox_center_x < center_x else 'left'
 
     def _is_small_bbox(self, bbox):
         if not bbox or len(bbox) < 4:
@@ -2816,7 +2820,7 @@ class Go1AutoAvoidanceNode(BaseNode):
             if inject_dir == '':
                 write_log(
                     f"[GO1 AUTO AVOID] action=avoid | target={target_name}[{target_group}] | "
-                    f"escape not needed (cx outside {GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X}..{GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X})"
+                    f"escape not needed (left uses x1<= {GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X}, right uses x0>= {GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X})"
                 )
                 go1_auto_avoidance_data['status'] = f"ESCAPE_NOT_NEEDED_{target_group}"
                 self._last_status = go1_auto_avoidance_data['status']
