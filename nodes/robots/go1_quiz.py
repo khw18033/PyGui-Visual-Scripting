@@ -292,7 +292,7 @@ GO1_AUTO_AVOIDANCE_POLICY = {
     'SOFT_PUSHABLE': {'action': 'avoid'},
     'LOW_OBSTACLE': {'action': 'avoid'},
     'THIN_OBSTACLE': {'action': 'stop_then_back', 'back_sec': 0.5},
-    'GROUND_HAZARD': {'action': 'stop_then_back', 'back_sec': 0.5},
+    'GROUND_HAZARD': {'action': 'stop_then_back', 'back_sec': 1.0},
     'UNKNOWN_OBSTACLE': {'action': 'stop', 'hold_sec': 2.0},
 }
 # ----------------------------------------------------------------
@@ -2932,7 +2932,7 @@ class Go1AutoAvoidanceNode(BaseNode):
             return self.out_flow
 
         if target_action == 'stop_then_back':
-            back_sec = 1.0
+            back_sec = float(action_target['policy'].get('back_sec', 1.0))
             if is_new_input:
                 write_log(
                     f"[GO1 AUTO AVOID] action=back | target={target_name}[{target_group}] | "
