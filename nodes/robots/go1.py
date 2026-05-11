@@ -2184,6 +2184,11 @@ class Go1ServerJsonRecvNode(BaseNode):
         self._last_logged_error = ''
         self._last_execute_mono = 0.0
         
+        # Deferred back motion (for stop_then_back)
+        self._deferred_back_speed = 0.0
+        self._deferred_back_duration = 0.0
+        self._deferred_back_until = 0.0
+        
         # JSON 백업 기능
         self.backup_folder = os.path.join(project_root, 'jsonbackup')
         self._ensure_backup_folder()
@@ -2383,6 +2388,43 @@ class Go1ServerJsonRecvNode(BaseNode):
             f"vy={go1_node_intent['vy']:.3f}, wz={go1_node_intent['wz']:.3f}, duration={move_duration_sec:.2f}s"
         )
 
+    def _inject_back_then_stop(self, move_speed, stop_sec, back_sec, trigger_key):
+        """Stop first, then move backward after stop_sec expires."""
+        global go1_estop_hold_until
+        if trigger_key == self._last_motion_trigger_key:
+            return
+
+        self._last_motion_trigger_key = trigger_key
+        
+        # Set stop state
+        go1_node_intent['vx'] = 0.0
+        go1_node_intent['vy'] = 0.0
+        go1_node_intent['wz'] = 0.0
+        go1_node_intent['stop'] = True
+        go1_node_intent['trigger_time'] = time.monotonic()
+        
+        # Hold stop for stop_sec
+        stop_until = time.monotonic() + max(0.05, stop_sec)
+        go1_estop_hold_until = stop_until
+        
+        # Schedule back motion to start after stop finishes
+        self._motion_active = False
+        self._motion_until_mono = 0.0
+        self._motion_vx = 0.0
+        self._motion_vy = 0.0
+        self._motion_wz = 0.0
+        self._motion_force_stop = False
+        
+        # Store state for deferred back motion
+        self._deferred_back_speed = move_speed
+        self._deferred_back_duration = back_sec
+        self._deferred_back_until = stop_until
+        
+        write_log(
+            f"[GO1 JSON RX] command=stop_then_back -> stop for {stop_sec:.2f}s, "
+            f"then back for {back_sec:.2f}s at speed {move_speed:.3f}"
+        )
+
     def _publish_state(self, raw_json, payload, connected, fresh, status, source):
         seq = _coerce_int(payload.get('seq', self._last_seq), self._last_seq)
         ts = _coerce_float(payload.get('ts', payload.get('timestamp', time.time())), time.time())
@@ -2468,6 +2510,30 @@ class Go1ServerJsonRecvNode(BaseNode):
                 self._motion_wz = 0.0
                 self._motion_force_stop = False
                 write_log("[GO1 JSON RX] timed motion finished -> stop")
+
+        # Check for deferred back motion (stop_then_back)
+        if self._deferred_back_until > 0.0 and now_mono >= self._deferred_back_until:
+            global go1_estop_hold_until
+            # Time to start back motion
+            back_until = now_mono + max(0.05, self._deferred_back_duration)
+            self._motion_active = True
+            self._motion_until_mono = back_until
+            self._motion_vx = -self._deferred_back_speed  # back motion
+            self._motion_vy = 0.0
+            self._motion_wz = 0.0
+            self._motion_force_stop = False
+            go1_node_intent['vx'] = self._motion_vx
+            go1_node_intent['vy'] = self._motion_vy
+            go1_node_intent['wz'] = self._motion_wz
+            go1_node_intent['stop'] = False
+            go1_node_intent['trigger_time'] = now_mono
+            # Reset deferred state
+            self._deferred_back_speed = 0.0
+            self._deferred_back_duration = 0.0
+            self._deferred_back_until = 0.0
+            write_log(
+                f"[GO1 JSON RX] deferred back motion started -> vx={self._motion_vx:.3f}, duration={self._deferred_back_duration:.2f}s"
+            )
 
         remaining_ms = 0.0
         if self._motion_active:
@@ -2864,6 +2930,44 @@ class Go1AutoAvoidanceNode(BaseNode):
             else:
                 write_log('[GO1 AUTO AVOID] JSON RX 노드의 움직임 주입 메서드를 찾을 수 없음 — 정지 명령 전송')
                 self._trigger_robot_stop(hold_sec=4.0, status='HARD_OBSTACLE_NO_INJECTOR_STOP')
+
+            return self.out_flow
+
+        if target_action == 'stop_then_back':
+            stop_sec = float(action_target['policy'].get('stop_sec', 1.0))
+            back_sec = float(action_target['policy'].get('back_sec', 0.5))
+            if is_new_input:
+                write_log(
+                    f"[GO1 AUTO AVOID] action=stop_then_back | target={target_name}[{target_group}] | "
+                    f"stop={stop_sec:.1f}s, back={back_sec:.1f}s"
+                )
+            self._trigger_robot_stop(hold_sec=stop_sec, status=f"STOP_THEN_BACK_{target_group}")
+            json_node = None
+            try:
+                json_node = next((n for n in node_registry.values() if getattr(n, 'type_str', None) == 'GO1_SERVER_JSON_RECV'), None)
+            except Exception:
+                json_node = None
+
+            if json_node and hasattr(json_node, '_inject_back_then_stop'):
+                try:
+                    json_node._inject_back_then_stop(
+                        GO1_AUTO_AVOIDANCE_MOVE_SPEED,
+                        stop_sec,
+                        back_sec,
+                        signature,
+                    )
+                    go1_auto_avoidance_data['status'] = f"BACK_{target_group}"
+                    self._last_status = go1_auto_avoidance_data['status']
+                    write_log(
+                        f"[GO1 AUTO AVOID] result=stop({stop_sec:.1f}s) + back({back_sec:.1f}s) | target={target_name}[{target_group}] | "
+                        f"speed={GO1_AUTO_AVOIDANCE_MOVE_SPEED:.2f}"
+                    )
+                except Exception:
+                    write_log('[GO1 AUTO AVOID] 백업 동작 주입 실패 — 정지 명령 대체 실행')
+                    self._trigger_robot_stop(hold_sec=4.0, status='STOP_THEN_BACK_MOVE_FAIL')
+            else:
+                write_log('[GO1 AUTO AVOID] JSON RX 노드의 백업 메서드를 찾을 수 없음 — 정지 명령 전송')
+                self._trigger_robot_stop(hold_sec=4.0, status='STOP_THEN_BACK_NO_INJECTOR')
 
             return self.out_flow
 
