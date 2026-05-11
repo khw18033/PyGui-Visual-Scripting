@@ -215,78 +215,13 @@ go1_auto_avoidance_data = {
 GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP = {
     # AGENT group
     'person': 'AGENT',
-    'pedestrian': 'AGENT',
-    'child': 'AGENT',
-    'dog': 'AGENT',
-    'cat': 'AGENT',
-    'robot': 'AGENT',
-    'quadruped robot': 'AGENT',
-    'robot dog': 'AGENT',
     
-    # VEHICLE group
-    'car': 'VEHICLE',
-    'truck': 'VEHICLE',
-    'bus': 'VEHICLE',
-    'motorcycle': 'VEHICLE',
-    'bicycle': 'VEHICLE',
-    'scooter': 'VEHICLE',
-    
-    # HARD_OBSTACLE group
-    'large_obstacle': 'HARD_OBSTACLE',
-    'box': 'HARD_OBSTACLE',
-    'cardboard box': 'HARD_OBSTACLE',
     'chair': 'HARD_OBSTACLE',
-    'table': 'HARD_OBSTACLE',
-    'bench': 'HARD_OBSTACLE',
-    'barrier': 'HARD_OBSTACLE',
-    'fence': 'HARD_OBSTACLE',
-    'guardrail': 'HARD_OBSTACLE',
-    'wall': 'HARD_OBSTACLE',
-    'pillar': 'HARD_OBSTACLE',
-    'door': 'HARD_OBSTACLE',
-    'pole': 'HARD_OBSTACLE',
-    'bollard': 'HARD_OBSTACLE',
-    'trash bin': 'HARD_OBSTACLE',
-    'fire extinguisher': 'HARD_OBSTACLE',
-    'umbrella': 'HARD_OBSTACLE',
-    'rock': 'HARD_OBSTACLE',
-    
-    # SOFT_PUSHABLE group
-    'backpack': 'SOFT_PUSHABLE',
-    'bag': 'SOFT_PUSHABLE',
-    'paper bag': 'SOFT_PUSHABLE',
-    'tissue box': 'SOFT_PUSHABLE',
-    'toilet paper roll': 'SOFT_PUSHABLE',
-    'trash': 'SOFT_PUSHABLE',
-    'plastic bag': 'SOFT_PUSHABLE',
-
-    # LOW_OBSTACLE group
-    'laptop': 'LOW_OBSTACLE',
-    'card': 'LOW_OBSTACLE',
-    'power strip': 'LOW_OBSTACLE',
-    'small_object': 'LOW_OBSTACLE',
-    'movable_object': 'LOW_OBSTACLE',
-    
-    # THIN_OBSTACLE group
-    'wire': 'THIN_OBSTACLE',
-    'cable': 'THIN_OBSTACLE',
-    'hose': 'THIN_OBSTACLE',
-    'branch': 'THIN_OBSTACLE',
-    
-    # GROUND_HAZARD group
-    'curb': 'GROUND_HAZARD',
-    'stairs': 'GROUND_HAZARD',
-    'ramp': 'GROUND_HAZARD',
-    'speed bump': 'GROUND_HAZARD',
-    'puddle': 'GROUND_HAZARD',
-    
-    # UNKNOWN_OBSTACLE group (fallback-only)
-    'traffic cone': 'UNKNOWN_OBSTACLE',
 }
 
 # ------------------------- 수정해야 할 부분 ------------------------
 GO1_AUTO_AVOIDANCE_POLICY = {
-    'AGENT': {'action': 'stop', 'hold_sec': 4.0},
+    'AGENT': {'action': 'avoid'},
     'VEHICLE': {'action': 'stop', 'hold_sec': 4.0},
     'HARD_OBSTACLE': {'action': 'stop', 'hold_sec': 4.0},
     'SOFT_PUSHABLE': {'action': 'avoid'},
