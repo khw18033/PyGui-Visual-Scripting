@@ -256,6 +256,9 @@ class NodeUIRenderer:
                 node.state['fresh_timeout_sec'] = dpg.get_value(node.field_fresh)
                 node.state['move_speed'] = dpg.get_value(node.field_move_speed)
                 node.state['move_duration_sec'] = dpg.get_value(node.field_move_duration)
+            elif t == "GO1_AUTO_AVOIDANCE" and hasattr(node, 'ui_escape_left_x'):
+                node.state['escape_left_x'] = dpg.get_value(node.ui_escape_left_x)
+                node.state['escape_right_x'] = dpg.get_value(node.ui_escape_right_x)
             elif t == "EP_SERVER_JSON_RECV" and hasattr(node, 'field_source'):
                 node.state['source'] = dpg.get_value(node.field_source)
                 node.state['poll_interval_sec'] = dpg.get_value(node.field_poll)
@@ -822,6 +825,9 @@ class NodeUIRenderer:
         with dpg.node(tag=node.node_id, parent="node_editor", label="Auto Avoidance"):
             with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(tag=node.in_json, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("JSON In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.ui_escape_left_x = dpg.add_input_int(label="Escape Left X", width=100, default_value=int(node.state.get('escape_left_x', 150)))
+                node.ui_escape_right_x = dpg.add_input_int(label="Escape Right X", width=100, default_value=int(node.state.get('escape_right_x', 300)))
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod

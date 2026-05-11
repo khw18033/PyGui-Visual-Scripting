@@ -2583,6 +2583,10 @@ class Go1AutoAvoidanceNode(BaseNode):
 
         self._last_processed_key = ''
         self._last_status = 'Idle'
+        
+        # Escape direction thresholds
+        self.state['escape_left_x'] = GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X
+        self.state['escape_right_x'] = GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X
 
     def _parse_payload(self, raw_value):
         if raw_value is None:
@@ -2659,8 +2663,8 @@ class Go1AutoAvoidanceNode(BaseNode):
             x1 = float(bbox[2])
         except Exception:
             return None
-        left_limit = float(GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X)
-        right_limit = float(GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X)
+        left_limit = float(self.state.get('escape_left_x', GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X))
+        right_limit = float(self.state.get('escape_right_x', GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X))
         # 좌측은 bbox의 오른쪽 끝(x1), 우측은 bbox의 왼쪽 끝(x0) 기준으로
         # 회피가 더 이상 필요 없는지를 판단한다.
         if x1 <= left_limit or x0 >= right_limit:
@@ -2824,7 +2828,7 @@ class Go1AutoAvoidanceNode(BaseNode):
             if inject_dir == '':
                 write_log(
                     f"[GO1 AUTO AVOID] action=avoid | target={target_name}[{target_group}] | "
-                    f"escape not needed (left uses x1<= {GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X}, right uses x0>= {GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X})"
+                    f"escape not needed (left uses x1<= {self.state.get('escape_left_x', GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X)}, right uses x0>= {self.state.get('escape_right_x', GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X)})"
                 )
                 go1_auto_avoidance_data['status'] = f"ESCAPE_NOT_NEEDED_{target_group}"
                 self._last_status = go1_auto_avoidance_data['status']
