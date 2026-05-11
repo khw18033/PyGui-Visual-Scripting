@@ -1370,8 +1370,6 @@ def __init_ui__():
                 dpg.add_button(label="ARUCO", callback=add_node_cb, user_data="VIS_ARUCO")
                 dpg.add_button(label="FLASK", callback=add_node_cb, user_data="VIS_FLASK")
                 dpg.add_button(label="SAVE", callback=add_node_cb, user_data="VIS_SAVE")
-                dpg.add_spacer(width=50)
-                dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
             
             with dpg.group(horizontal=True):
                 dpg.add_text("EP01 Tools:", color=(100,200,255))
@@ -1383,6 +1381,8 @@ def __init_ui__():
                 dpg.add_button(label="EP SAVE", callback=add_node_cb, user_data="EP_VIS_SAVE")
                 dpg.add_button(label="EP SENDER", callback=add_node_cb, user_data="EP_SERVER_SENDER")
                 dpg.add_button(label="EP JSON RX", callback=add_node_cb, user_data="EP_SERVER_JSON_RECV")
+                dpg.add_spacer(width=50)
+                dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
 
         with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass
 
