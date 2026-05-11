@@ -1546,6 +1546,11 @@ def _apply_go1_keyboard_intent(state):
     if state.get('is_focused', False):
         return 0.0, 0.0, 0.0, go1_node_intent.get('body_height', 0.0)
 
+    # 회피 동작 중에는 키보드 명령 무시
+    auto_avoid_status = str(go1_auto_avoidance_data.get('status', '')).strip()
+    if 'MOVE_' in auto_avoid_status:
+        return 0.0, 0.0, 0.0, go1_node_intent.get('body_height', 0.0)
+
     vx = 0.0
     vy = 0.0
     wz = 0.0

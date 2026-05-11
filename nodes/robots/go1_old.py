@@ -213,101 +213,97 @@ go1_auto_avoidance_data = {
 }
 
 GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP = {
+    # AGENT group
     'person': 'AGENT',
+    'pedestrian': 'AGENT',
     'child': 'AGENT',
-    'baby': 'AGENT',
     'dog': 'AGENT',
     'cat': 'AGENT',
-    'stairs': 'HAZARD_DROP',
-    'escalator': 'HAZARD_DROP',
-    'elevator': 'HAZARD_DROP',
-    'curb': 'HAZARD_DROP',
-    'door': 'PASSAGE',
-    'gate': 'PASSAGE',
-    'wall': 'BOUNDARY',
-    'fence': 'BOUNDARY',
-    'pillar': 'BOUNDARY',
-    'pole': 'BOUNDARY',
-    'cable': 'TANGLED_RISK',
-    'wire': 'TANGLED_RISK',
-    'power strip': 'TANGLED_RISK',
+    'robot': 'AGENT',
+    'quadruped robot': 'AGENT',
+    'robot dog': 'AGENT',
+    
+    # VEHICLE group
+    'car': 'VEHICLE',
+    'truck': 'VEHICLE',
+    'bus': 'VEHICLE',
+    'motorcycle': 'VEHICLE',
+    'bicycle': 'VEHICLE',
+    'scooter': 'VEHICLE',
+    
+    # HARD_OBSTACLE group
+    'large_obstacle': 'HARD_OBSTACLE',
+    'box': 'HARD_OBSTACLE',
+    'cardboard box': 'HARD_OBSTACLE',
     'chair': 'HARD_OBSTACLE',
     'table': 'HARD_OBSTACLE',
-    'desk': 'HARD_OBSTACLE',
-    'sofa': 'HARD_OBSTACLE',
-    'bed': 'HARD_OBSTACLE',
-    'shelf': 'HARD_OBSTACLE',
-    'cabinet': 'HARD_OBSTACLE',
-    'drawer': 'HARD_OBSTACLE',
     'bench': 'HARD_OBSTACLE',
-    'stool': 'HARD_OBSTACLE',
-    'trash can': 'HARD_OBSTACLE',
-    'bin': 'HARD_OBSTACLE',
-    'bucket': 'HARD_OBSTACLE',
-    'basket': 'HARD_OBSTACLE',
-    'suitcase': 'HARD_OBSTACLE',
-    'backpack': 'HARD_OBSTACLE',
-    'paper': 'SOFT_PUSHABLE',
-    'clothes': 'SOFT_PUSHABLE',
+    'barrier': 'HARD_OBSTACLE',
+    'fence': 'HARD_OBSTACLE',
+    'guardrail': 'HARD_OBSTACLE',
+    'wall': 'HARD_OBSTACLE',
+    'pillar': 'HARD_OBSTACLE',
+    'door': 'HARD_OBSTACLE',
+    'pole': 'HARD_OBSTACLE',
+    'bollard': 'HARD_OBSTACLE',
+    'trash bin': 'HARD_OBSTACLE',
+    'fire extinguisher': 'HARD_OBSTACLE',
+    'umbrella': 'HARD_OBSTACLE',
+    'rock': 'HARD_OBSTACLE',
+    
+    # SOFT_PUSHABLE group
+    'backpack': 'SOFT_PUSHABLE',
     'bag': 'SOFT_PUSHABLE',
-    'carton': 'SOFT_PUSHABLE',
-    'package': 'SOFT_PUSHABLE',
-    'floor': 'ENV',
-    'ground': 'ENV',
-    'road': 'ENV',
-    'sidewalk': 'ENV',
-    'crosswalk': 'ENV',
-    'bicycle': 'UNKNOWN_OBSTACLE',
-    'motorcycle': 'UNKNOWN_OBSTACLE',
-    'scooter': 'UNKNOWN_OBSTACLE',
-    'skateboard': 'UNKNOWN_OBSTACLE',
-    'wheelchair': 'UNKNOWN_OBSTACLE',
-    'stroller': 'UNKNOWN_OBSTACLE',
-    'car': 'UNKNOWN_OBSTACLE',
-    'bus': 'UNKNOWN_OBSTACLE',
-    'truck': 'UNKNOWN_OBSTACLE',
-    'window': 'UNKNOWN_OBSTACLE',
-    'sign': 'UNKNOWN_OBSTACLE',
-    'traffic light': 'UNKNOWN_OBSTACLE',
-    'monitor': 'UNKNOWN_OBSTACLE',
-    'laptop': 'UNKNOWN_OBSTACLE',
-    'keyboard': 'UNKNOWN_OBSTACLE',
-    'mouse': 'UNKNOWN_OBSTACLE',
-    'printer': 'UNKNOWN_OBSTACLE',
-    'server rack': 'UNKNOWN_OBSTACLE',
-    'box': 'UNKNOWN_OBSTACLE',
-    'bottle': 'UNKNOWN_OBSTACLE',
-    'cup': 'UNKNOWN_OBSTACLE',
-    'mug': 'UNKNOWN_OBSTACLE',
-    'book': 'UNKNOWN_OBSTACLE',
-    'shoe': 'UNKNOWN_OBSTACLE',
-    'cone': 'UNKNOWN_OBSTACLE',
-    'barrier': 'UNKNOWN_OBSTACLE',
-    'fire extinguisher': 'UNKNOWN_OBSTACLE',
-    'obstacle': 'UNKNOWN_OBSTACLE',
-    'object': 'UNKNOWN_OBSTACLE',
-    'unknown': 'UNKNOWN_OBSTACLE',
+    'paper bag': 'SOFT_PUSHABLE',
+    'tissue box': 'SOFT_PUSHABLE',
+    'toilet paper roll': 'SOFT_PUSHABLE',
+    'trash': 'SOFT_PUSHABLE',
+    'plastic bag': 'SOFT_PUSHABLE',
+
+    # LOW_OBSTACLE group
+    'laptop': 'LOW_OBSTACLE',
+    'card': 'LOW_OBSTACLE',
+    'power strip': 'LOW_OBSTACLE',
+    'small_object': 'LOW_OBSTACLE',
+    'movable_object': 'LOW_OBSTACLE',
+    
+    # THIN_OBSTACLE group
+    'wire': 'THIN_OBSTACLE',
+    'cable': 'THIN_OBSTACLE',
+    'hose': 'THIN_OBSTACLE',
+    'branch': 'THIN_OBSTACLE',
+    
+    # GROUND_HAZARD group
+    'curb': 'GROUND_HAZARD',
+    'stairs': 'GROUND_HAZARD',
+    'ramp': 'GROUND_HAZARD',
+    'speed bump': 'GROUND_HAZARD',
+    'puddle': 'GROUND_HAZARD',
+    
+    # UNKNOWN_OBSTACLE group (fallback-only)
+    'traffic cone': 'UNKNOWN_OBSTACLE',
 }
 
 GO1_AUTO_AVOIDANCE_POLICY = {
-    'AGENT': {'action': 'stop', 'hold_sec': 4.0},
-    'HAZARD_DROP': {'action': 'stop_then_back', 'stop_sec': 2.0, 'back_sec': 0.5},
-    'PASSAGE': {'action': 'observe'},
-    'BOUNDARY': {'action': 'observe'},
-    'TANGLED_RISK': {'action': 'stop_then_back', 'stop_sec': 1.0, 'back_sec': 0.5},
+    'AGENT': {'action': 'avoid'},
+    'VEHICLE': {'action': 'stop', 'hold_sec': 4.0},
     'HARD_OBSTACLE': {'action': 'avoid'},
     'SOFT_PUSHABLE': {'action': 'avoid'},
-    'ENV': {'action': 'observe'},
+    'LOW_OBSTACLE': {'action': 'avoid'},
+    'THIN_OBSTACLE': {'action': 'stop_then_back', 'stop_sec': 1.0, 'back_sec': 0.5},
+    'GROUND_HAZARD': {'action': 'stop_then_back', 'stop_sec': 2.0, 'back_sec': 0.5},
     'UNKNOWN_OBSTACLE': {'action': 'stop', 'hold_sec': 2.0},
 }
 
 GO1_AUTO_AVOIDANCE_GROUP_PRIORITY = {
     'AGENT': 0,
-    'HAZARD_DROP': 1,
-    'TANGLED_RISK': 2,
-    'UNKNOWN_OBSTACLE': 3,
-    'HARD_OBSTACLE': 4,
-    'SOFT_PUSHABLE': 5,
+    'VEHICLE': 1,
+    'GROUND_HAZARD': 2,
+    'THIN_OBSTACLE': 3,
+    'UNKNOWN_OBSTACLE': 4,
+    'HARD_OBSTACLE': 5,
+    'SOFT_PUSHABLE': 6,
+    'LOW_OBSTACLE': 7,
 }
 
 GO1_AUTO_AVOIDANCE_IMAGE_WIDTH = 464
@@ -1550,6 +1546,11 @@ def _apply_go1_keyboard_intent(state):
     if state.get('is_focused', False):
         return 0.0, 0.0, 0.0, go1_node_intent.get('body_height', 0.0)
 
+    # 회피 동작 중에는 키보드 명령 무시
+    auto_avoid_status = str(go1_auto_avoidance_data.get('status', '')).strip()
+    if 'MOVE_' in auto_avoid_status:
+        return 0.0, 0.0, 0.0, go1_node_intent.get('body_height', 0.0)
+
     vx = 0.0
     vy = 0.0
     wz = 0.0
@@ -2657,15 +2658,19 @@ class Go1AutoAvoidanceNode(BaseNode):
         if not bbox or len(bbox) < 4:
             return None
         try:
-            cx = (float(bbox[0]) + float(bbox[2])) / 2.0
+            x0 = float(bbox[0])
+            x1 = float(bbox[2])
         except Exception:
             return None
         left_limit = float(GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X)
         right_limit = float(GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X)
-        if cx <= left_limit or cx >= right_limit:
+        # 좌측은 bbox의 오른쪽 끝(x1), 우측은 bbox의 왼쪽 끝(x0) 기준으로
+        # 회피가 더 이상 필요 없는지를 판단한다.
+        if x1 <= left_limit or x0 >= right_limit:
             return ''
         center_x = float(GO1_AUTO_AVOIDANCE_IMAGE_WIDTH) / 2.0
-        return 'right' if cx < center_x else 'left'
+        bbox_center_x = (x0 + x1) / 2.0
+        return 'right' if bbox_center_x < center_x else 'left'
 
     def _is_small_bbox(self, bbox):
         if not bbox or len(bbox) < 4:
@@ -2820,7 +2825,7 @@ class Go1AutoAvoidanceNode(BaseNode):
             if inject_dir == '':
                 write_log(
                     f"[GO1 AUTO AVOID] action=avoid | target={target_name}[{target_group}] | "
-                    f"escape not needed (cx outside {GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X}..{GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X})"
+                    f"escape not needed (left uses x1<= {GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X}, right uses x0>= {GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X})"
                 )
                 go1_auto_avoidance_data['status'] = f"ESCAPE_NOT_NEEDED_{target_group}"
                 self._last_status = go1_auto_avoidance_data['status']
