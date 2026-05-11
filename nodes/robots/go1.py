@@ -213,53 +213,93 @@ go1_auto_avoidance_data = {
 }
 
 GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP = {
+    # AGENT group
     'person': 'AGENT',
+    'pedestrian': 'AGENT',
+    'child': 'AGENT',
+    'dog': 'AGENT',
+    'cat': 'AGENT',
     'robot': 'AGENT',
-    'animal': 'AGENT',
-    'wheelchair': 'AGENT',
-    'stroller': 'AGENT',
-    'chair': 'HARD_OBSTACLE',
+    'quadruped robot': 'AGENT',
+    'robot dog': 'AGENT',
+    
+    # VEHICLE group
+    'car': 'VEHICLE',
+    'truck': 'VEHICLE',
+    'bus': 'VEHICLE',
+    'motorcycle': 'VEHICLE',
+    'bicycle': 'VEHICLE',
+    
+    # HARD_OBSTACLE group
     'box': 'HARD_OBSTACLE',
-    'trash bin': 'HARD_OBSTACLE',
-    'cart': 'HARD_OBSTACLE',
-    'suitcase': 'HARD_OBSTACLE',
-    'backpack': 'MOVABLE_OBSTACLE',
-    'paper bag': 'MOVABLE_OBSTACLE',
-    'bag': 'MOVABLE_OBSTACLE',
-    'umbrella': 'MOVABLE_OBSTACLE',
-    'bottle': 'SMALL_OBSTACLE',
-    'tissue box': 'SMALL_OBSTACLE',
-    'toilet paper roll': 'SMALL_OBSTACLE',
-    'card': 'SMALL_OBSTACLE',
-    'small object on the floor': 'SMALL_OBSTACLE',
-    'power strip': 'ELECTRICAL_RISK',
-    'laptop': 'ELECTRICAL_RISK',
-    'cable or wire on the floor': 'TANGLED_RISK',
-    'extension cord on the floor': 'TANGLED_RISK',
-    'unknown obstacle blocking path': 'UNKNOWN_OBSTACLE',
-    'fire extinguisher': 'SPECIAL_OBJECT',
+    'chair': 'HARD_OBSTACLE',
+    'table': 'HARD_OBSTACLE',
+    'barrier': 'HARD_OBSTACLE',
+    'fence': 'HARD_OBSTACLE',
+    'umbrella': 'HARD_OBSTACLE',
+    
+    # LOW_OBSTACLE group
+    'bottle': 'LOW_OBSTACLE',
+    'laptop': 'LOW_OBSTACLE',
+    'card': 'LOW_OBSTACLE',
+    
+    # THIN_OBSTACLE group
+    'wire': 'THIN_OBSTACLE',
+    'cable': 'THIN_OBSTACLE',
+    'hose': 'THIN_OBSTACLE',
+    
+    # GROUND_HAZARD group
+    'curb': 'GROUND_HAZARD',
+    'stairs': 'GROUND_HAZARD',
+    'ramp': 'GROUND_HAZARD',
+    'speed bump': 'GROUND_HAZARD',
+    'puddle': 'GROUND_HAZARD',
+    
+    # UNKNOWN_OBSTACLE group (finetune classes)
+    'power strip': 'UNKNOWN_OBSTACLE',
+    'backpack': 'UNKNOWN_OBSTACLE',
+    'fire extinguisher': 'UNKNOWN_OBSTACLE',
+    'tissue box': 'UNKNOWN_OBSTACLE',
+    'toilet paper roll': 'UNKNOWN_OBSTACLE',
+    'trash bin': 'UNKNOWN_OBSTACLE',
+    'paper bag': 'UNKNOWN_OBSTACLE',
+    
+    # UNKNOWN_OBSTACLE group (zeroshot classes not mapped above)
+    'scooter': 'UNKNOWN_OBSTACLE',
+    'traffic cone': 'UNKNOWN_OBSTACLE',
+    'bollard': 'UNKNOWN_OBSTACLE',
+    'pole': 'UNKNOWN_OBSTACLE',
+    'guardrail': 'UNKNOWN_OBSTACLE',
+    'rock': 'UNKNOWN_OBSTACLE',
+    'branch': 'UNKNOWN_OBSTACLE',
+    'trash': 'UNKNOWN_OBSTACLE',
+    'plastic bag': 'UNKNOWN_OBSTACLE',
+    'cardboard box': 'UNKNOWN_OBSTACLE',
+    'bench': 'UNKNOWN_OBSTACLE',
+    'door': 'UNKNOWN_OBSTACLE',
+    'wall': 'UNKNOWN_OBSTACLE',
+    'pillar': 'UNKNOWN_OBSTACLE',
+    'bag': 'UNKNOWN_OBSTACLE',
 }
 
 GO1_AUTO_AVOIDANCE_POLICY = {
     'AGENT': {'action': 'stop', 'hold_sec': 4.0},
+    'VEHICLE': {'action': 'stop', 'hold_sec': 4.0},
     'HARD_OBSTACLE': {'action': 'avoid'},
-    'MOVABLE_OBSTACLE': {'action': 'stop', 'hold_sec': 4.0},
-    'SMALL_OBSTACLE': {'action': 'observe'},
-    'ELECTRICAL_RISK': {'action': 'stop', 'hold_sec': 2.0},
-    'TANGLED_RISK': {'action': 'stop', 'hold_sec': 2.0},
-    'UNKNOWN_OBSTACLE': {'action': 'stop', 'hold_sec': 4.0},
-    'SPECIAL_OBJECT': {'action': 'stop', 'hold_sec': 2.0},
+    'LOW_OBSTACLE': {'action': 'observe'},
+    'THIN_OBSTACLE': {'action': 'stop_then_back', 'stop_sec': 1.0, 'back_sec': 0.5},
+    'GROUND_HAZARD': {'action': 'stop_then_back', 'stop_sec': 2.0, 'back_sec': 0.5},
+    'UNKNOWN_OBSTACLE': {'action': 'stop', 'hold_sec': 2.0},
 }
 
 GO1_AUTO_AVOIDANCE_GROUP_PRIORITY = {
     'AGENT': 0,
-    'ELECTRICAL_RISK': 1,
-    'TANGLED_RISK': 2,
-    'MOVABLE_OBSTACLE': 3,
-    'UNKNOWN_OBSTACLE': 4,
-    'SPECIAL_OBJECT': 5,
-    'HARD_OBSTACLE': 6,
-    'SMALL_OBSTACLE': 7,
+    'VEHICLE': 1,
+    'GROUND_HAZARD': 2,
+    'HARD_OBSTACLE': 3,
+    'THIN_OBSTACLE': 4,
+    'UNKNOWN_OBSTACLE': 5,
+    'LOW_OBSTACLE': 6,
 }
 
 GO1_AUTO_AVOIDANCE_IMAGE_WIDTH = 464
