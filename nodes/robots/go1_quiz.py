@@ -231,6 +231,7 @@ GO1_AUTO_AVOIDANCE_POLICY = {
     'THIN_OBSTACLE': {'action': 'stop_then_back', 'back_sec': 0.5},
     'GROUND_HAZARD': {'action': 'stop_then_back', 'back_sec': 1.0},
     'UNKNOWN_OBSTACLE': {'action': 'stop', 'hold_sec': 2.0},
+    'REJECTED_CLASS': {'action': 'observe'},  # Quiz: reject all non-whitelisted classes
 }
 # ----------------------------------------------------------------
 
@@ -256,11 +257,16 @@ GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC = 0.5
 
 
 def _normalize_go1_detection_group(name, group):
-    normalized_group = str(group or '').strip().upper()
-    if normalized_group and normalized_group in GO1_AUTO_AVOIDANCE_POLICY:
-        return normalized_group
+    # QUIZ: Only allow 'person' and 'chair'. Reject all others including 'storage_box'.
     name_key = str(name or '').strip().lower()
-    return GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP.get(name_key, 'UNKNOWN_OBSTACLE')
+    
+    # Check if name is in the quiz-allowed list
+    if name_key in GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP:
+        return GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP.get(name_key, 'UNKNOWN_OBSTACLE')
+    
+    # All other names not in quiz list are filtered out (return empty/invalid to reject)
+    # Return None or a group that doesn't exist in POLICY so it gets filtered
+    return 'REJECTED_CLASS'
 
 go1_dashboard = {
     "status": "Idle",
