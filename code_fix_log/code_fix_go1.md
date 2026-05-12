@@ -1181,3 +1181,93 @@ odes/robots/go1.py (함수/클래스 추가)
 - 수정 파일:
   - `nodes/robots/go1.py`
   - `nodes/robots/go1_quiz.py`
+
+### [2026-05-12 22:10:00] Go1 이미지 송출 타이밍 동기화 (카메라-서버 연결 레이싱 컨디션 해결)
+- **문제 분석**:
+  - 카메라 라즈베리파이 연결 → 서버 연결 → 이미지 송출 → 카메라 이미지 갱신 순서로 진행되어야 하나, 실제로는 서버 연결이 카메라 연결보다 빨라서 레이싱 컨디션 발생
+  - `init_go1_connection()` 함수에서 `camera_worker_thread`와 `sender_manager_thread`가 거의 동시에 시작됨
+  - camera worker에서 SSH 원격 명령(~50-100ms) → gst receiver 시작(~100ms) → 첫 프레임 도착(~150-200ms) 소요
+  - 이 사이에 sender가 폴더 모니터링을 시작하면 기존 파일(이전 이미지)을 최신 파일로 착각해 서버로 송출
+  - `camera_async_worker()`의 파일 선택 로직이 폴더의 가장 높은 인덱스 파일을 선택하기 때문에 이전 파일이 먼저 송출되는 문제 발생
+
+- **해결 방안 (방안 1: Camera 완료 신호 추가)**:
+  - `camera_state` 딕셔너리에 `'first_frame_ready': False` 플래그 추가
+  - `camera_worker_thread`에서 gst receiver 시작 후, 폴더에 실제 파일이 생성될 때까지 모니터링
+    - 폴더 모니터링 최대 5초 대기
+    - 첫 파일 생성되면 `camera_state['first_frame_ready'] = True` 설정
+    - timeout 시 경고 로그 출력 후 계속 진행
+  - `sender_manager_thread`에서 START 명령 처리 시, 시작 전 카메라의 첫 프레임 준비 신호 대기
+    - 최대 10초 대기
+    - timeout 시 경고 로그 출력 후 계속 진행 (안전장치)
+  - STOP 명령 처리 시 플래그를 False로 리셋
+
+- **구현 상세**:
+  1. camera_state 초기화 (line ~358):
+     ```python
+     camera_state = {
+         'status': 'Stopped',
+         'target_ip': '',
+         'duration': 0.0,
+         'start_time': 0.0,
+         'timer_started_logged': False,
+         'last_interval_count': 0,
+         'first_frame_ready': False,  # ← 추가
+     }
+     ```
+  
+  2. camera_worker_thread의 START_CMD 처리 시 receiver 시작 후 (line ~839):
+     ```python
+     # Monitor folder for first frame arrival
+     camera_state['first_frame_ready'] = False
+     write_log("[Cam START] Waiting for first frame...")
+     monitor_start = time.time()
+     while time.time() - monitor_start < 5.0:  # Max 5 seconds
+         try:
+             files = glob.glob(os.path.join(target_folder, "*.jpg"))
+             if files:
+                 write_log("[Cam START] First frame detected, ready for server sender")
+                 camera_state['first_frame_ready'] = True
+                 break
+         except Exception:
+             pass
+         time.sleep(0.1)
+     if not camera_state['first_frame_ready']:
+         write_log("[Cam START] Warning: No frames detected within 5.0s, proceeding anyway")
+         camera_state['first_frame_ready'] = True
+     ```
+  
+  3. STOP 명령 처리 시 (line ~856):
+     ```python
+     camera_state['first_frame_ready'] = False
+     ```
+  
+  4. sender_manager_thread의 START 명령 처리 시 (line ~1047):
+     ```python
+     # Wait for first frame from camera before starting sender
+     camera_state['first_frame_ready'] = False
+     write_log("[Server Sender] Waiting for camera first frame...")
+     wait_start = time.time()
+     while time.time() - wait_start < 10.0:  # Max 10 seconds
+         if camera_state.get('first_frame_ready', False):
+             break
+         time.sleep(0.1)
+     if not camera_state.get('first_frame_ready', False):
+         write_log("[Server Sender] Warning: Camera not ready, proceeding anyway")
+     ```
+
+- **동작 흐름 개선**:
+  | 단계 | 이전 | 현재 |
+  |------|-----|------|
+  | Camera receiver 시작 | → 즉시 준비 상태 | → 첫 파일 감지할 때까지 대기 |
+  | Server 연결 시작 | → 폴더의 이전 파일 송출 ❌ | → 카메라 준비 신호 대기 ✅ |
+  | 실제 이미지 송출 | → 이전 이미지 먼저 | → 새로운 이미지만 송출 |
+
+- **효과**:
+  - 서버 연결이 아무리 빨라도 카메라의 첫 프레임 도착까지 대기
+  - 이전 이미지(stale frame)가 서버에 도달하지 않음
+  - timeout 로직으로 카메라 연결 실패 시에도 안전하게 진행 가능
+
+- **수정 파일** (동일한 변경 적용):
+  - `nodes/robots/go1.py`
+  - `nodes/robots/go1_quiz.py`
+  - `nodes/robots/go1_answer.py`
