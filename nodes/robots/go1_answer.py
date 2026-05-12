@@ -306,6 +306,7 @@ camera_state = {
     'start_time': 0.0,
     'timer_started_logged': False,
     'last_interval_count': 0,
+    'first_frame_ready': False,
 }
 
 camera_command_queue = deque()
@@ -796,12 +797,31 @@ def camera_worker_thread():
                 camera_state['status'] = 'Running'
                 # Start timer only after the first valid frame is actually received.
                 camera_state['start_time'] = 0.0
+                
+                # Monitor folder for first frame arrival
+                camera_state['first_frame_ready'] = False
+                write_log("[Cam START] Waiting for first frame...")
+                monitor_start = time.time()
+                while time.time() - monitor_start < 5.0:  # Max 5 seconds
+                    try:
+                        files = glob.glob(os.path.join(target_folder, "*.jpg"))
+                        if files:
+                            write_log("[Cam START] First frame detected, ready for server sender")
+                            camera_state['first_frame_ready'] = True
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(0.1)
+                if not camera_state['first_frame_ready']:
+                    write_log("[Cam START] Warning: No frames detected within 5.0s, proceeding anyway")
+                    camera_state['first_frame_ready'] = True
 
             elif cmd == 'STOP':
                 if camera_state['status'] == 'Running' and float(camera_state.get('duration', 0.0)) > 0.0:
                     write_log("[Cam Timer] 카메라 타이머 종료")
                 camera_state['status'] = 'Stopping...'
                 camera_state['duration'] = 0.0
+                camera_state['first_frame_ready'] = False
                 try:
                     if _CAMERA_RECEIVER_PROC is not None and _CAMERA_RECEIVER_PROC.poll() is None:
                         _CAMERA_RECEIVER_PROC.terminate()
@@ -1000,6 +1020,17 @@ def sender_manager_thread():
                     })
                 except Exception:
                     pass
+
+                # Wait for first frame from camera before starting sender
+                camera_state['first_frame_ready'] = False
+                write_log("[Server Sender] Waiting for camera first frame...")
+                wait_start = time.time()
+                while time.time() - wait_start < 10.0:  # Max 10 seconds
+                    if camera_state.get('first_frame_ready', False):
+                        break
+                    time.sleep(0.1)
+                if not camera_state.get('first_frame_ready', False):
+                    write_log("[Server Sender] Warning: Camera not ready, proceeding anyway")
 
                 multi_sender_active = True
                 sender_state['status'] = 'Running'
