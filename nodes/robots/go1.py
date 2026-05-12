@@ -7,6 +7,7 @@ import socket
 import threading
 import platform
 import subprocess
+import shutil
 import glob
 import asyncio
 import re
@@ -526,6 +527,45 @@ def _is_file_stable(path, wait_sec=0.02):
         return False
 
 
+def _is_under_dev_shm(path):
+    try:
+        if not os.path.isdir('/dev/shm'):
+            return False
+        real_path = os.path.realpath(str(path or '').strip())
+        shm_root = os.path.realpath('/dev/shm')
+        return real_path == shm_root or real_path.startswith(shm_root + os.sep)
+    except Exception:
+        return False
+
+
+def _reset_output_folder(folder_path):
+    folder_path = str(folder_path or '').strip()
+    if not folder_path:
+        return False
+    try:
+        if os.path.isdir(folder_path):
+            shutil.rmtree(folder_path)
+        os.makedirs(folder_path, exist_ok=True)
+        return True
+    except Exception as e:
+        write_log(f"[Cam START] folder reset failed: {folder_path} | {e}")
+        return False
+
+
+def _append_process_logs(prefix, completed_process):
+    try:
+        stdout_text = str(getattr(completed_process, 'stdout', '') or '').strip()
+        stderr_text = str(getattr(completed_process, 'stderr', '') or '').strip()
+        return_code = getattr(completed_process, 'returncode', None)
+        write_log(f"{prefix} rc={return_code}")
+        if stdout_text:
+            write_log(f"{prefix} stdout: {stdout_text[:600]}")
+        if stderr_text:
+            write_log(f"{prefix} stderr: {stderr_text[:600]}")
+    except Exception:
+        pass
+
+
 def _wrap_pi(a):
     while a > math.pi:
         a -= 2.0 * math.pi
@@ -720,11 +760,22 @@ def camera_worker_thread():
                 camera_state['status'] = 'Starting...'
                 camera_state['target_ip'] = pc_ip
                 camera_state['duration'] = float(duration)
+                camera_state['start_time'] = 0.0
+                camera_state['timer_started_logged'] = False
+                camera_state['last_interval_count'] = 0
+
+                clean_target_folder = _is_under_dev_shm(target_folder)
+                if clean_target_folder:
+                    write_log(f"[Cam START] /dev/shm detected -> resetting folder: {target_folder}")
+                    _reset_output_folder(target_folder)
+                else:
+                    os.makedirs(target_folder, exist_ok=True)
 
                 CAMERA_CONFIG.clear()
                 CAMERA_CONFIG.append({"folder": target_folder, "id": "go1_front"})
 
                 write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
+                write_log(f"[Cam START] Start sequence: remote stop -> remote launch -> local receiver -> upload warmup")
 
                 for nano in nanos:
                     key_path = os.path.expanduser("~/.ssh/id_rsa")
@@ -753,9 +804,11 @@ def camera_worker_thread():
                     ]
 
                     try:
-                        subprocess.run(base_ssh + [kill_cmd], capture_output=True, text=True, timeout=30)
-                        subprocess.run(base_ssh + [start_cmd], capture_output=True, text=True, timeout=30)
-                        write_log(f"[Cam START] SSH commands sent to {nano}")
+                        kill_result = subprocess.run(base_ssh + [kill_cmd], capture_output=True, text=True, timeout=30)
+                        _append_process_logs(f"[Cam START] remote kill {nano}", kill_result)
+                        start_result = subprocess.run(base_ssh + [start_cmd], capture_output=True, text=True, timeout=30)
+                        _append_process_logs(f"[Cam START] remote launch {nano}", start_result)
+                        write_log(f"[Cam START] SSH commands completed for {nano}")
                     except Exception as e:
                         write_log(f"[Cam START ERROR] SSH execution failed: {e}")
 
@@ -793,11 +846,12 @@ def camera_worker_thread():
                     write_log(f"[Cam START ERROR] Failed to start receiver: {e}")
 
                 time.sleep(1.0)
+                camera_state['upload_start_time'] = time.time() + (2.0 if clean_target_folder else 0.0)
+                if clean_target_folder:
+                    write_log("[Cam START] upload warmup enabled for 2.0s")
                 camera_state['status'] = 'Running'
                 # Start timer only after the first valid frame is actually received.
                 camera_state['start_time'] = 0.0
-                camera_state['timer_started_logged'] = False
-                camera_state['last_interval_count'] = 0
 
             elif cmd == 'STOP':
                 if camera_state['status'] == 'Running' and float(camera_state.get('duration', 0.0)) > 0.0:
@@ -875,13 +929,16 @@ async def send_image_async(session, filepath, camera_id, server_url):
             return
         with open(filepath, 'rb') as f:
             file_data = f.read()
+        source_name = os.path.basename(filepath)
+        upload_name = f"{camera_id}_{int(time.time() * 1000)}_{source_name}"
         
         form = aiohttp.FormData()
         form.add_field('camera_id', camera_id)
-        form.add_field('file', file_data, filename=f"{camera_id}_calib.jpg", content_type='image/jpeg')
+        form.add_field('file', file_data, filename=upload_name, content_type='image/jpeg')
         
         async with session.post(server_url, data=form, timeout=aiohttp.ClientTimeout(total=3.5)) as response:
-            pass
+            if response.status != 200:
+                write_log(f"[Server Sender] upload failed: {response.status} | file={source_name}")
     except Exception as e:
         write_log(f"[Server Sender] upload error: {e}")
 
@@ -894,6 +951,8 @@ async def camera_async_worker(config, server_url):
     camera_id = config["id"]
     last_processed_file = None
     last_processed_idx = -1
+    last_processed_mtime = 0.0
+    start_after_epoch = float(config.get('start_after_epoch', 0.0) or 0.0)
     
     os.makedirs(folder, exist_ok=True)
     
@@ -901,34 +960,53 @@ async def camera_async_worker(config, server_url):
         async with aiohttp.ClientSession() as session:
             while multi_sender_active:
                 cycle_start = time.time()
+                now_epoch = time.time()
+                if start_after_epoch > 0.0 and now_epoch < start_after_epoch:
+                    await asyncio.sleep(max(0, min(0.2, start_after_epoch - now_epoch)))
+                    continue
+
                 files = glob.glob(os.path.join(folder, "*.jpg"))
                 
                 if files:
                     best_file = None
                     best_idx = -1
+                    best_mtime = 0.0
                     for f in files:
                         idx = _extract_front_frame_index(f)
-                        if idx > best_idx:
+                        try:
+                            current_mtime = os.path.getmtime(f)
+                        except OSError:
+                            current_mtime = 0.0
+                        if (idx > best_idx) or (idx == best_idx and current_mtime >= best_mtime):
                             best_idx = idx
                             best_file = f
+                            best_mtime = current_mtime
 
                     if best_file is None:
                         valid_files = []
                         for f in files:
                             try:
-                                valid_files.append((os.path.getctime(f), f))
+                                current_mtime = os.path.getmtime(f)
+                                valid_files.append((current_mtime, f))
                             except OSError:
                                 pass
                         if valid_files:
-                            _, latest_file = max(valid_files)
-                            if latest_file != last_processed_file and _is_file_stable(latest_file):
+                            latest_mtime, latest_file = max(valid_files)
+                            if latest_mtime >= start_after_epoch and latest_file != last_processed_file and _is_file_stable(latest_file):
                                 last_processed_file = latest_file
+                                last_processed_mtime = latest_mtime
                                 await send_image_async(session, latest_file, camera_id, server_url)
                     else:
-                        if best_idx > last_processed_idx and _is_file_stable(best_file):
-                                await send_image_async(session, best_file, camera_id, server_url)
-                                last_processed_idx = best_idx
-                                last_processed_file = best_file
+                        has_new_frame = (
+                            best_idx > last_processed_idx
+                            or best_file != last_processed_file
+                            or best_mtime > last_processed_mtime
+                        )
+                        if best_mtime >= start_after_epoch and has_new_frame and _is_file_stable(best_file):
+                            await send_image_async(session, best_file, camera_id, server_url)
+                            last_processed_idx = best_idx
+                            last_processed_file = best_file
+                            last_processed_mtime = best_mtime
                 
                 await asyncio.sleep(max(0, INTERVAL - (time.time() - cycle_start)))
     except Exception as e:
@@ -971,13 +1049,20 @@ def sender_manager_thread():
 
                 try:
                     CAMERA_CONFIG.clear()
-                    CAMERA_CONFIG.append({"folder": upload_folder, "id": "go1_front"})
+                    CAMERA_CONFIG.append({
+                        "folder": upload_folder,
+                        "id": "go1_front",
+                        "start_after_epoch": time.time() + (2.0 if _is_under_dev_shm(upload_folder) else 0.0),
+                    })
                 except Exception:
                     pass
 
                 multi_sender_active = True
                 sender_state['status'] = 'Running'
-                write_log(f"[Server Sender] 연결: {url} | folder={upload_folder}")
+                if _is_under_dev_shm(upload_folder):
+                    write_log(f"[Server Sender] 연결: {url} | folder={upload_folder} | warmup=2.0s (/dev/shm)")
+                else:
+                    write_log(f"[Server Sender] 연결: {url} | folder={upload_folder}")
                 
                 for config in CAMERA_CONFIG:
                     s_thread = threading.Thread(

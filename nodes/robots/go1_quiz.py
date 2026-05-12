@@ -212,6 +212,8 @@ go1_auto_avoidance_data = {
     'last_trigger_ts': 0.0,
 }
 
+# ------------------------- 수정해야 할 부분 ------------------------
+
 GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP = {
     # AGENT group
     'person': 'AGENT',
@@ -219,7 +221,6 @@ GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP = {
     'chair': 'HARD_OBSTACLE',
 }
 
-# ------------------------- 수정해야 할 부분 ------------------------
 GO1_AUTO_AVOIDANCE_POLICY = {
     'AGENT': {'action': 'avoid'},
     'VEHICLE': {'action': 'stop', 'hold_sec': 4.0},
