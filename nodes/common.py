@@ -1,5 +1,6 @@
 from nodes.base import BaseNode
 from core.engine import generate_uuid, PortType, write_log
+import time
 
 class StartNode(BaseNode):
     def __init__(self, node_id): 
@@ -46,17 +47,46 @@ class LogicLoopNode(BaseNode):
         self.outputs[self.out_finish] = PortType.FLOW
         self.current_iter = 0
         self.is_active = False
+        self.last_emitted = False
+        self.next_emit_time = None
+        # default interval (seconds) between iterations when tick-driven
+        self.state.setdefault("interval", 0.1)
     def execute(self):
-        if not self.is_active: 
-            self.current_iter = 0
-            self.is_active = True
+        now = time.monotonic()
         target = self.state.get("count", 3)
-        if self.current_iter < target: 
-            self.current_iter += 1
-            return self.out_loop 
-        else: 
-            self.is_active = False
-            return self.out_finish
+        interval = self.state.get("interval", 0.1)
+
+        # If not active, this execute() call came from a flow activation
+        if not self.is_active:
+            self.is_active = True
+            self.current_iter = 1
+            self.last_emitted = True
+            self.next_emit_time = None
+            return self.out_loop
+
+        # If active and we previously emitted an out_loop and now were called
+        # again (this is the loop-back arrival), schedule the next emit
+        if self.last_emitted:
+            self.next_emit_time = now + interval
+            self.last_emitted = False
+            return None
+
+        # If active and it's time to emit the next iteration (called from pre-exec)
+        if self.next_emit_time is not None and now >= self.next_emit_time:
+            if self.current_iter < target:
+                self.current_iter += 1
+                self.last_emitted = True
+                self.next_emit_time = None
+                return self.out_loop
+            else:
+                # finished all iterations
+                self.is_active = False
+                self.next_emit_time = None
+                self.last_emitted = False
+                return self.out_finish
+
+        # Otherwise, do nothing this tick
+        return None
 
 class ConstantNode(BaseNode):
     def __init__(self, node_id): 
