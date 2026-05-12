@@ -1158,3 +1158,26 @@ odes/robots/go1.py (함수/클래스 추가)
     - 결과 행동: `hold=4.0s`, `escape=왼쪽/오른쪽`, `result=move`, `result=pass-through`
 - 수정 파일:
   - `nodes/robots/go1.py`
+
+  ### [2026-05-12 13:30:00] Go1 카메라 송출 안정화 및 /dev/shm 초기화
+- 문제 분석:
+  - 서버 이미지 송출 시 이전 실행에서 남은 마지막 이미지가 간헐적으로 계속 업로드되는 현상이 있었음.
+  - `/dev/shm`(RAM disk) 경로를 재사용하는 경우, 이전 세션의 파일이 남아 있으면 새 세션이 시작되기 전에 오래된 프레임을 집을 수 있었음.
+  - 카메라 시작 과정이 SSH 원격 종료, 원격 스크립트 실행, 로컬 receiver 실행, 업로드 시작으로 이어지는데, 이 흐름에 대한 로그가 부족해 문제 지점을 바로 추적하기 어려웠음.
+  - 업로드 파일명이 고정되어 있어 서버 저장 측에서 같은 이름으로 덮어쓰는 가능성도 있었음.
+- 조치 방안:
+  - `nodes/robots/go1.py`와 `nodes/robots/go1_quiz.py`에 동일한 카메라 송출 안정화 로직을 추가함.
+    - `/dev/shm` 경로를 감지하는 `_is_under_dev_shm()` 추가.
+    - 시작 시 해당 폴더를 `_reset_output_folder()`로 삭제 후 재생성하도록 변경.
+    - SSH `kill_camera.sh` / `go1_send_both.sh` 실행 결과를 `_append_process_logs()`로 stdout/stderr까지 기록하도록 강화.
+    - `camera_async_worker()`에 `start_after_epoch`를 추가해 `/dev/shm` 사용 시 업로드 시작을 warmup 시간만큼 지연.
+    - 파일 선택 로직을 `best_idx` + `mtime` 기준으로 보강해 이전 파일 재선택 가능성을 줄임.
+    - `send_image_async()`의 multipart 업로드 파일명을 `camera_id + timestamp + source filename` 형태로 변경해 서버 덮어쓰기 가능성을 낮춤.
+  - 송출 시작 로그를 다음 순서로 남기도록 정리함.
+    - `remote stop -> remote launch -> local receiver -> upload warmup`
+    - `/dev/shm detected -> resetting folder`
+    - `upload warmup enabled for 2.0s`
+  - warmup 조건은 `/dev/shm` 경로일 때만 적용해, 일반 저장 경로의 동작은 불필요하게 바꾸지 않도록 했음.
+- 수정 파일:
+  - `nodes/robots/go1.py`
+  - `nodes/robots/go1_quiz.py`
