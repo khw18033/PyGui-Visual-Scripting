@@ -223,9 +223,9 @@ GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP = {
 }
 
 GO1_AUTO_AVOIDANCE_POLICY = {
-    'AGENT': {'action': 'avoid'},
+    'AGENT': {'action': 'stop', 'hold_sec': 4.0},
     'VEHICLE': {'action': 'stop', 'hold_sec': 4.0},
-    'HARD_OBSTACLE': {'action': 'stop', 'hold_sec': 4.0},
+    'HARD_OBSTACLE': {'action': 'avoid'},
     'SOFT_PUSHABLE': {'action': 'avoid'},
     'LOW_OBSTACLE': {'action': 'avoid'},
     'THIN_OBSTACLE': {'action': 'stop_then_back', 'back_sec': 0.5},
@@ -2762,7 +2762,7 @@ class Go1AutoAvoidanceNode(BaseNode):
             return ''
         center_x = float(GO1_AUTO_AVOIDANCE_IMAGE_WIDTH) / 2.0
         bbox_center_x = (x0 + x1) / 2.0
-        return 'right' if bbox_center_x > center_x else 'left'
+        return 'right' if bbox_center_x < center_x else 'left'
     
 # ----------------------------------------------------------------
 
