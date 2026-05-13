@@ -902,9 +902,13 @@ async def send_image_async(session, filepath, camera_id, server_url):
         
         async with session.post(server_url, data=form, timeout=aiohttp.ClientTimeout(total=3.5)) as response:
             if response.status != 200:
-                write_log(f"[Server Sender] upload failed: {response.status} | file={source_name}")
+                response_text = (await response.text()).strip()
+                if response_text:
+                    write_log(f"[Server Sender] upload failed: {response.status} | file={source_name} | body={response_text[:200]}")
+                else:
+                    write_log(f"[Server Sender] upload failed: {response.status} | file={source_name}")
     except Exception as e:
-        write_log(f"[Server Sender] upload error: {e}")
+        write_log(f"[Server Sender] upload error ({e.__class__.__name__}): {e!r} | file={os.path.basename(filepath)} | url={server_url}")
 
 
 async def camera_async_worker(config, server_url):
