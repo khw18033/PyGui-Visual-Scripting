@@ -17,5 +17,15 @@
     "min_move_sec": 0.4,
     "stop_brake_sec": 0.0,
     "unity_timeout_sec": 0.15
-  }
+  },
+  "yaw_control": {
+    "unity_yaw_offset_deg": 90.0,
+    "yaw_fine_tune_deg": 1.0,
+    "yaw_align_kp": 2.0,
+    "yaw_align_tol_deg": 2.0
+  },
+  "estop": {
+    "hold_sec": 2.0
+  },
+  "foot_raise_height": 0.08
 }

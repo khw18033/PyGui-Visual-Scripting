@@ -11,6 +11,7 @@ from collections import deque
 from unittest.mock import MagicMock
 from nodes.base import BaseNode, BaseRobotDriver
 from core.engine import generate_uuid, PortType, write_log, HwStatus
+from core.ep01_config import EP01_NETWORK_CONFIG, EP01_HARDWARE_CONFIG, EP01_CAMERA_CONFIG
 
 try:
     import cv2
@@ -50,8 +51,8 @@ except ImportError as e:
 
 ep_cmd_sock = None
 ep_robot_inst = None
-EP_IP = "192.168.42.2" # USB 테더링 기본 IP (라우터 연결 시 해당 IP로 변경 필요)
-EP_PORT = 40924
+EP_IP = EP01_NETWORK_CONFIG['ep_ip']
+EP_PORT = EP01_NETWORK_CONFIG['ep_port']
 
 ep_dashboard = {"hw_link": "Offline", "sn": "Unknown", "conn_type": "None"}
 ep_state = {
@@ -69,27 +70,21 @@ ep_target_vel = {'vx': 0.0, 'vy': 0.0, 'vz': 0.0} # vz = yaw
 ep_camera_state = {
     "status": "Stopped",
     "source": "none",
-    "url": "rtsp://192.168.42.2/live",
+    "url": EP01_CAMERA_CONFIG['camera_stream'].get('url', 'rtsp://192.168.42.2/live'),
 }
 
-ep_camera_save_state = {
-    'status': 'Stopped',
-    'folder': 'Captured_Images/ep01_saved',
-    'duration': 0.0,
-    'start_time': None,
-    'frame_count': 0,
-}
+ep_camera_save_state = dict(EP01_CAMERA_CONFIG['camera_save_state'])
 
 ep_sender_state = {'status': 'Stopped'}
 ep_sender_command_queue = deque()
 ep_sender_active = False
-EP_SENDER_TARGET_FPS = 30
-EP_SENDER_INTERVAL = 1.0 / EP_SENDER_TARGET_FPS
+EP_SENDER_TARGET_FPS = EP01_NETWORK_CONFIG['ep_sender_target_fps']
+EP_SENDER_INTERVAL = EP01_CAMERA_CONFIG['sender']['interval']
 _ep_sender_manager_started = False
 _ep_sender_manager_lock = threading.Lock()
 
 # EP Sender 실시간 폴더 (ref_code와 일치 - /dev/shm 사용 가능할 경우)
-EP_SENDER_WATCH_FOLDER = "/dev/shm/ep01" if os.path.isdir("/dev/shm") else "Captured_Images/ep01_saved"
+EP_SENDER_WATCH_FOLDER = EP01_NETWORK_CONFIG.get('ep_sender_watch_folder', "/dev/shm/ep01") if os.path.isdir("/dev/shm") else "Captured_Images/ep01_saved"
 
 ep_server_json_data = {
     'raw_json': '',
@@ -106,10 +101,10 @@ ep_arm_state = {
     "y": 100.0,
 }
 
-EP_ARM_STEP = 10.0
-EP_ARM_MIN = 0.0
-EP_ARM_MAX = 200.0
-EP_GRIPPER_POWER = 50
+EP_ARM_STEP = EP01_HARDWARE_CONFIG['arm']['step_size']
+EP_ARM_MIN = EP01_HARDWARE_CONFIG['arm']['min_position']
+EP_ARM_MAX = EP01_HARDWARE_CONFIG['arm']['max_position']
+EP_GRIPPER_POWER = EP01_HARDWARE_CONFIG['gripper']['power_level']
 
 # ================= [EP Arm Action Queue - Non-blocking] =================
 # 그리퍼/팔 제어 명령 큐: GUI 스레드에서는 큐에만 추가하고, 별도 스레드에서 처리
@@ -118,9 +113,9 @@ _ep_arm_lock = threading.Lock()
 _ep_arm_worker_started = False
 _ep_pending_arm_action = None  # 진행 중인 액션 추적
 _ep_pending_action_start_time = None  # 액션 시작 시간
-EP_ARM_ACTION_TIMEOUT = 5.0
-EP_ARM_RETRY_DELAY = 0.25
-EP_ARM_MAX_RETRY = 5
+EP_ARM_ACTION_TIMEOUT = EP01_HARDWARE_CONFIG['arm']['action_timeout_sec']
+EP_ARM_RETRY_DELAY = EP01_HARDWARE_CONFIG['arm']['retry_delay_sec']
+EP_ARM_MAX_RETRY = EP01_HARDWARE_CONFIG['arm']['max_retries']
 
 _ep_cam_lock = threading.Lock()
 _ep_cam_cap = None

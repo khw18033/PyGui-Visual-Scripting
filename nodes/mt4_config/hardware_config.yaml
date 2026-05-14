@@ -1,0 +1,20 @@
+{
+  "limits": {
+    "x": {"min": 200, "max": 280},
+    "y": {"min": -200, "max": 200},
+    "z": {"min": 0, "max": 280},
+    "roll": {"min": -180.0, "max": 180.0}
+  },
+  "gripper": {
+    "min": 30.0,
+    "max": 60.0
+  },
+  "offset": {
+    "z_offset": 90.0
+  },
+  "motion": {
+    "smooth_factor": 1.0,
+    "gripper_speed": 50.0,
+    "roll_speed": 50.0
+  }
+}

@@ -141,6 +141,39 @@ min_move_sec = float(_TIMING_CONFIG.get('min_move_sec', 0.4))
 stop_brake_sec = float(_TIMING_CONFIG.get('stop_brake_sec', 0.0))
 unity_timeout_sec = float(_TIMING_CONFIG.get('unity_timeout_sec', 0.15))
 
+_YAW_CONTROL_CONFIG = dict(ROBOT_CONTROL_CONFIG.get('yaw_control', {}))
+UNITY_YAW_OFFSET_RAD = math.radians(float(_YAW_CONTROL_CONFIG.get('unity_yaw_offset_deg', 90.0)))
+YAW_FINE_TUNE_RAD = math.radians(float(_YAW_CONTROL_CONFIG.get('yaw_fine_tune_deg', 1.0)))
+YAW_ALIGN_KP = float(_YAW_CONTROL_CONFIG.get('yaw_align_kp', 2.0))
+YAW_ALIGN_TOL_RAD = math.radians(float(_YAW_CONTROL_CONFIG.get('yaw_align_tol_deg', 2.0)))
+
+_ESTOP_CONFIG = dict(ROBOT_CONTROL_CONFIG.get('estop', {}))
+ESTOP_HOLD_SEC = float(_ESTOP_CONFIG.get('hold_sec', 2.0))
+
+FOOT_RAISE_HEIGHT = float(ROBOT_CONTROL_CONFIG.get('foot_raise_height', 0.08))
+
+_PHASE_TIMING_CONFIG = dict(SPECIAL_ACTIONS_CONFIG.get('phase_timing', {}))
+SPECIAL_PREP_STAND_SEC = float(_PHASE_TIMING_CONFIG.get('prep_stand_sec', 1.5))
+SPECIAL_POST_WAIT_SEC = float(_PHASE_TIMING_CONFIG.get('post_wait_sec', 0.3))
+SPECIAL_RECOVER8_SEC = float(_PHASE_TIMING_CONFIG.get('recover8_sec', 1.5))
+SPECIAL_RECOVER1_SEC = float(_PHASE_TIMING_CONFIG.get('recover1_sec', 1.5))
+SPECIAL_RECOVER0_SEC = float(_PHASE_TIMING_CONFIG.get('recover0_sec', 0.5))
+
+GO1_AP_IP = str(NETWORK_CONFIG.get('go1_ap_ip', '192.168.123.161'))
+ARUCO_UDP_PORT = int(NETWORK_CONFIG.get('aruco_udp_port', 5008))
+SERVER_UPLOAD_URL_DEFAULT = str(NETWORK_CONFIG.get('server_upload_url', 'http://192.168.1.100:5001/upload'))
+JSON_CMD_URL_DEFAULT = str(NETWORK_CONFIG.get('json_cmd_url', 'http://127.0.0.1:5001/cmd'))
+
+_GST_CONFIG = dict(GO1_CAMERA_CONFIG.get('gstreamer', {}))
+GST_UDP_PORT = int(_GST_CONFIG.get('udp_port', 9400))
+SSH_KEY_PATH = str(_GST_CONFIG.get('ssh_key_path', '~/.ssh/id_rsa'))
+
+_CAM_TIMING_CONFIG = dict(GO1_CAMERA_CONFIG.get('timing', {}))
+CAM_FIRST_FRAME_WAIT_SEC = float(_CAM_TIMING_CONFIG.get('first_frame_wait_sec', 5.0))
+CAM_UPLOAD_WARMUP_SEC = float(_CAM_TIMING_CONFIG.get('upload_warmup_sec', 2.0))
+CAM_SENDER_WAIT_SEC = float(_CAM_TIMING_CONFIG.get('sender_camera_wait_sec', 10.0))
+CAM_PROC_KILL_TIMEOUT = int(_CAM_TIMING_CONFIG.get('proc_kill_timeout_sec', 2))
+
 _GO1_IP_INITIALIZED = False
 _GO1_IP_INITIALIZED = False
 
@@ -601,11 +634,11 @@ def go1_estop_callback():
     go1_node_intent['vy'] = 0.0
     go1_node_intent['wz'] = 0.0
     go1_node_intent['trigger_time'] = time.monotonic()
-    go1_estop_hold_until = time.monotonic() + 2.0
+    go1_estop_hold_until = time.monotonic() + ESTOP_HOLD_SEC
     go1_target_vel['vx'] = 0.0
     go1_target_vel['vy'] = 0.0
     go1_target_vel['vyaw'] = 0.0
-    write_log("Go1 EMERGENCY STOP Activated (hold 2.0s)")
+    write_log(f"Go1 EMERGENCY STOP Activated (hold {ESTOP_HOLD_SEC:.1f}s)")
 
 
 def _prompt_go1_ip(default_ip):
@@ -645,7 +678,7 @@ def init_go1_connection():
         use_ap_mode = "n"
 
     if use_ap_mode in ["y", "yes"]:
-        GO1_IP = "192.168.123.161"
+        GO1_IP = GO1_AP_IP
     else:
         GO1_IP = _prompt_go1_ip(GO1_IP)
 
@@ -699,7 +732,7 @@ def camera_worker_thread():
                 write_log(f"[Cam START] Start sequence: remote stop -> remote launch -> local receiver -> upload warmup")
 
                 for nano in nanos:
-                    key_path = os.path.expanduser("~/.ssh/id_rsa")
+                    key_path = os.path.expanduser(SSH_KEY_PATH)
 
                     kill_cmd = (
                         "bash -lc '"
@@ -737,7 +770,7 @@ def camera_worker_thread():
                 try:
                     if _CAMERA_RECEIVER_PROC is not None and _CAMERA_RECEIVER_PROC.poll() is None:
                         _CAMERA_RECEIVER_PROC.terminate()
-                        _CAMERA_RECEIVER_PROC.wait(timeout=2)
+                        _CAMERA_RECEIVER_PROC.wait(timeout=CAM_PROC_KILL_TIMEOUT)
                 except Exception:
                     try:
                         if _CAMERA_RECEIVER_PROC is not None and _CAMERA_RECEIVER_PROC.poll() is None:
@@ -749,7 +782,7 @@ def camera_worker_thread():
 
                 try:
                     subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
-                    subprocess.call("pkill -f 'gst-launch-1.0.*port=9400'", shell=True)
+                    subprocess.call(f"pkill -f 'gst-launch-1.0.*port={GST_UDP_PORT}'", shell=True)
                 except Exception:
                     pass
                 time.sleep(0.5)
@@ -757,19 +790,19 @@ def camera_worker_thread():
                 try:
                     os.makedirs(target_folder, exist_ok=True)
                     gst_cmd = (
-                        f"gst-launch-1.0 -q udpsrc port=9400 "
+                        f"gst-launch-1.0 -q udpsrc port={GST_UDP_PORT} "
                         f"caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" "
                         f"! rtpjpegdepay ! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
                     )
                     _CAMERA_RECEIVER_PROC = subprocess.Popen(gst_cmd, shell=True)
-                    write_log(f"[Cam START] Receiver listening on port 9400 -> {target_folder}")
+                    write_log(f"[Cam START] Receiver listening on port {GST_UDP_PORT} -> {target_folder}")
                 except Exception as e:
                     write_log(f"[Cam START ERROR] Failed to start receiver: {e}")
 
                 time.sleep(1.0)
-                camera_state['upload_start_time'] = time.time() + (2.0 if clean_target_folder else 0.0)
+                camera_state['upload_start_time'] = time.time() + (CAM_UPLOAD_WARMUP_SEC if clean_target_folder else 0.0)
                 if clean_target_folder:
-                    write_log("[Cam START] upload warmup enabled for 2.0s")
+                    write_log(f"[Cam START] upload warmup enabled for {CAM_UPLOAD_WARMUP_SEC:.1f}s")
                 camera_state['status'] = 'Running'
                 # Start timer only after the first valid frame is actually received.
                 camera_state['start_time'] = 0.0
@@ -778,7 +811,7 @@ def camera_worker_thread():
                 camera_state['first_frame_ready'] = False
                 write_log("[Cam START] Waiting for first frame...")
                 monitor_start = time.time()
-                while time.time() - monitor_start < 5.0:  # Max 5 seconds
+                while time.time() - monitor_start < CAM_FIRST_FRAME_WAIT_SEC:
                     try:
                         files = glob.glob(os.path.join(target_folder, "*.jpg"))
                         if files:
@@ -789,7 +822,7 @@ def camera_worker_thread():
                         pass
                     time.sleep(0.1)
                 if not camera_state['first_frame_ready']:
-                    write_log("[Cam START] Warning: No frames detected within 5.0s, proceeding anyway")
+                    write_log(f"[Cam START] Warning: No frames detected within {CAM_FIRST_FRAME_WAIT_SEC:.1f}s, proceeding anyway")
                     camera_state['first_frame_ready'] = True
 
             elif cmd == 'STOP':
@@ -801,7 +834,7 @@ def camera_worker_thread():
                 try:
                     if _CAMERA_RECEIVER_PROC is not None and _CAMERA_RECEIVER_PROC.poll() is None:
                         _CAMERA_RECEIVER_PROC.terminate()
-                        _CAMERA_RECEIVER_PROC.wait(timeout=2)
+                        _CAMERA_RECEIVER_PROC.wait(timeout=CAM_PROC_KILL_TIMEOUT)
                 except Exception:
                     try:
                         if _CAMERA_RECEIVER_PROC is not None and _CAMERA_RECEIVER_PROC.poll() is None:
@@ -812,7 +845,7 @@ def camera_worker_thread():
                     _CAMERA_RECEIVER_PROC = None
                 try:
                     subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
-                    subprocess.call("pkill -f 'gst-launch-1.0.*port=9400'", shell=True)
+                    subprocess.call(f"pkill -f 'gst-launch-1.0.*port={GST_UDP_PORT}'", shell=True)
                 except Exception:
                     pass
                 time.sleep(0.5)
@@ -996,7 +1029,7 @@ def sender_manager_thread():
                     CAMERA_CONFIG.append({
                         "folder": upload_folder,
                         "id": "go1_front",
-                        "start_after_epoch": time.time() + (2.0 if _is_under_dev_shm(upload_folder) else 0.0),
+                        "start_after_epoch": time.time() + (CAM_UPLOAD_WARMUP_SEC if _is_under_dev_shm(upload_folder) else 0.0),
                     })
                 except Exception:
                     pass
@@ -1005,7 +1038,7 @@ def sender_manager_thread():
                 camera_state['first_frame_ready'] = False
                 write_log("[Server Sender] Waiting for camera first frame...")
                 wait_start = time.time()
-                while time.time() - wait_start < 10.0:  # Max 10 seconds
+                while time.time() - wait_start < CAM_SENDER_WAIT_SEC:
                     if camera_state.get('first_frame_ready', False):
                         break
                     time.sleep(0.1)
@@ -1015,7 +1048,7 @@ def sender_manager_thread():
                 multi_sender_active = True
                 sender_state['status'] = 'Running'
                 if _is_under_dev_shm(upload_folder):
-                    write_log(f"[Server Sender] 연결: {url} | folder={upload_folder} | warmup=2.0s (/dev/shm)")
+                    write_log(f"[Server Sender] 연결: {url} | folder={upload_folder} | warmup={CAM_UPLOAD_WARMUP_SEC:.1f}s (/dev/shm)")
                 else:
                     write_log(f"[Server Sender] 연결: {url} | folder={upload_folder}")
                 
@@ -1079,10 +1112,6 @@ def go1_keepalive_thread():
 
     yaw0_initialized = False
     yaw0 = 0.0
-    unity_yaw_offset_rad = math.pi / 2.0
-    # Fine tune bias to correct Unity vs. real GO1 initial yaw (degrees -> radians)
-    # YAW_FINE_TUNE_RAD = - 4.2 * math.pi / 180.0 # 보정 O
-    YAW_FINE_TUNE_RAD = math.pi / 180.0 # 보정 X
     world_x = 0.0
     world_z = 0.0
     last_dr_time = now
@@ -1090,8 +1119,6 @@ def go1_keepalive_thread():
 
     yaw_align_active = False
     yaw_align_target_rel = 0.0
-    yaw_align_kp = 2.0
-    yaw_align_tol_rad = 2.0 * math.pi / 180.0
 
     last_go1_recv_time = now
 
@@ -1114,7 +1141,7 @@ def go1_keepalive_thread():
         cmd.mode = 0
         cmd.gaitType = 0
         cmd.speedLevel = 0
-        cmd.footRaiseHeight = 0.08
+        cmd.footRaiseHeight = FOOT_RAISE_HEIGHT
         cmd.bodyHeight = _clamp(go1_node_intent.get('body_height', 0.0), BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
         cmd.euler = [0.0, 0.0, 0.0]
         cmd.velocity = [0.0, 0.0]
@@ -1177,7 +1204,7 @@ def go1_keepalive_thread():
                 write_log("[YAW0] reset")
 
         yaw_rel = _wrap_pi(raw_yaw - yaw0)
-        yaw_unity = _wrap_pi(yaw_rel + unity_yaw_offset_rad + YAW_FINE_TUNE_RAD)
+        yaw_unity = _wrap_pi(yaw_rel + UNITY_YAW_OFFSET_RAD + YAW_FINE_TUNE_RAD)
         go1_state['yaw_unity'] = yaw_unity
 
         is_node_active = (tnow - go1_node_intent['trigger_time']) < 0.1
@@ -1275,7 +1302,7 @@ def go1_keepalive_thread():
                 special_runtime['name'] = next_name
                 special_runtime['mode'] = int(cfg['mode'])
                 special_runtime['phase'] = 'prep_stand'
-                special_runtime['phase_until'] = tnow + 1.5
+                special_runtime['phase_until'] = tnow + SPECIAL_PREP_STAND_SEC
                 special_runtime['trigger_sec'] = float(cfg.get('trigger_sec', 0.2))
                 special_runtime['wait_timeout'] = float(cfg['wait_timeout'])
                 special_runtime['recovery'] = str(cfg['recovery'])
@@ -1308,12 +1335,12 @@ def go1_keepalive_thread():
             go1_state['reason'] = "ESTOP_HOLD"
         elif yaw_align_active:
             err = _wrap_pi(yaw_rel - yaw_align_target_rel)
-            if abs(err) <= yaw_align_tol_rad:
+            if abs(err) <= YAW_ALIGN_TOL_RAD:
                 yaw_align_active = False
                 target_mode = 1
             else:
                 target_mode = 2
-                out_wz = _clamp(-yaw_align_kp * err, -W_MAX, W_MAX)
+                out_wz = _clamp(-YAW_ALIGN_KP * err, -W_MAX, W_MAX)
             if target_mode == 2 and cmd:
                 cmd.gaitType = 1
         elif unity_active:
@@ -1373,7 +1400,7 @@ def go1_keepalive_thread():
                 timeout = elapsed >= special_runtime['wait_timeout']
                 if done or timeout:
                     special_runtime['phase'] = 'post_wait'
-                    special_runtime['phase_until'] = tnow + 0.3
+                    special_runtime['phase_until'] = tnow + SPECIAL_POST_WAIT_SEC
                     if timeout:
                         write_log(f"[Go1 Special] timeout: {special_runtime['name']}")
 
@@ -1383,17 +1410,17 @@ def go1_keepalive_thread():
                 if tnow >= special_runtime['phase_until']:
                     if special_runtime['recovery'] == 'stand':
                         special_runtime['phase'] = 'recover8'
-                        special_runtime['phase_until'] = tnow + 1.5
+                        special_runtime['phase_until'] = tnow + SPECIAL_RECOVER8_SEC
                     else:
                         special_runtime['phase'] = 'recover0'
-                        special_runtime['phase_until'] = tnow + 0.5
+                        special_runtime['phase_until'] = tnow + SPECIAL_RECOVER0_SEC
 
             elif phase == 'recover8':
                 target_mode = 8
                 go1_state['reason'] = "SPECIAL_RECOVER8"
                 if tnow >= special_runtime['phase_until']:
                     special_runtime['phase'] = 'recover1'
-                    special_runtime['phase_until'] = tnow + 1.5
+                    special_runtime['phase_until'] = tnow + SPECIAL_RECOVER1_SEC
 
             elif phase == 'recover1':
                 target_mode = 1
@@ -2142,10 +2169,6 @@ class Go1UnityAutonomyNode(BaseNode):
             self._last_raw_path = latest_raw
             path_id, points = self._parse_path_json(latest_raw)
             if path_id >= 0 and len(points) >= 2:
-                # Apply same fine-tune used in the C++ reference implementation
-                # YAW_FINE_TUNE_RAD = - 4.2 * math.pi / 180.0 # 보정 O
-                YAW_FINE_TUNE_RAD = math.pi / 180.0 # 보정 X
-
                 # Current unity-relative yaw from shared state; include fine-tune
                 yaw_now = float(go1_state.get('yaw_unity', 0.0))
                 yaw_now = _wrap_pi(yaw_now + YAW_FINE_TUNE_RAD)
@@ -2199,7 +2222,7 @@ class Go1ServerJsonRecvNode(BaseNode):
         self.outputs[self.out_raw_json] = PortType.DATA
 
         self.state['mode'] = 'HTTP'
-        self.state['source'] = 'http://127.0.0.1:5001/cmd'
+        self.state['source'] = JSON_CMD_URL_DEFAULT
         self.state['poll_interval_sec'] = 0.05
         self.state['request_timeout_sec'] = 2.0
         self.state['fresh_timeout_sec'] = 0.2
@@ -2388,15 +2411,14 @@ class Go1ServerJsonRecvNode(BaseNode):
             go1_node_intent['wz'] = 0.0
             go1_node_intent['stop'] = True
             go1_node_intent['trigger_time'] = time.monotonic()
-            # JSON stop uses the same strong hold path as E-STOP: fixed 2s override.
-            go1_estop_hold_until = time.monotonic() + 2.0
+            go1_estop_hold_until = time.monotonic() + ESTOP_HOLD_SEC
             self._motion_active = False
             self._motion_until_mono = 0.0
             self._motion_vx = 0.0
             self._motion_vy = 0.0
             self._motion_wz = 0.0
             self._motion_force_stop = False
-            write_log("[GO1 JSON RX] command=stop -> E-STOP hold path (2.0s)")
+            write_log(f"[GO1 JSON RX] command=stop -> E-STOP hold path ({ESTOP_HOLD_SEC:.1f}s)")
             return
 
         vx = 0.0
@@ -3489,7 +3511,7 @@ class ArUcoDetectNode(BaseNode):
 
             if go1_node_intent.get('send_aruco', False):
                 try:
-                    go1_sock.sendto(payload_json.encode('utf-8'), (GO1_UNITY_IP, 5008))
+                    go1_sock.sendto(payload_json.encode('utf-8'), (GO1_UNITY_IP, ARUCO_UDP_PORT))
                 except Exception as e:
                     write_log(f"[VIS_ARUCO] UDP 전송 실패: {e}")
 
@@ -3742,7 +3764,7 @@ class ServerSenderNode(BaseNode):
         self.outputs[self.out_flow] = PortType.FLOW
         
         self.state['action'] = 'Start Sender'  # "Start Sender" / "Stop Sender"
-        self.state['server_url'] = "http://192.168.1.100:5001/upload"
+        self.state['server_url'] = SERVER_UPLOAD_URL_DEFAULT
         
         self._last_action = None
         self._last_request_ts = 0.0
@@ -3751,7 +3773,7 @@ class ServerSenderNode(BaseNode):
         global sender_state, multi_sender_active
         
         action = self.state.get('action', 'Start Sender')
-        url = self.state.get('server_url', "http://192.168.1.100:5001/upload")
+        url = self.state.get('server_url', SERVER_UPLOAD_URL_DEFAULT)
         now = time.monotonic()
         cooldown_ok = (now - self._last_request_ts) > 0.5
         

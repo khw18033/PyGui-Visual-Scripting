@@ -10,16 +10,17 @@ from datetime import datetime
 from collections import deque
 from nodes.base import BaseNode, BaseRobotDriver
 from core.engine import generate_uuid, PortType, write_log, HwStatus, node_registry
+from core.mt4_config import MT4_NETWORK_CONFIG, MT4_HARDWARE_CONFIG, MT4_GCODE_CONFIG, MT4_KEYBOARD_CONFIG
 
 # --- MT4 Globals ---
 ser = None 
-mt4_current_pos = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'roll': 0.0, 'gripper': 40.0}
-mt4_target_goal = {'x': 200.0, 'y': 0.0, 'z': 120.0, 'roll': 0.0, 'gripper': 40.0}
+mt4_current_pos = dict(MT4_GCODE_CONFIG['home_position'])
+mt4_target_goal = dict(MT4_GCODE_CONFIG['home_position'])
 mt4_manual_override_until = 0.0 
 mt4_dashboard = {"status": "Idle", "hw_link": HwStatus.OFFLINE, "latency": 0.0, "last_pkt_time": 0.0}
 
-PATH_DIR = "path_record"
-LOG_DIR = "result_log"
+PATH_DIR = MT4_NETWORK_CONFIG['paths']['record_dir']
+LOG_DIR = MT4_NETWORK_CONFIG['paths']['log_dir']
 os.makedirs(PATH_DIR, exist_ok=True); os.makedirs(LOG_DIR, exist_ok=True)
 
 mt4_mode = {"recording": False, "playing": False}
@@ -27,11 +28,17 @@ mt4_collision_lock_until = 0.0
 mt4_record_f = None; mt4_record_writer = None; mt4_record_temp_name = ""
 mt4_log_event_queue = deque()
 
-MT4_UNITY_IP = "192.168.50.63"
-MT4_FEEDBACK_PORT = 5005
-MT4_LIMITS = {'min_x': 200, 'max_x': 280, 'min_y': -200, 'max_y': 200, 'min_z': 0, 'max_z': 280, 'min_r': -180.0, 'max_r': 180.0}
-MT4_GRIPPER_MIN = 30.0; MT4_GRIPPER_MAX = 60.0
-MT4_Z_OFFSET = 90.0
+MT4_UNITY_IP = MT4_NETWORK_CONFIG['unity']['ip']
+MT4_FEEDBACK_PORT = MT4_NETWORK_CONFIG['unity']['feedback_port']
+# Convert config format to old format for backward compatibility
+_limits = MT4_HARDWARE_CONFIG['limits']
+MT4_LIMITS = {'min_x': _limits['x']['min'], 'max_x': _limits['x']['max'], 
+              'min_y': _limits['y']['min'], 'max_y': _limits['y']['max'],
+              'min_z': _limits['z']['min'], 'max_z': _limits['z']['max'],
+              'min_r': _limits['roll']['min'], 'max_r': _limits['roll']['max']}
+MT4_GRIPPER_MIN = MT4_HARDWARE_CONFIG['gripper']['min']
+MT4_GRIPPER_MAX = MT4_HARDWARE_CONFIG['gripper']['max']
+MT4_Z_OFFSET = MT4_HARDWARE_CONFIG['offset']['z_offset']
 
 def get_mt4_paths(): 
     return [f for f in os.listdir(PATH_DIR) if f.endswith(".csv")]
@@ -39,7 +46,7 @@ def get_mt4_paths():
 def send_unity_ui(msg_type, extra_data):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.sendto(f"type:{msg_type},extra:{extra_data}".encode('utf-8'), (MT4_UNITY_IP, 5007))
+        sock.sendto(f"type:{msg_type},extra:{extra_data}".encode('utf-8'), (MT4_UNITY_IP, MT4_NETWORK_CONFIG['unity']['ui_port']))
     except: pass
 
 def sync_manual_to_node_state():
@@ -54,18 +61,22 @@ def sync_manual_to_node_state():
 def init_mt4_serial():
     global ser
     try:
-        ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=0.05)
+        ser_port = MT4_NETWORK_CONFIG['serial']['port']
+        ser_baudrate = MT4_NETWORK_CONFIG['serial']['baudrate']
+        ser_timeout = MT4_NETWORK_CONFIG['serial']['timeout_sec']
+        ser = serial.Serial(ser_port, ser_baudrate, timeout=ser_timeout)
         mt4_dashboard["hw_link"] = HwStatus.ONLINE
         write_log("System: MT4 Connected")
-        time.sleep(2)
-        ser.write(b"$H\r\n")
-        time.sleep(15)
-        ser.write(b"M20\r\n")
-        ser.write(b"G90\r\n")
-        ser.write(b"G1 F2000\r\n")
+        time.sleep(MT4_GCODE_CONFIG['timing']['startup_delay_sec'])
+        # Execute setup commands
+        ser.write((MT4_GCODE_CONFIG['gcode']['homing_command'] + "\r\n").encode())
+        time.sleep(MT4_GCODE_CONFIG['timing']['homing_wait_sec'])
+        for cmd in MT4_GCODE_CONFIG['gcode']['setup_commands']:
+            ser.write((cmd + "\r\n").encode())
         time.sleep(1)
-        ser.write(b"G0 X200 Y0 Z120 F2000\r\n")
-        ser.write(b"M3 S40\r\n") 
+        home_pos = MT4_GCODE_CONFIG['home_position']
+        ser.write(f"G0 X{home_pos['x']} Y{home_pos['y']} Z{home_pos['z']} F2000\r\n".encode())
+        ser.write(f"M3 S{int(home_pos['gripper'])}\r\n".encode())
     except Exception as e: 
         mt4_dashboard["hw_link"] = HwStatus.SIMULATION
         write_log(f"MT4 Sim Mode ({e})")
@@ -73,11 +84,13 @@ def init_mt4_serial():
 
 def auto_reconnect_mt4_thread():
     global ser
+    ser_port = MT4_NETWORK_CONFIG['serial']['port']
+    reconnect_interval = MT4_GCODE_CONFIG['timing']['reconnect_interval_sec']
     while True:
-        if ser is None and os.path.exists('/dev/ttyUSB0'):
+        if ser is None and os.path.exists(ser_port):
             try: init_mt4_serial() 
             except: pass
-        time.sleep(3) 
+        time.sleep(reconnect_interval) 
 
 def mt4_background_logger_thread():
     global mt4_record_writer
@@ -107,18 +120,21 @@ def mt4_homing_callback(sender, app_data, user_data):
 def mt4_homing_thread_func():
     global ser, mt4_manual_override_until, mt4_target_goal, mt4_current_pos
     if ser:
-        mt4_manual_override_until = time.time() + 20.0
+        homing_timeout = MT4_GCODE_CONFIG['timing']['manual_override_timeout_sec']
+        mt4_manual_override_until = time.time() + homing_timeout
         mt4_dashboard["status"] = "HOMING..."
         write_log("Homing...")
-        ser.write(b"$H\r\n")
-        time.sleep(15)
-        ser.write(b"M20\r\n")
-        ser.write(b"G90\r\n")
-        ser.write(b"G1 F2000\r\n")
-        mt4_target_goal.update({'x':200.0, 'y':0.0, 'z':120.0, 'roll':0.0, 'gripper':40.0})
+        # Execute homing commands
+        ser.write((MT4_GCODE_CONFIG['gcode']['homing_command'] + "\r\n").encode())
+        time.sleep(MT4_GCODE_CONFIG['timing']['homing_wait_sec'])
+        for cmd in MT4_GCODE_CONFIG['gcode']['setup_commands']:
+            ser.write((cmd + "\r\n").encode())
+        # Reset to home position
+        home_pos = MT4_GCODE_CONFIG['home_position']
+        mt4_target_goal.update(home_pos)
         mt4_current_pos.update(mt4_target_goal)
-        ser.write(b"G0 X200 Y0 Z120 A0 F2000\r\n")
-        ser.write(b"M3 S40\r\n")
+        ser.write(f"G0 X{home_pos['x']} Y{home_pos['y']} Z{home_pos['z']} A{home_pos['roll']} F2000\r\n".encode())
+        ser.write(f"M3 S{int(home_pos['gripper'])}\r\n".encode())
         mt4_dashboard["status"] = "Idle"
         write_log("Homing Done")
         sync_manual_to_node_state()
@@ -349,8 +365,12 @@ class MT4KeyboardNode(BaseNode):
         self.out_g = generate_uuid(); self.outputs[self.out_g] = PortType.DATA
         self.out_flow = generate_uuid(); self.outputs[self.out_flow] = PortType.FLOW
         
-        self.step_size = 10.0; self.grip_step = 5.0; self.cooldown = 0.2; self.last_input_time = 0.0
-        self.roll_step = 5.0
+        kb_cfg = MT4_KEYBOARD_CONFIG['keyboard']
+        self.step_size = kb_cfg['step_size']
+        self.grip_step = kb_cfg['grip_step']
+        self.roll_step = kb_cfg['roll_step']
+        self.cooldown = kb_cfg['cooldown_sec']
+        self.last_input_time = 0.0
 
     def execute(self):
         if self.state.get("is_focused", False): return self.out_flow

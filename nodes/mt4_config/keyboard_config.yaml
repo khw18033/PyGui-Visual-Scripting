@@ -1,0 +1,9 @@
+{
+  "keyboard": {
+    "keys_mode": "WASD",
+    "step_size": 10.0,
+    "grip_step": 5.0,
+    "roll_step": 5.0,
+    "cooldown_sec": 0.2
+  }
+}

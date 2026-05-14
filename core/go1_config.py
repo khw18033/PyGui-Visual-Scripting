@@ -17,6 +17,10 @@ NETWORK_CONFIG_DEFAULT = {
     'unity_rx_port': 15100,
     'unity_waypoint_tx_port': 15104,
     'unity_path_port': 15110,
+    'go1_ap_ip': '192.168.123.161',
+    'aruco_udp_port': 5008,
+    'server_upload_url': 'http://192.168.1.100:5001/upload',
+    'json_cmd_url': 'http://127.0.0.1:5001/cmd',
 }
 
 ROBOT_CONTROL_CONFIG_DEFAULT = {
@@ -39,6 +43,16 @@ ROBOT_CONTROL_CONFIG_DEFAULT = {
         'stop_brake_sec': 0.0,
         'unity_timeout_sec': 0.15,
     },
+    'yaw_control': {
+        'unity_yaw_offset_deg': 90.0,
+        'yaw_fine_tune_deg': 1.0,
+        'yaw_align_kp': 2.0,
+        'yaw_align_tol_deg': 2.0,
+    },
+    'estop': {
+        'hold_sec': 2.0,
+    },
+    'foot_raise_height': 0.08,
 }
 
 AUTO_AVOIDANCE_CONFIG_DEFAULT = {
@@ -143,7 +157,14 @@ SPECIAL_ACTIONS_CONFIG_DEFAULT = {
         'straighthand': {'mode': 11, 'trigger_sec': 0.2, 'wait_timeout': 5.0, 'recovery': 'stand'},
         'dance1': {'mode': 12, 'trigger_sec': 0.2, 'wait_timeout': 8.0, 'recovery': 'idle'},
         'dance2': {'mode': 13, 'trigger_sec': 0.2, 'wait_timeout': 8.0, 'recovery': 'idle'},
-    }
+    },
+    'phase_timing': {
+        'prep_stand_sec': 1.5,
+        'post_wait_sec': 0.3,
+        'recover8_sec': 1.5,
+        'recover1_sec': 1.5,
+        'recover0_sec': 0.5,
+    },
 }
 
 CAMERA_CONFIG_DEFAULT = {
@@ -157,6 +178,16 @@ CAMERA_CONFIG_DEFAULT = {
         'duration': 0.0,
         'start_time': None,
         'frame_count': 0,
+    },
+    'gstreamer': {
+        'udp_port': 9400,
+        'ssh_key_path': '~/.ssh/id_rsa',
+    },
+    'timing': {
+        'first_frame_wait_sec': 5.0,
+        'upload_warmup_sec': 2.0,
+        'sender_camera_wait_sec': 10.0,
+        'proc_kill_timeout_sec': 2,
     },
 }
 

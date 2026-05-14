@@ -1,0 +1,19 @@
+{
+  "camera_save_state": {
+    "status": "Stopped",
+    "folder": "Captured_Images/ep01_saved",
+    "duration": 0.0,
+    "start_time": null,
+    "frame_count": 0
+  },
+  "camera_stream": {
+    "port": 5050,
+    "is_running": false
+  },
+  "sender": {
+    "status": "Stopped",
+    "target_fps": 30,
+    "interval": 0.033,
+    "watch_folder": "/dev/shm/ep01"
+  }
+}

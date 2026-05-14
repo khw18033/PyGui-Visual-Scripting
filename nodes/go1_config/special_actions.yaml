@@ -30,5 +30,12 @@
       "wait_timeout": 8.0,
       "recovery": "idle"
     }
+  },
+  "phase_timing": {
+    "prep_stand_sec": 1.5,
+    "post_wait_sec": 0.3,
+    "recover8_sec": 1.5,
+    "recover1_sec": 1.5,
+    "recover0_sec": 0.5
   }
 }

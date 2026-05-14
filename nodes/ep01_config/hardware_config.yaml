@@ -1,0 +1,23 @@
+{
+  "arm": {
+    "step_size": 10.0,
+    "min_position": 0.0,
+    "max_position": 200.0,
+    "action_timeout_sec": 5.0,
+    "retry_delay_sec": 0.25,
+    "max_retries": 5
+  },
+  "gripper": {
+    "power_level": 50
+  },
+  "keyboard_config": {
+    "keys_mode": "WASD",
+    "v_max": 0.5,
+    "w_max": 60.0
+  },
+  "camera": {
+    "default_url": "rtsp://192.168.42.2/live",
+    "prefer_sdk": true,
+    "save_folder": "Captured_Images/ep01_saved"
+  }
+}

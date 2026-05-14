@@ -14,5 +14,15 @@
     "duration": 0.0,
     "start_time": null,
     "frame_count": 0
+  },
+  "gstreamer": {
+    "udp_port": 9400,
+    "ssh_key_path": "~/.ssh/id_rsa"
+  },
+  "timing": {
+    "first_frame_wait_sec": 5.0,
+    "upload_warmup_sec": 2.0,
+    "sender_camera_wait_sec": 10.0,
+    "proc_kill_timeout_sec": 2
   }
 }

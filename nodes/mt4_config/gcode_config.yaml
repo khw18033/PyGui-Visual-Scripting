@@ -1,0 +1,24 @@
+{
+  "gcode": {
+    "homing_command": "$H",
+    "setup_commands": [
+      "M20",
+      "G90",
+      "G1 F2000"
+    ]
+  },
+  "home_position": {
+    "x": 200.0,
+    "y": 0.0,
+    "z": 120.0,
+    "roll": 0.0,
+    "gripper": 40.0
+  },
+  "timing": {
+    "homing_wait_sec": 15.0,
+    "startup_delay_sec": 2.0,
+    "command_interval_sec": 0.05,
+    "reconnect_interval_sec": 3.0,
+    "manual_override_timeout_sec": 20.0
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "ep_ip": "192.168.42.2",
+  "ep_port": 40924,
+  "ep_use_media_mock": false,
+  "flask_port": 5050,
+  "ep_sender_target_fps": 30,
+  "ep_sender_watch_folder": "/dev/shm/ep01",
+  "ep_server_upload_url": "http://210.110.250.33:5002/upload"
+}
