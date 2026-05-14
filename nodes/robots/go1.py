@@ -18,6 +18,14 @@ from collections import deque
 
 from nodes.base import BaseNode, BaseRobotDriver
 from core.engine import generate_uuid, PortType, write_log, node_registry
+from core.go1_config import (
+    NETWORK_CONFIG,
+    ROBOT_CONTROL_CONFIG,
+    AUTO_AVOIDANCE_CONFIG,
+    SPECIAL_ACTIONS_CONFIG,
+    CAMERA_CONFIG as GO1_CAMERA_CONFIG,
+    MODEL_CONFIG,
+)
 import core.engine as engine_module
 
 try:
@@ -101,36 +109,39 @@ except Exception:
 go1_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 go1_sock.setblocking(False)
 
-HIGHLEVEL = 0xEE
-LOCAL_PORT = 8090
-GO1_IP = "192.168.50.41"
-GO1_PORT = 8082
+HIGHLEVEL = int(NETWORK_CONFIG.get('highlevel', 0xEE))
+LOCAL_PORT = int(NETWORK_CONFIG.get('local_port', 8090))
+GO1_IP = str(NETWORK_CONFIG.get('go1_ip', '192.168.50.41'))
+GO1_PORT = int(NETWORK_CONFIG.get('go1_port', 8082))
 
-GO1_UNITY_IP = "192.168.50.246"
-UNITY_STATE_PORT = 15101
-UNITY_CMD_PORT = 15102
-UNITY_RX_PORT = 15100
-UNITY_WAYPOINT_TX_PORT = 15104
-UNITY_PATH_PORT = 15110
+GO1_UNITY_IP = str(NETWORK_CONFIG.get('go1_unity_ip', '192.168.50.246'))
+UNITY_STATE_PORT = int(NETWORK_CONFIG.get('unity_state_port', 15101))
+UNITY_CMD_PORT = int(NETWORK_CONFIG.get('unity_cmd_port', 15102))
+UNITY_RX_PORT = int(NETWORK_CONFIG.get('unity_rx_port', 15100))
+UNITY_WAYPOINT_TX_PORT = int(NETWORK_CONFIG.get('unity_waypoint_tx_port', 15104))
+UNITY_PATH_PORT = int(NETWORK_CONFIG.get('unity_path_port', 15110))
 
-DT = 0.02
-V_MAX = 0.4
-S_MAX = 0.4
-W_MAX = 2.0
-VX_CMD = 0.20
-VY_CMD = 0.20
-WZ_CMD = 1.00
+DT = float(ROBOT_CONTROL_CONFIG.get('dt', 0.02))
+V_MAX = float(ROBOT_CONTROL_CONFIG.get('v_max', 0.4))
+S_MAX = float(ROBOT_CONTROL_CONFIG.get('s_max', 0.4))
+W_MAX = float(ROBOT_CONTROL_CONFIG.get('w_max', 2.0))
+VX_CMD = float(ROBOT_CONTROL_CONFIG.get('vx_cmd', 0.20))
+VY_CMD = float(ROBOT_CONTROL_CONFIG.get('vy_cmd', 0.20))
+WZ_CMD = float(ROBOT_CONTROL_CONFIG.get('wz_cmd', 1.00))
 
-BODY_HEIGHT_MIN = -0.12
-BODY_HEIGHT_MAX = 0.12
-BODY_HEIGHT_KEY_STEP = 0.005
+_BODY_HEIGHT_CONFIG = dict(ROBOT_CONTROL_CONFIG.get('body_height', {}))
+BODY_HEIGHT_MIN = float(_BODY_HEIGHT_CONFIG.get('min', -0.12))
+BODY_HEIGHT_MAX = float(_BODY_HEIGHT_CONFIG.get('max', 0.12))
+BODY_HEIGHT_KEY_STEP = float(_BODY_HEIGHT_CONFIG.get('key_step', 0.005))
 
-hold_timeout_sec = 0.1
-repeat_grace_sec = 0.4
-min_move_sec = 0.4
-stop_brake_sec = 0.0
-unity_timeout_sec = 0.15
+_TIMING_CONFIG = dict(ROBOT_CONTROL_CONFIG.get('timing', {}))
+hold_timeout_sec = float(_TIMING_CONFIG.get('hold_timeout_sec', 0.1))
+repeat_grace_sec = float(_TIMING_CONFIG.get('repeat_grace_sec', 0.4))
+min_move_sec = float(_TIMING_CONFIG.get('min_move_sec', 0.4))
+stop_brake_sec = float(_TIMING_CONFIG.get('stop_brake_sec', 0.0))
+unity_timeout_sec = float(_TIMING_CONFIG.get('unity_timeout_sec', 0.15))
 
+_GO1_IP_INITIALIZED = False
 _GO1_IP_INITIALIZED = False
 
 go1_target_vel = {
@@ -213,108 +224,25 @@ go1_auto_avoidance_data = {
     'last_trigger_ts': 0.0,
 }
 
-GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP = {
-    # AGENT group
-    'person': 'AGENT',
-    'pedestrian': 'AGENT',
-    'child': 'AGENT',
-    'dog': 'AGENT',
-    'cat': 'AGENT',
-    'robot': 'AGENT',
-    'quadruped robot': 'AGENT',
-    'robot dog': 'AGENT',
-    
-    # VEHICLE group
-    'car': 'VEHICLE',
-    'truck': 'VEHICLE',
-    'bus': 'VEHICLE',
-    'motorcycle': 'VEHICLE',
-    'bicycle': 'VEHICLE',
-    'scooter': 'VEHICLE',
-    
-    # HARD_OBSTACLE group
-    'large_obstacle': 'HARD_OBSTACLE',
-    'box': 'HARD_OBSTACLE',
-    'cardboard box': 'HARD_OBSTACLE',
-    'chair': 'HARD_OBSTACLE',
-    'table': 'HARD_OBSTACLE',
-    'bench': 'HARD_OBSTACLE',
-    'barrier': 'HARD_OBSTACLE',
-    'fence': 'HARD_OBSTACLE',
-    'guardrail': 'HARD_OBSTACLE',
-    'wall': 'HARD_OBSTACLE',
-    'pillar': 'HARD_OBSTACLE',
-    'door': 'HARD_OBSTACLE',
-    'pole': 'HARD_OBSTACLE',
-    'bollard': 'HARD_OBSTACLE',
-    'trash bin': 'HARD_OBSTACLE',
-    'fire extinguisher': 'HARD_OBSTACLE',
-    'umbrella': 'HARD_OBSTACLE',
-    'rock': 'HARD_OBSTACLE',
-    
-    # SOFT_PUSHABLE group
-    'backpack': 'SOFT_PUSHABLE',
-    'bag': 'SOFT_PUSHABLE',
-    'paper bag': 'SOFT_PUSHABLE',
-    'tissue box': 'SOFT_PUSHABLE',
-    'toilet paper roll': 'SOFT_PUSHABLE',
-    'trash': 'SOFT_PUSHABLE',
-    'plastic bag': 'SOFT_PUSHABLE',
+GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP = dict(AUTO_AVOIDANCE_CONFIG.get('class_to_group', {}))
+GO1_AUTO_AVOIDANCE_POLICY = dict(AUTO_AVOIDANCE_CONFIG.get('policy', {}))
+GO1_AUTO_AVOIDANCE_GROUP_PRIORITY = dict(AUTO_AVOIDANCE_CONFIG.get('group_priority', {}))
 
-    # LOW_OBSTACLE group
-    'laptop': 'LOW_OBSTACLE',
-    'card': 'LOW_OBSTACLE',
-    'power strip': 'LOW_OBSTACLE',
-    'small_object': 'LOW_OBSTACLE',
-    'movable_object': 'LOW_OBSTACLE',
-    
-    # THIN_OBSTACLE group
-    'wire': 'THIN_OBSTACLE',
-    'cable': 'THIN_OBSTACLE',
-    'hose': 'THIN_OBSTACLE',
-    'branch': 'THIN_OBSTACLE',
-    
-    # GROUND_HAZARD group
-    'curb': 'GROUND_HAZARD',
-    'stairs': 'GROUND_HAZARD',
-    'ramp': 'GROUND_HAZARD',
-    'speed bump': 'GROUND_HAZARD',
-    'puddle': 'GROUND_HAZARD',
-    
-    # UNKNOWN_OBSTACLE group (fallback-only)
-    'traffic cone': 'UNKNOWN_OBSTACLE',
-}
+_AUTO_AVOIDANCE_IMAGE_CONFIG = dict(AUTO_AVOIDANCE_CONFIG.get('image', {}))
+GO1_AUTO_AVOIDANCE_IMAGE_WIDTH = int(_AUTO_AVOIDANCE_IMAGE_CONFIG.get('width', 464))
+GO1_AUTO_AVOIDANCE_IMAGE_HEIGHT = int(_AUTO_AVOIDANCE_IMAGE_CONFIG.get('height', 400))
 
-GO1_AUTO_AVOIDANCE_POLICY = {
-    'AGENT': {'action': 'stop', 'hold_sec': 4.0},
-    'VEHICLE': {'action': 'stop', 'hold_sec': 4.0},
-    'HARD_OBSTACLE': {'action': 'avoid'},
-    'SOFT_PUSHABLE': {'action': 'avoid'},
-    'LOW_OBSTACLE': {'action': 'avoid'},
-    'THIN_OBSTACLE': {'action': 'stop_then_back', 'back_sec': 0.5},
-    'GROUND_HAZARD': {'action': 'stop_then_back', 'back_sec': 1.0},
-    'UNKNOWN_OBSTACLE': {'action': 'stop', 'hold_sec': 2.0},
-}
+_AUTO_AVOIDANCE_ESCAPE_CONFIG = dict(AUTO_AVOIDANCE_CONFIG.get('escape', {}))
+GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X = int(_AUTO_AVOIDANCE_ESCAPE_CONFIG.get('left_x', 150))
+GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X = int(_AUTO_AVOIDANCE_ESCAPE_CONFIG.get('right_x', 300))
 
-GO1_AUTO_AVOIDANCE_GROUP_PRIORITY = {
-    'AGENT': 0,
-    'VEHICLE': 1,
-    'GROUND_HAZARD': 2,
-    'THIN_OBSTACLE': 3,
-    'HARD_OBSTACLE': 4,
-    'UNKNOWN_OBSTACLE': 5,
-    'SOFT_PUSHABLE': 6,
-    'LOW_OBSTACLE': 7,
-}
+_AUTO_AVOIDANCE_BBOX_CONFIG = dict(AUTO_AVOIDANCE_CONFIG.get('bbox', {}))
+GO1_AUTO_AVOIDANCE_MIN_BBOX_WIDTH = int(_AUTO_AVOIDANCE_BBOX_CONFIG.get('min_width', 24))
+GO1_AUTO_AVOIDANCE_MIN_BBOX_HEIGHT = int(_AUTO_AVOIDANCE_BBOX_CONFIG.get('min_height', 24))
 
-GO1_AUTO_AVOIDANCE_IMAGE_WIDTH = 464
-GO1_AUTO_AVOIDANCE_IMAGE_HEIGHT = 400
-GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X = 150
-GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X = 300
-GO1_AUTO_AVOIDANCE_MIN_BBOX_WIDTH = 24
-GO1_AUTO_AVOIDANCE_MIN_BBOX_HEIGHT = 24
-GO1_AUTO_AVOIDANCE_MOVE_SPEED = 0.2
-GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC = 0.5
+_AUTO_AVOIDANCE_MOTION_CONFIG = dict(AUTO_AVOIDANCE_CONFIG.get('motion', {}))
+GO1_AUTO_AVOIDANCE_MOVE_SPEED = float(_AUTO_AVOIDANCE_MOTION_CONFIG.get('move_speed', 0.2))
+GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC = float(_AUTO_AVOIDANCE_MOTION_CONFIG.get('move_duration_sec', 0.5))
 
 
 def _normalize_go1_detection_group(name, group):
@@ -331,13 +259,7 @@ go1_dashboard = {
     "special": "Idle",
 }
 
-GO1_SPECIAL_ACTIONS = {
-    'backflip': {'mode': 9, 'trigger_sec': 0.4, 'wait_timeout': 5.0, 'recovery': 'stand'},
-    'jumpyaw': {'mode': 10, 'trigger_sec': 0.2, 'wait_timeout': 4.0, 'recovery': 'stand'},
-    'straighthand': {'mode': 11, 'trigger_sec': 0.2, 'wait_timeout': 5.0, 'recovery': 'stand'},
-    'dance1': {'mode': 12, 'trigger_sec': 0.2, 'wait_timeout': 8.0, 'recovery': 'idle'},
-    'dance2': {'mode': 13, 'trigger_sec': 0.2, 'wait_timeout': 8.0, 'recovery': 'idle'},
-}
+GO1_SPECIAL_ACTIONS = dict(SPECIAL_ACTIONS_CONFIG.get('special_actions', {}))
 
 go1_special_queue = deque()
 go1_special_state = {
@@ -348,10 +270,11 @@ go1_special_state = {
     'queue_size': 0,
 }
 
-aruco_settings = {
-    'enabled': False,
-    'marker_size': 0.03,
-}
+aruco_settings = dict(MODEL_CONFIG.get('aruco', {}))
+if 'enabled' not in aruco_settings:
+    aruco_settings['enabled'] = False
+if 'marker_size' not in aruco_settings:
+    aruco_settings['marker_size'] = 0.03
 
 zero_dist_coeffs = np.zeros((4, 1), dtype=np.float32) if HAS_CV2 and np is not None else None
 
@@ -366,20 +289,20 @@ camera_state = {
 }
 
 camera_command_queue = deque()
-GO1_CAMERA_NANOS = ["unitree@192.168.123.13"]
-CAMERA_CONFIG = [
-    {"folder": "Captured_Images/go1_front", "id": "go1_front"}
-]
+GO1_CAMERA_NANOS = list(GO1_CAMERA_CONFIG.get('camera_nanos', ['unitree@192.168.123.13']))
+CAMERA_CONFIG = [dict(item) for item in GO1_CAMERA_CONFIG.get('camera_config', [
+    {"folder": "Captured_Images/go1_front", "id": "go1_front"},
+])]
 _CAMERA_WORKER_STARTED = False
 _CAMERA_RECEIVER_PROC = None
 
-camera_save_state = {
+camera_save_state = dict(GO1_CAMERA_CONFIG.get('camera_save_state_defaults', {
     'status': 'Stopped',
     'folder': 'Captured_Images/go1_saved',
     'duration': 0.0,
     'start_time': None,
     'frame_count': 0,
-}
+}))
 camera_save_queue = deque()
 
 # ================= [Go1 Server Sender (HTTP Upload)] =================
@@ -387,19 +310,15 @@ sender_state = {'status': 'Stopped'}
 sender_command_queue = deque()
 multi_sender_active = False
 # Server sender uses a higher polling/send target for smoother updates.
-TARGET_FPS = 30
-INTERVAL = 1.0 / TARGET_FPS
+_MODEL_RUNTIME_CONFIG = dict(MODEL_CONFIG.get('runtime', {}))
+TARGET_FPS = int(_MODEL_RUNTIME_CONFIG.get('target_fps', 30))
+INTERVAL = float(_MODEL_RUNTIME_CONFIG.get('interval', 1.0 / TARGET_FPS if TARGET_FPS else 1.0 / 30.0))
 _SENDER_MANAGER_STARTED = False
 
 _DA2_MODEL_LOCK = threading.Lock()
 _DA2_MODEL_CACHE = {}
 
-_DA2_MODEL_CONFIGS = {
-    'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
-    'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
-    'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
-    'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]},
-}
+_DA2_MODEL_CONFIGS = dict(MODEL_CONFIG.get('da2_models', {}))
 
 
 def _clamp(v, lo, hi):
@@ -735,6 +654,7 @@ def init_go1_connection():
         write_log(f"Go1 SDK Ready: {sdk_path}")
     else:
         write_log(f"Go1 SDK Missing: {sdk_path} ({SDK_IMPORT_ERROR})")
+    GO1_SPECIAL_ACTIONS = dict(SPECIAL_ACTIONS_CONFIG.get('special_actions', {}))
 
     if not _CAMERA_WORKER_STARTED:
         _CAMERA_WORKER_STARTED = True

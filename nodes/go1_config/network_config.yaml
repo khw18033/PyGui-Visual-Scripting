@@ -1,0 +1,12 @@
+{
+  "highlevel": 238,
+  "local_port": 8090,
+  "go1_ip": "192.168.50.41",
+  "go1_port": 8082,
+  "go1_unity_ip": "192.168.50.246",
+  "unity_state_port": 15101,
+  "unity_cmd_port": 15102,
+  "unity_rx_port": 15100,
+  "unity_waypoint_tx_port": 15104,
+  "unity_path_port": 15110
+}

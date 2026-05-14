@@ -1,0 +1,32 @@
+{
+  "da2_models": {
+    "vits": {
+      "encoder": "vits",
+      "features": 64,
+      "out_channels": [48, 96, 192, 384]
+    },
+    "vitb": {
+      "encoder": "vitb",
+      "features": 128,
+      "out_channels": [96, 192, 384, 768]
+    },
+    "vitl": {
+      "encoder": "vitl",
+      "features": 256,
+      "out_channels": [256, 512, 1024, 1024]
+    },
+    "vitg": {
+      "encoder": "vitg",
+      "features": 384,
+      "out_channels": [1536, 1536, 1536, 1536]
+    }
+  },
+  "runtime": {
+    "target_fps": 30,
+    "interval": 0.03333333333333333
+  },
+  "aruco": {
+    "enabled": false,
+    "marker_size": 0.03
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "camera_nanos": [
+    "unitree@192.168.123.13"
+  ],
+  "camera_config": [
+    {
+      "folder": "Captured_Images/go1_front",
+      "id": "go1_front"
+    }
+  ],
+  "camera_save_state_defaults": {
+    "status": "Stopped",
+    "folder": "Captured_Images/go1_saved",
+    "duration": 0.0,
+    "start_time": null,
+    "frame_count": 0
+  }
+}

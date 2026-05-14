@@ -1,0 +1,21 @@
+{
+  "dt": 0.02,
+  "v_max": 0.4,
+  "s_max": 0.4,
+  "w_max": 2.0,
+  "vx_cmd": 0.2,
+  "vy_cmd": 0.2,
+  "wz_cmd": 1.0,
+  "body_height": {
+    "min": -0.12,
+    "max": 0.12,
+    "key_step": 0.005
+  },
+  "timing": {
+    "hold_timeout_sec": 0.1,
+    "repeat_grace_sec": 0.4,
+    "min_move_sec": 0.4,
+    "stop_brake_sec": 0.0,
+    "unity_timeout_sec": 0.15
+  }
+}

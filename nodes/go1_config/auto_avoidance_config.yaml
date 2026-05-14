@@ -1,0 +1,115 @@
+{
+  "class_to_group": {
+    "person": "AGENT",
+    "pedestrian": "AGENT",
+    "child": "AGENT",
+    "dog": "AGENT",
+    "cat": "AGENT",
+    "robot": "AGENT",
+    "quadruped robot": "AGENT",
+    "robot dog": "AGENT",
+    "car": "VEHICLE",
+    "truck": "VEHICLE",
+    "bus": "VEHICLE",
+    "motorcycle": "VEHICLE",
+    "bicycle": "VEHICLE",
+    "scooter": "VEHICLE",
+    "large_obstacle": "HARD_OBSTACLE",
+    "box": "HARD_OBSTACLE",
+    "cardboard box": "HARD_OBSTACLE",
+    "chair": "HARD_OBSTACLE",
+    "table": "HARD_OBSTACLE",
+    "bench": "HARD_OBSTACLE",
+    "barrier": "HARD_OBSTACLE",
+    "fence": "HARD_OBSTACLE",
+    "guardrail": "HARD_OBSTACLE",
+    "wall": "HARD_OBSTACLE",
+    "pillar": "HARD_OBSTACLE",
+    "door": "HARD_OBSTACLE",
+    "pole": "HARD_OBSTACLE",
+    "bollard": "HARD_OBSTACLE",
+    "trash bin": "HARD_OBSTACLE",
+    "fire extinguisher": "HARD_OBSTACLE",
+    "umbrella": "HARD_OBSTACLE",
+    "rock": "HARD_OBSTACLE",
+    "backpack": "SOFT_PUSHABLE",
+    "bag": "SOFT_PUSHABLE",
+    "paper bag": "SOFT_PUSHABLE",
+    "tissue box": "SOFT_PUSHABLE",
+    "toilet paper roll": "SOFT_PUSHABLE",
+    "trash": "SOFT_PUSHABLE",
+    "plastic bag": "SOFT_PUSHABLE",
+    "laptop": "LOW_OBSTACLE",
+    "card": "LOW_OBSTACLE",
+    "power strip": "LOW_OBSTACLE",
+    "small_object": "LOW_OBSTACLE",
+    "movable_object": "LOW_OBSTACLE",
+    "wire": "THIN_OBSTACLE",
+    "cable": "THIN_OBSTACLE",
+    "hose": "THIN_OBSTACLE",
+    "branch": "THIN_OBSTACLE",
+    "curb": "GROUND_HAZARD",
+    "stairs": "GROUND_HAZARD",
+    "ramp": "GROUND_HAZARD",
+    "speed bump": "GROUND_HAZARD",
+    "puddle": "GROUND_HAZARD",
+    "traffic cone": "UNKNOWN_OBSTACLE"
+  },
+  "policy": {
+    "AGENT": {
+      "action": "stop",
+      "hold_sec": 4.0
+    },
+    "VEHICLE": {
+      "action": "stop",
+      "hold_sec": 4.0
+    },
+    "HARD_OBSTACLE": {
+      "action": "avoid"
+    },
+    "SOFT_PUSHABLE": {
+      "action": "avoid"
+    },
+    "LOW_OBSTACLE": {
+      "action": "avoid"
+    },
+    "THIN_OBSTACLE": {
+      "action": "stop_then_back",
+      "back_sec": 0.5
+    },
+    "GROUND_HAZARD": {
+      "action": "stop_then_back",
+      "back_sec": 1.0
+    },
+    "UNKNOWN_OBSTACLE": {
+      "action": "stop",
+      "hold_sec": 2.0
+    }
+  },
+  "group_priority": {
+    "AGENT": 0,
+    "VEHICLE": 1,
+    "GROUND_HAZARD": 2,
+    "THIN_OBSTACLE": 3,
+    "HARD_OBSTACLE": 4,
+    "UNKNOWN_OBSTACLE": 5,
+    "SOFT_PUSHABLE": 6,
+    "LOW_OBSTACLE": 7
+  },
+  "image": {
+    "width": 464,
+    "height": 400
+  },
+  "escape": {
+    "left_x": 150,
+    "right_x": 300
+  },
+  "bbox": {
+    "min_width": 24,
+    "min_height": 24
+  },
+  "motion": {
+    "move_speed": 0.2,
+    "move_duration_sec": 0.5
+  }
+}
