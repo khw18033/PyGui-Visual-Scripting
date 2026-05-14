@@ -589,9 +589,6 @@ def ep_comm_thread():
                 
                 is_moving = False
                 ep_node_intent['stop'] = False
-                ep_node_intent['vx'] = 0.0
-                ep_node_intent['vy'] = 0.0
-                ep_node_intent['wz'] = 0.0
                 last_vx = 0.0
                 last_vy = 0.0
                 last_wz = 0.0
@@ -674,8 +671,7 @@ class EPRobotDriver(BaseRobotDriver):
             ep_node_intent['vx'] = float(vx_val or 0.0)
             ep_node_intent['vy'] = float(vy_val or 0.0)
             ep_node_intent['wz'] = float(wz_val or 0.0)
-            if ep_node_intent['vx'] or ep_node_intent['vy'] or ep_node_intent['wz']:
-                ep_node_intent['trigger_time'] = time.monotonic()
+            ep_node_intent['trigger_time'] = time.monotonic()
 
         arm_dx = float(arm_dx_val or 0.0)
         arm_dy = float(arm_dy_val or 0.0)
@@ -786,10 +782,10 @@ class EPKeyboardNode(BaseNode):
         if self.is_just_pressed('J_pressed') or self.is_just_pressed('J'):
             grip_close = True
 
-        ep_node_intent['vx'] = vx
-        ep_node_intent['vy'] = vy
-        ep_node_intent['wz'] = wz
         if vx or vy or wz:
+            ep_node_intent['vx'] = vx
+            ep_node_intent['vy'] = vy
+            ep_node_intent['wz'] = wz
             ep_node_intent['trigger_time'] = time.monotonic()
 
         if arm_dx or arm_dy:
