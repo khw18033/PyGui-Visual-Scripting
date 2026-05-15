@@ -117,6 +117,13 @@ EP_ARM_ACTION_TIMEOUT = EP01_HARDWARE_CONFIG['arm']['action_timeout_sec']
 EP_ARM_RETRY_DELAY = EP01_HARDWARE_CONFIG['arm']['retry_delay_sec']
 EP_ARM_MAX_RETRY = EP01_HARDWARE_CONFIG['arm']['max_retries']
 
+# Separate gripper queue and pending state to avoid gripper commands
+# being blocked by long-running arm move commands.
+ep_gripper_action_queue = []  # Queue of {'type':'grip', 'open': bool, 'retry': int}
+_ep_gripper_lock = threading.Lock()
+_ep_pending_gripper_action = None
+_ep_pending_gripper_start_time = None
+
 _ep_cam_lock = threading.Lock()
 _ep_cam_cap = None
 _ep_cam_sdk_started = False
@@ -177,16 +184,16 @@ def _ep_move_arm(delta_x=0.0, delta_y=0.0):
 
 def _ep_set_gripper(open_gripper):
     """그리퍼 제어 (큐를 거쳐 Non-blocking 처리)"""
-    global ep_arm_action_queue
-    
+    global ep_gripper_action_queue
+
     # 큐에 추가만 하고 즉시 반환 (GUI 블로킹 방지)
-    with _ep_arm_lock:
-        ep_arm_action_queue.append({
+    with _ep_gripper_lock:
+        ep_gripper_action_queue.append({
             'type': 'grip',
             'open': open_gripper,
             'retry': 0
         })
-        
+
     return True
 
 def _wait_for_action_completion(action_obj, timeout_sec=EP_ARM_ACTION_TIMEOUT):
@@ -574,6 +581,64 @@ def ep_comm_thread():
                         # 다른 오류는 액션 취소
                         _ep_pending_arm_action = None
 
+        # ================= [그리퍼 액션 큐 처리] =================
+        # 그리퍼 별도 큐 및 완료 대기 스레드 처리
+        global _ep_pending_gripper_action, _ep_pending_gripper_start_time
+        if _ep_pending_gripper_action is not None:
+            elapsed_g = time.monotonic() - _ep_pending_gripper_start_time
+            if elapsed_g > EP_ARM_ACTION_TIMEOUT:
+                write_log(f"EP Gripper: 액션 타임아웃 ({elapsed_g:.2f}s), 다음 액션으로 넘어감")
+                _ep_pending_gripper_action = None
+
+        if _ep_pending_gripper_action is None:
+            gaction = None
+            with _ep_gripper_lock:
+                if ep_gripper_action_queue:
+                    gaction = ep_gripper_action_queue.pop(0)
+
+            if gaction is not None:
+                try:
+                    opening = bool(gaction['open'])
+                    write_log(f"EP: 그리퍼 {'열기' if opening else '닫기'} (gripper queue)")
+                    if opening:
+                        ep_robot_inst.robotic_gripper.open(power=EP_GRIPPER_POWER)
+                    else:
+                        ep_robot_inst.robotic_gripper.close(power=EP_GRIPPER_POWER)
+                    _ep_pending_gripper_action = gaction
+                    _ep_pending_gripper_start_time = time.monotonic()
+
+                    def _gripper_waiter(action_ref):
+                        try:
+                            _wait_for_action_completion(action_ref, timeout_sec=EP_ARM_ACTION_TIMEOUT)
+                        except Exception:
+                            pass
+                        finally:
+                            try:
+                                global _ep_pending_gripper_action
+                                if _ep_pending_gripper_action is action_ref:
+                                    _ep_pending_gripper_action = None
+                            except Exception:
+                                pass
+
+                    threading.Thread(target=_gripper_waiter, args=(_ep_pending_gripper_action,), daemon=True).start()
+
+                except Exception as e:
+                    msg = str(e)
+                    write_log(f"EP 그리퍼 액션 오류: {msg}")
+                    if "already performing" in msg.lower():
+                        retry = int(gaction.get('retry', 0)) + 1
+                        if retry <= EP_ARM_MAX_RETRY:
+                            gaction['retry'] = retry
+                            time.sleep(EP_ARM_RETRY_DELAY)
+                            with _ep_gripper_lock:
+                                ep_gripper_action_queue.insert(0, gaction)
+                            write_log(f"EP 그리퍼 액션: 재시도 {retry}/{EP_ARM_MAX_RETRY}")
+                        else:
+                            write_log("EP 그리퍼 액션: 최대 재시도 횟수 초과, 삭제됨")
+                            _ep_pending_gripper_action = None
+                    else:
+                        _ep_pending_gripper_action = None
+
         # ================= [주행 명령 처리 - 떨림 방지] =================
         tnow = time.monotonic()
         active = (tnow - ep_node_intent['trigger_time']) < 0.2
@@ -781,9 +846,13 @@ class EPKeyboardNode(BaseNode):
         if self.is_just_pressed('C'): arm_dx = -self.arm_step
         if self.is_just_pressed('V'): arm_dx = self.arm_step
         
-        if self.is_just_pressed('U_pressed') or self.is_just_pressed('U'):
+        u_pressed = self.is_just_pressed('U_pressed')
+        u = self.is_just_pressed('U')
+        if u_pressed or u:
             grip_open = True
-        if self.is_just_pressed('J_pressed') or self.is_just_pressed('J'):
+        j_pressed = self.is_just_pressed('J_pressed')
+        j = self.is_just_pressed('J')
+        if j_pressed or j:
             grip_close = True
 
         ep_node_intent['vx'] = vx
