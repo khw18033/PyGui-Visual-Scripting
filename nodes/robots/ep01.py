@@ -306,8 +306,8 @@ def send_ep_command(cmd_str):
         "led_blue": "led control comp all r 0 g 0 b 255 effect solid;",
         "blaster_fire": "blaster fire;",
         "arm_center": "robotic_arm moveto x 100 y 100;",
-        "grip_open": "robotic_gripper open 1;",
-        "grip_close": "robotic_gripper close 1;",
+        "grip_open": "gripper open 1;",
+        "grip_close": "gripper close 1;",
     }
     raw = udp_map.get(cmd_str)
     if raw:
@@ -601,9 +601,9 @@ def ep_comm_thread():
                     opening = bool(gaction['open'])
                     write_log(f"EP: 그리퍼 {'열기' if opening else '닫기'} (gripper queue)")
                     if opening:
-                        ep_robot_inst.robotic_gripper.open(power=EP_GRIPPER_POWER)
+                        ep_robot_inst.gripper.open(power=EP_GRIPPER_POWER)
                     else:
-                        ep_robot_inst.robotic_gripper.close(power=EP_GRIPPER_POWER)
+                        ep_robot_inst.gripper.close(power=EP_GRIPPER_POWER)
                     _ep_pending_gripper_action = gaction
                     _ep_pending_gripper_start_time = time.monotonic()
 
