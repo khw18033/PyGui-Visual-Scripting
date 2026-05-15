@@ -24,6 +24,7 @@ from core.go1_config import (
     AUTO_AVOIDANCE_CONFIG,
     SPECIAL_ACTIONS_CONFIG,
     CAMERA_CONFIG as GO1_CAMERA_CONFIG,
+    MISSION_CONFIG,
     MODEL_CONFIG,
 )
 import core.engine as engine_module
@@ -257,6 +258,30 @@ go1_auto_avoidance_data = {
     'last_trigger_ts': 0.0,
 }
 
+GO1_MISSION_CONFIG = dict(MISSION_CONFIG)
+GO1_MISSION_PENDING_URL = str(GO1_MISSION_CONFIG.get('pending_url', 'http://100.65.158.54:18080/pending'))
+GO1_MISSION_DECISION_URL = str(GO1_MISSION_CONFIG.get('decision_url', 'http://100.65.158.54:18080/decision'))
+GO1_MISSION_POLL_SEC = float(GO1_MISSION_CONFIG.get('poll_interval_sec', 1.0))
+GO1_MISSION_TIMEOUT_SEC = float(GO1_MISSION_CONFIG.get('request_timeout_sec', 3.0))
+GO1_MISSION_DECISION_MODE = str(GO1_MISSION_CONFIG.get('decision_mode', 'accept_if_destination_present'))
+GO1_MISSION_ALLOWED_TYPES = list(GO1_MISSION_CONFIG.get('allowed_mission_types', ['go1', 'unity_path', 'robot_action']))
+GO1_MISSION_SCHEMA = dict(GO1_MISSION_CONFIG.get('schema', {}))
+GO1_MISSION_DEFAULTS = dict(GO1_MISSION_CONFIG.get('defaults', {}))
+
+go1_mission_state = {
+    'status': 'Idle',
+    'mission_id': '',
+    'mission_type': '',
+    'decision': '',
+    'decision_reason': '',
+    'destination_summary': '',
+    'path_json': '',
+    'action_json': '',
+    'source': GO1_MISSION_PENDING_URL,
+    'last_error': '',
+    'updated_ts': 0.0,
+}
+
 GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP = dict(AUTO_AVOIDANCE_CONFIG.get('class_to_group', {}))
 GO1_AUTO_AVOIDANCE_POLICY = dict(AUTO_AVOIDANCE_CONFIG.get('policy', {}))
 GO1_AUTO_AVOIDANCE_GROUP_PRIORITY = dict(AUTO_AVOIDANCE_CONFIG.get('group_priority', {}))
@@ -284,6 +309,254 @@ def _normalize_go1_detection_group(name, group):
         return normalized_group
     name_key = str(name or '').strip().lower()
     return GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP.get(name_key, 'UNKNOWN_OBSTACLE')
+
+
+def _mission_signature(value):
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            return str(value)
+    return str(value or '').strip()
+
+
+def _normalize_mission_container(raw_value):
+    if raw_value is None:
+        return {}, ''
+
+    if isinstance(raw_value, str):
+        text = raw_value.strip()
+        if not text:
+            return {}, ''
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return {}, text
+        return _normalize_mission_container(parsed)
+
+    if isinstance(raw_value, list):
+        signature = _mission_signature(raw_value)
+        for item in raw_value:
+            if isinstance(item, dict):
+                return item, signature
+        return {}, signature
+
+    if isinstance(raw_value, dict):
+        signature = _mission_signature(raw_value)
+        for key in ('mission', 'data', 'payload', 'cmd', 'command'):
+            nested = raw_value.get(key)
+            if isinstance(nested, dict):
+                return nested, signature
+
+        missions = raw_value.get('missions')
+        if isinstance(missions, list):
+            for item in missions:
+                if isinstance(item, dict):
+                    return item, signature
+
+        return raw_value, signature
+
+    return {}, _mission_signature(raw_value)
+
+
+def _get_mission_value(payload, keys, default=None):
+    if not isinstance(payload, dict):
+        return default
+    for key in keys or []:
+        if key in payload:
+            value = payload.get(key)
+            if value not in (None, '', [], {}):
+                return value
+    return default
+
+
+def _normalize_mission_point(point, default_frame=None, default_yaw_deg=0.0):
+    if not isinstance(point, dict):
+        return None
+
+    frame = str(point.get('frame', default_frame or GO1_MISSION_DEFAULTS.get('destination_frame', 'go1_local_start'))).strip() or GO1_MISSION_DEFAULTS.get('destination_frame', 'go1_local_start')
+    return {
+        'x': _coerce_float(point.get('x', point.get('x_m', 0.0)), 0.0),
+        'y': _coerce_float(point.get('y', point.get('y_m', 0.0)), 0.0),
+        'z': _coerce_float(point.get('z', point.get('z_m', 0.0)), 0.0),
+        'yaw_deg': _coerce_float(point.get('yaw_deg', point.get('yaw', default_yaw_deg)), default_yaw_deg),
+        'frame': frame,
+        'use_yaw': _coerce_bool(point.get('use_yaw', True), True),
+    }
+
+
+def _extract_mission_id(payload):
+    mission_id = _get_mission_value(payload, GO1_MISSION_SCHEMA.get('mission_id_keys', ['mission_id', 'id']), '')
+    return str(mission_id).strip() if mission_id is not None else ''
+
+
+def _extract_mission_type(payload):
+    mission_type = _get_mission_value(payload, GO1_MISSION_SCHEMA.get('mission_type_keys', ['mission_type', 'type', 'kind']), '')
+    return str(mission_type).strip() if mission_type is not None else ''
+
+
+def _extract_mission_destination(payload):
+    if not isinstance(payload, dict):
+        return {}, []
+
+    waypoint_keys = GO1_MISSION_SCHEMA.get('waypoint_keys', ['waypoints', 'points', 'path'])
+    destination_keys = GO1_MISSION_SCHEMA.get('destination_keys', ['destination', 'goal', 'target'])
+    default_frame = str(GO1_MISSION_DEFAULTS.get('destination_frame', 'go1_local_start')).strip() or 'go1_local_start'
+    default_yaw_deg = _coerce_float(GO1_MISSION_DEFAULTS.get('start_yaw_deg', 0.0), 0.0)
+
+    for key in waypoint_keys:
+        value = payload.get(key)
+        if isinstance(value, list) and value:
+            points = []
+            for item in value:
+                normalized = _normalize_mission_point(item, default_frame=default_frame, default_yaw_deg=default_yaw_deg)
+                if normalized is not None:
+                    points.append(normalized)
+            return {}, points
+
+    for key in destination_keys:
+        value = payload.get(key)
+        if isinstance(value, dict):
+            normalized = _normalize_mission_point(value, default_frame=default_frame, default_yaw_deg=default_yaw_deg)
+            if normalized is not None:
+                return normalized, []
+
+    direct_keys = {'x', 'y', 'z', 'yaw_deg', 'frame'}
+    if direct_keys.intersection(payload.keys()):
+        normalized = _normalize_mission_point(payload, default_frame=default_frame, default_yaw_deg=default_yaw_deg)
+        if normalized is not None:
+            return normalized, []
+
+    return {}, []
+
+
+def _extract_mission_post_action(payload):
+    if not isinstance(payload, dict):
+        return {}
+
+    action_keys = GO1_MISSION_SCHEMA.get('post_action_keys', ['post_action', 'robot_action', 'action'])
+    for key in action_keys:
+        value = payload.get(key)
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str) and value.strip():
+            return {'type': value.strip()}
+
+    return {}
+
+
+def _resolve_go1_action_mode(action_payload, default_mode='Stand'):
+    if not isinstance(action_payload, dict):
+        return default_mode
+
+    raw_mode = str(action_payload.get('mode', '')).strip()
+    if raw_mode:
+        return raw_mode
+
+    raw_type = str(action_payload.get('type', action_payload.get('action', ''))).strip().lower().replace('_', ' ').replace('-', ' ')
+    mode_map = {
+        'stand': 'Stand',
+        'reset yaw': 'Reset Yaw0',
+        'reset yaw0': 'Reset Yaw0',
+        'walk': 'Walk Fwd/Back',
+        'walk fwd': 'Walk Fwd/Back',
+        'walk back': 'Walk Fwd/Back',
+        'strafe': 'Walk Strafe',
+        'turn': 'Turn',
+        'sit': 'Sit Down',
+        'stand tall': 'Stand Tall',
+        'set body height': 'Set Body Height',
+        'backflip': 'Backflip',
+        'jump yaw': 'Jump Yaw',
+        'straight hand': 'Straight Hand',
+        'dance 1': 'Dance 1',
+        'dance 2': 'Dance 2',
+    }
+    return mode_map.get(raw_type, default_mode)
+
+
+def _build_go1_path_json(payload):
+    mission_id = _extract_mission_id(payload)
+    destination, waypoints = _extract_mission_destination(payload)
+    default_frame = str(GO1_MISSION_DEFAULTS.get('destination_frame', 'go1_local_start')).strip() or 'go1_local_start'
+    default_yaw_deg = _coerce_float(GO1_MISSION_DEFAULTS.get('start_yaw_deg', 0.0), 0.0)
+
+    start_pose = {'yaw_deg': default_yaw_deg}
+    path_points = [{'index': 0, 'x': 0.0, 'z': 0.0, 'yaw_deg': default_yaw_deg, 'use_yaw': False}]
+
+    if waypoints:
+        for idx, point in enumerate(waypoints, start=1):
+            path_points.append({
+                'index': idx,
+                'x': _coerce_float(point.get('x', 0.0), 0.0),
+                'z': _coerce_float(point.get('z', 0.0), 0.0),
+                'yaw_deg': _coerce_float(point.get('yaw_deg', default_yaw_deg), default_yaw_deg),
+                'use_yaw': _coerce_bool(point.get('use_yaw', True), True),
+            })
+            if idx == 1 and 'yaw_deg' in point:
+                start_pose['yaw_deg'] = _coerce_float(point.get('yaw_deg', default_yaw_deg), default_yaw_deg)
+    elif destination:
+        path_points.append({
+            'index': 1,
+            'x': _coerce_float(destination.get('x', 0.0), 0.0),
+            'z': _coerce_float(destination.get('z', 0.0), 0.0),
+            'yaw_deg': _coerce_float(destination.get('yaw_deg', default_yaw_deg), default_yaw_deg),
+            'use_yaw': _coerce_bool(destination.get('use_yaw', True), True),
+        })
+        start_pose['yaw_deg'] = _coerce_float(destination.get('yaw_deg', default_yaw_deg), default_yaw_deg)
+
+    path_id = _coerce_int(_get_mission_value(payload, ['path_id', 'id', 'seq'], int(time.time() * 1000) % 1000000), int(time.time() * 1000) % 1000000)
+    path_payload = {
+        'type': 'go1_path',
+        'frame': default_frame,
+        'path_id': path_id,
+        'mission_id': mission_id,
+        'start_pose': start_pose,
+        'points': path_points,
+        'source': 'GO1_MISSION_DISPATCH',
+    }
+    return json.dumps(path_payload, ensure_ascii=False)
+
+
+def _build_go1_post_action_json(payload):
+    default_mode = str(GO1_MISSION_DEFAULTS.get('post_action_mode', 'Stand')).strip() or 'Stand'
+    default_value = _coerce_float(GO1_MISSION_DEFAULTS.get('post_action_value', 0.2), 0.2)
+    action_payload = _extract_mission_post_action(payload)
+    mission_id = _extract_mission_id(payload)
+
+    result = {
+        'mission_id': mission_id,
+        'mode': _resolve_go1_action_mode(action_payload, default_mode=default_mode),
+        'v1': _coerce_float(action_payload.get('value', action_payload.get('v1', default_value)), default_value),
+    }
+    if 'type' in action_payload:
+        result['type'] = action_payload.get('type')
+    if 'action' in action_payload:
+        result['action'] = action_payload.get('action')
+    if 'note' in action_payload:
+        result['note'] = action_payload.get('note')
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _post_json_payload(url, payload, timeout_sec):
+    data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            charset = resp.headers.get_content_charset() or 'utf-8'
+            return resp.status, resp.read().decode(charset, errors='replace').strip()
+    except urllib.error.HTTPError as e:
+        body = ''
+        try:
+            body = e.read().decode(e.headers.get_content_charset() or 'utf-8', errors='replace').strip()
+        except Exception:
+            body = ''
+        raise RuntimeError(f'HTTP {e.code}: {body or e.reason}') from e
 
 go1_dashboard = {
     "status": "Idle",
@@ -1568,17 +1841,30 @@ class Go1ActionNode(BaseNode):
         super().__init__(node_id, "Go1 Action", "GO1_ACTION")
         self.in_flow = generate_uuid()
         self.inputs[self.in_flow] = PortType.FLOW
+        self.in_mission_action = generate_uuid()
+        self.inputs[self.in_mission_action] = PortType.DATA
         self.in_val1 = generate_uuid()
         self.inputs[self.in_val1] = PortType.DATA
         self.out_flow = generate_uuid()
         self.outputs[self.out_flow] = PortType.FLOW
         self.state['mode'] = "Stand"
         self.state['v1'] = 0.2
+        self._last_mission_action_signature = ''
 
     def execute(self):
         mode = self.state.get('mode', 'Stand')
         v1 = self.fetch_input_data(self.in_val1)
         v1 = float(v1) if v1 is not None else float(self.state.get('v1', 0.2))
+
+        mission_action_raw = self.fetch_input_data(self.in_mission_action)
+        if mission_action_raw is not None:
+            mission_action_signature = _mission_signature(mission_action_raw)
+            if mission_action_signature and mission_action_signature != self._last_mission_action_signature:
+                self._last_mission_action_signature = mission_action_signature
+                mission_action_payload, _ = _normalize_mission_container(mission_action_raw)
+                if isinstance(mission_action_payload, dict):
+                    mode = _resolve_go1_action_mode(mission_action_payload, default_mode=mode)
+                    v1 = _coerce_float(mission_action_payload.get('v1', mission_action_payload.get('value', v1)), v1)
 
         if mode == "Stand":
             go1_node_intent['stop'] = True
@@ -1771,6 +2057,8 @@ class Go1UnityAutonomyNode(BaseNode):
         super().__init__(node_id, "Unity Autonomy (Go1)", "GO1_UNITY_AUTO")
         self.in_flow = generate_uuid()
         self.inputs[self.in_flow] = PortType.FLOW
+        self.in_mission_path = generate_uuid()
+        self.inputs[self.in_mission_path] = PortType.DATA
 
         self.out_vx = generate_uuid()
         self.outputs[self.out_vx] = PortType.DATA
@@ -1817,6 +2105,7 @@ class Go1UnityAutonomyNode(BaseNode):
         self._path_anchor_world_z = 0.0
         self._path_anchor_world_yaw = 0.0
         self._guidance_logged = False
+        self._last_graph_path_signature = ''
 
     def _make_udp_sender(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -2159,11 +2448,21 @@ class Go1UnityAutonomyNode(BaseNode):
             pass
 
         latest_raw = None
-        while True:
-            packet = self._recv_path_packet()
-            if packet is None:
-                break
-            latest_raw = packet
+        graph_path_raw = self.fetch_input_data(self.in_mission_path)
+        use_graph_path = False
+        if graph_path_raw is not None:
+            graph_signature = _mission_signature(graph_path_raw)
+            if graph_signature and graph_signature != self._last_graph_path_signature:
+                self._last_graph_path_signature = graph_signature
+                latest_raw = graph_path_raw
+                use_graph_path = True
+
+        if not use_graph_path:
+            while True:
+                packet = self._recv_path_packet()
+                if packet is None:
+                    break
+                latest_raw = packet
 
         if latest_raw and latest_raw != self._last_raw_path:
             self._last_raw_path = latest_raw
@@ -3034,6 +3333,309 @@ class Go1AutoAvoidanceNode(BaseNode):
         go1_auto_avoidance_data['status'] = 'POLICY_UNKNOWN'
         self._last_status = 'POLICY_UNKNOWN'
 
+        return self.out_flow
+
+
+class Go1MissionReceiverNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Mission Receiver (Go1)", "GO1_MISSION_RECV")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_raw_json = generate_uuid()
+        self.outputs[self.out_raw_json] = PortType.DATA
+        self.out_mission_id = generate_uuid()
+        self.outputs[self.out_mission_id] = PortType.DATA
+        self.out_has_mission = generate_uuid()
+        self.outputs[self.out_has_mission] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['mode'] = 'HTTP'
+        self.state['source'] = GO1_MISSION_PENDING_URL
+        self.state['poll_interval_sec'] = GO1_MISSION_POLL_SEC
+        self.state['request_timeout_sec'] = GO1_MISSION_TIMEOUT_SEC
+        self.state['decision_url'] = GO1_MISSION_DECISION_URL
+        self._last_poll_mono = 0.0
+        self._last_signature = ''
+        self._last_raw_json = ''
+        self._last_mission_id = ''
+        self._last_has_mission = False
+        self._last_error = ''
+        self._new_mission_pulse = False
+
+    def _read_source_text(self, mode, source, timeout_sec):
+        source = str(source or '').strip()
+        if not source:
+            raise RuntimeError('source is empty')
+
+        if mode == 'FILE' or (not source.startswith('http://') and not source.startswith('https://')):
+            if not os.path.exists(source):
+                raise FileNotFoundError(source)
+            with open(source, 'r', encoding='utf-8') as f:
+                return f.read()
+
+        req = urllib.request.Request(
+            source,
+            headers={
+                'Accept': 'application/json',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+            },
+            method='GET',
+        )
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            charset = resp.headers.get_content_charset() or 'utf-8'
+            return resp.read().decode(charset, errors='replace')
+
+    def execute(self):
+        mode = str(self.state.get('mode', 'HTTP')).strip().upper()
+        source = str(self.state.get('source', GO1_MISSION_PENDING_URL)).strip()
+        poll_interval_sec = max(0.0, _coerce_float(self.state.get('poll_interval_sec', GO1_MISSION_POLL_SEC), GO1_MISSION_POLL_SEC))
+        request_timeout_sec = max(0.2, _coerce_float(self.state.get('request_timeout_sec', GO1_MISSION_TIMEOUT_SEC), GO1_MISSION_TIMEOUT_SEC))
+        now_mono = time.monotonic()
+
+        if (now_mono - self._last_poll_mono) < poll_interval_sec and self._last_raw_json:
+            self.output_data[self.out_raw_json] = self._last_raw_json
+            self.output_data[self.out_mission_id] = self._last_mission_id
+            self.output_data[self.out_has_mission] = bool(self._last_has_mission)
+            return self.out_flow if self._new_mission_pulse else None
+
+        self._last_poll_mono = now_mono
+        try:
+            raw_json = self._read_source_text(mode, source, request_timeout_sec)
+            payload, signature = _normalize_mission_container(raw_json)
+            mission_id = _extract_mission_id(payload)
+            has_mission = bool(mission_id or payload)
+
+            self._last_raw_json = raw_json
+            self._last_mission_id = mission_id
+            self._last_has_mission = has_mission
+            self.output_data[self.out_raw_json] = raw_json
+            self.output_data[self.out_mission_id] = mission_id
+            self.output_data[self.out_has_mission] = has_mission
+
+            go1_mission_state.update({
+                'status': 'Pending' if has_mission else 'Idle',
+                'mission_id': mission_id,
+                'source': source,
+                'last_error': '',
+                'updated_ts': time.time(),
+            })
+
+            if has_mission and signature and signature != self._last_signature:
+                self._last_signature = signature
+                self._new_mission_pulse = True
+                go1_mission_state['mission_type'] = _extract_mission_type(payload)
+                write_log(f"[GO1 MISSION RX] pending mission received: {mission_id or 'unknown'}")
+            else:
+                self._new_mission_pulse = False
+        except Exception as e:
+            self._last_error = str(e)
+            self._new_mission_pulse = False
+            go1_mission_state.update({
+                'status': 'Error',
+                'last_error': self._last_error,
+                'source': source,
+                'updated_ts': time.time(),
+            })
+            write_log(f"[GO1 MISSION RX] error: {e}")
+            self.output_data[self.out_raw_json] = self._last_raw_json
+            self.output_data[self.out_mission_id] = self._last_mission_id
+            self.output_data[self.out_has_mission] = bool(self._last_has_mission)
+
+        if self._new_mission_pulse:
+            self._new_mission_pulse = False
+            return self.out_flow
+        return None
+
+
+class Go1MissionDecisionNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Mission Decision (Go1)", "GO1_MISSION_DECIDE")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.in_raw_json = generate_uuid()
+        self.inputs[self.in_raw_json] = PortType.DATA
+        self.out_raw_json = generate_uuid()
+        self.outputs[self.out_raw_json] = PortType.DATA
+        self.out_mission_id = generate_uuid()
+        self.outputs[self.out_mission_id] = PortType.DATA
+        self.out_decision = generate_uuid()
+        self.outputs[self.out_decision] = PortType.DATA
+        self.out_reason = generate_uuid()
+        self.outputs[self.out_reason] = PortType.DATA
+        self.out_accepted = generate_uuid()
+        self.outputs[self.out_accepted] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['decision_mode'] = GO1_MISSION_DECISION_MODE
+        self.state['allowed_mission_types'] = ', '.join(GO1_MISSION_ALLOWED_TYPES)
+        self.state['decision_url'] = GO1_MISSION_DECISION_URL
+        self.state['request_timeout_sec'] = GO1_MISSION_TIMEOUT_SEC
+        self.state['require_destination'] = True
+        self._last_post_signature = ''
+
+    def execute(self):
+        raw_json = self.fetch_input_data(self.in_raw_json)
+        payload, signature = _normalize_mission_container(raw_json)
+        if not payload:
+            return None
+
+        mission_id = _extract_mission_id(payload)
+        mission_type = _extract_mission_type(payload)
+        destination, waypoints = _extract_mission_destination(payload)
+        has_destination = bool(destination or waypoints)
+        mode = str(self.state.get('decision_mode', GO1_MISSION_DECISION_MODE)).strip().lower()
+        require_destination = _coerce_bool(self.state.get('require_destination', True), True)
+        allowed_types = [item.strip().lower() for item in str(self.state.get('allowed_mission_types', ', '.join(GO1_MISSION_ALLOWED_TYPES))).split(',') if item.strip()]
+
+        if not mission_id:
+            decision = 'reject'
+            reason = 'missing mission_id'
+        elif mode == 'accept_all':
+            decision = 'accept'
+            reason = 'accept_all'
+        elif mode == 'accept_if_allowed_type' and allowed_types:
+            decision = 'accept' if (mission_type.lower() in allowed_types and (has_destination or not require_destination)) else 'reject'
+            reason = 'allowed_type' if decision == 'accept' else 'type or destination mismatch'
+        else:
+            decision = 'accept' if ((has_destination or not require_destination) and (not allowed_types or not mission_type or mission_type.lower() in allowed_types)) else 'reject'
+            reason = 'destination present' if decision == 'accept' else 'destination missing or type blocked'
+
+        accepted = decision == 'accept'
+        decision_url = str(self.state.get('decision_url', GO1_MISSION_DECISION_URL)).strip() or GO1_MISSION_DECISION_URL
+        timeout_sec = max(0.2, _coerce_float(self.state.get('request_timeout_sec', GO1_MISSION_TIMEOUT_SEC), GO1_MISSION_TIMEOUT_SEC))
+        post_payload = {'mission_id': mission_id, 'decision': decision}
+
+        if mission_id and signature and signature != self._last_post_signature:
+            self._last_post_signature = signature
+            try:
+                status_code, body = _post_json_payload(decision_url, post_payload, timeout_sec)
+                write_log(f"[GO1 MISSION DECIDE] {mission_id or 'unknown'} -> {decision} (rc={status_code})")
+                if body:
+                    write_log(f"[GO1 MISSION DECIDE] response: {body[:200]}")
+                go1_mission_state.update({
+                    'status': 'Accepted' if accepted else 'Rejected',
+                    'mission_id': mission_id,
+                    'mission_type': mission_type,
+                    'decision': decision,
+                    'decision_reason': reason,
+                    'source': decision_url,
+                    'last_error': '',
+                    'updated_ts': time.time(),
+                })
+            except Exception as e:
+                go1_mission_state.update({
+                    'status': 'DecisionError',
+                    'mission_id': mission_id,
+                    'mission_type': mission_type,
+                    'decision': decision,
+                    'decision_reason': reason,
+                    'source': decision_url,
+                    'last_error': str(e),
+                    'updated_ts': time.time(),
+                })
+                write_log(f"[GO1 MISSION DECIDE] post failed: {e}")
+        elif not mission_id:
+            go1_mission_state.update({
+                'status': 'Rejected',
+                'mission_id': '',
+                'mission_type': mission_type,
+                'decision': 'reject',
+                'decision_reason': reason,
+                'source': decision_url,
+                'last_error': '',
+                'updated_ts': time.time(),
+            })
+
+        self.output_data[self.out_raw_json] = raw_json
+        self.output_data[self.out_mission_id] = mission_id
+        self.output_data[self.out_decision] = decision
+        self.output_data[self.out_reason] = reason
+        self.output_data[self.out_accepted] = accepted
+        return self.out_flow
+
+
+class Go1MissionDispatchNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Mission Dispatch (Go1)", "GO1_MISSION_DISPATCH")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.in_raw_json = generate_uuid()
+        self.inputs[self.in_raw_json] = PortType.DATA
+        self.in_decision = generate_uuid()
+        self.inputs[self.in_decision] = PortType.DATA
+        self.out_path_json = generate_uuid()
+        self.outputs[self.out_path_json] = PortType.DATA
+        self.out_action_json = generate_uuid()
+        self.outputs[self.out_action_json] = PortType.DATA
+        self.out_mission_id = generate_uuid()
+        self.outputs[self.out_mission_id] = PortType.DATA
+        self.out_accepted = generate_uuid()
+        self.outputs[self.out_accepted] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['default_destination_frame'] = str(GO1_MISSION_DEFAULTS.get('destination_frame', 'go1_local_start'))
+        self.state['default_start_yaw_deg'] = float(GO1_MISSION_DEFAULTS.get('start_yaw_deg', 0.0))
+        self.state['default_post_action_mode'] = str(GO1_MISSION_DEFAULTS.get('post_action_mode', 'Stand'))
+        self.state['default_post_action_value'] = float(GO1_MISSION_DEFAULTS.get('post_action_value', 0.2))
+        self._last_dispatch_signature = ''
+
+    def execute(self):
+        raw_json = self.fetch_input_data(self.in_raw_json)
+        decision = self.fetch_input_data(self.in_decision)
+        payload, signature = _normalize_mission_container(raw_json)
+        if not payload:
+            return None
+
+        mission_id = _extract_mission_id(payload)
+        if isinstance(decision, bool):
+            accepted = decision
+        else:
+            accepted = str(decision).strip().lower() in ('accept', 'true', '1', 'yes') if decision is not None else False
+
+        if accepted:
+            path_json = _build_go1_path_json(payload)
+            action_json = _build_go1_post_action_json(payload)
+            destination, waypoints = _extract_mission_destination(payload)
+            destination_summary = _mission_signature(destination or waypoints)
+            go1_mission_state.update({
+                'status': 'Dispatched',
+                'mission_id': mission_id,
+                'mission_type': _extract_mission_type(payload),
+                'decision': 'accept',
+                'decision_reason': 'mission accepted',
+                'destination_summary': destination_summary,
+                'path_json': path_json,
+                'action_json': action_json,
+                'last_error': '',
+                'updated_ts': time.time(),
+            })
+            if signature and signature != self._last_dispatch_signature:
+                self._last_dispatch_signature = signature
+                write_log(f"[GO1 MISSION DISPATCH] prepared mission {mission_id or 'unknown'}")
+        else:
+            path_json = ''
+            action_json = ''
+            go1_mission_state.update({
+                'status': 'Rejected',
+                'mission_id': mission_id,
+                'mission_type': _extract_mission_type(payload),
+                'decision': 'reject',
+                'decision_reason': 'mission rejected',
+                'destination_summary': '',
+                'path_json': '',
+                'action_json': '',
+                'last_error': '',
+                'updated_ts': time.time(),
+            })
+
+        self.output_data[self.out_path_json] = path_json
+        self.output_data[self.out_action_json] = action_json
+        self.output_data[self.out_mission_id] = mission_id
+        self.output_data[self.out_accepted] = accepted
         return self.out_flow
 
 

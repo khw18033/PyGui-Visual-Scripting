@@ -11,6 +11,6 @@
   "unity_path_port": 15110,
   "go1_ap_ip": "192.168.123.161",
   "aruco_udp_port": 5008,
-  "server_upload_url": "http://192.168.1.100:7864/upload",
+  "server_upload_url": "http://210.110.250.33:7864/upload",
   "json_cmd_url": "http://127.0.0.1:7864/cmd"
 }

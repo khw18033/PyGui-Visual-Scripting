@@ -21,6 +21,9 @@ try:
     Go1UnityNode = getattr(go1_module, 'Go1UnityNode')
     Go1UnityKeyboardNode = getattr(go1_module, 'Go1UnityKeyboardNode')
     Go1UnityAutonomyNode = getattr(go1_module, 'Go1UnityAutonomyNode')
+    Go1MissionReceiverNode = getattr(go1_module, 'Go1MissionReceiverNode')
+    Go1MissionDecisionNode = getattr(go1_module, 'Go1MissionDecisionNode')
+    Go1MissionDispatchNode = getattr(go1_module, 'Go1MissionDispatchNode')
     FisheyeUndistortNode = getattr(go1_module, 'FisheyeUndistortNode')
     DepthAnythingV2Node = getattr(go1_module, 'DepthAnythingV2Node')
     ArUcoDetectNode = getattr(go1_module, 'ArUcoDetectNode')
@@ -40,6 +43,9 @@ except (ImportError, AttributeError) as e:
     Go1UnityNode = None
     Go1UnityKeyboardNode = None
     Go1UnityAutonomyNode = None
+    Go1MissionReceiverNode = None
+    Go1MissionDecisionNode = None
+    Go1MissionDispatchNode = None
     FisheyeUndistortNode = None
     DepthAnythingV2Node = None
     ArUcoDetectNode = None
@@ -91,6 +97,9 @@ class NodeFactory:
         elif node_type == "GO1_UNITY_KEYBOARD" and HAS_GO1: node = Go1UnityKeyboardNode(node_id)
         elif node_type == "GO1_UNITY" and HAS_GO1: node = Go1UnityNode(node_id)
         elif node_type == "GO1_UNITY_AUTO" and HAS_GO1: node = Go1UnityAutonomyNode(node_id)
+        elif node_type == "GO1_MISSION_RECV" and HAS_GO1: node = Go1MissionReceiverNode(node_id)
+        elif node_type == "GO1_MISSION_DECIDE" and HAS_GO1: node = Go1MissionDecisionNode(node_id)
+        elif node_type == "GO1_MISSION_DISPATCH" and HAS_GO1: node = Go1MissionDispatchNode(node_id)
         elif node_type == "GO1_DRIVER" and HAS_GO1: node = UniversalRobotNode(node_id, Go1RobotDriver(), "Go1 Driver", "GO1_DRIVER")
         elif node_type == "GO1_ACTION" and HAS_GO1: node = Go1ActionNode(node_id)
         elif node_type == "VIDEO_SRC" and HAS_GO1: node = VideoSourceNode(node_id)

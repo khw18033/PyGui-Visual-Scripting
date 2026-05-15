@@ -262,3 +262,11 @@
   - 기존 throttle, timeout 시스템과 호환 유지
   - 부작용 최소화 (새로운 전역 변수는 액션 추적 용도로 제한)
   - 로그 출력으로 디버깅 용이성 향상
+
+### [추가] EP01 - YAML로 분리된 하드코딩 변수 목록
+- `nodes/ep01_config/camera_config.yaml`:
+  - `camera_save_state`(status/folder/duration/start_time/frame_count), `camera_stream`(port/is_running), `sender`(status/target_fps/interval/watch_folder)
+- `nodes/ep01_config/hardware_config.yaml`:
+  - `arm`(step_size/min_position/max_position/action_timeout_sec/retry_delay_sec/max_retries), `gripper`(power_level), `keyboard_config`(keys_mode/v_max/w_max), `camera`(default_url/prefer_sdk/save_folder)
+- `nodes/ep01_config/network_config.yaml`:
+  - `ep_ip`, `ep_port`, `ep_use_media_mock`, `flask_port`, `ep_sender_target_fps`, `ep_sender_watch_folder`, `ep_server_upload_url`

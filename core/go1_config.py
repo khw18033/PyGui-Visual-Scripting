@@ -191,6 +191,28 @@ CAMERA_CONFIG_DEFAULT = {
     },
 }
 
+MISSION_CONFIG_DEFAULT = {
+    'pending_url': 'http://100.65.158.54:18080/pending',
+    'decision_url': 'http://100.65.158.54:18080/decision',
+    'poll_interval_sec': 1.0,
+    'request_timeout_sec': 3.0,
+    'decision_mode': 'accept_if_destination_present',
+    'allowed_mission_types': ['go1', 'unity_path', 'robot_action'],
+    'schema': {
+        'mission_id_keys': ['mission_id', 'id'],
+        'mission_type_keys': ['mission_type', 'type', 'kind'],
+        'destination_keys': ['destination', 'goal', 'target'],
+        'waypoint_keys': ['waypoints', 'points', 'path'],
+        'post_action_keys': ['post_action', 'robot_action', 'action'],
+    },
+    'defaults': {
+        'destination_frame': 'go1_local_start',
+        'start_yaw_deg': 0.0,
+        'post_action_mode': 'Stand',
+        'post_action_value': 0.2,
+    },
+}
+
 MODEL_CONFIG_DEFAULT = {
     'da2_models': {
         'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
@@ -243,4 +265,5 @@ ROBOT_CONTROL_CONFIG = _load_json_compatible_config('robot_control.yaml', ROBOT_
 AUTO_AVOIDANCE_CONFIG = _load_json_compatible_config('auto_avoidance_config.yaml', AUTO_AVOIDANCE_CONFIG_DEFAULT)
 SPECIAL_ACTIONS_CONFIG = _load_json_compatible_config('special_actions.yaml', SPECIAL_ACTIONS_CONFIG_DEFAULT)
 CAMERA_CONFIG = _load_json_compatible_config('camera_config.yaml', CAMERA_CONFIG_DEFAULT)
+MISSION_CONFIG = _load_json_compatible_config('mission_config.yaml', MISSION_CONFIG_DEFAULT)
 MODEL_CONFIG = _load_json_compatible_config('model_config.yaml', MODEL_CONFIG_DEFAULT)

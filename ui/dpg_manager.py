@@ -32,6 +32,9 @@ try:
     aruco_settings = getattr(go1_module, 'aruco_settings')
     go1_estop_callback = getattr(go1_module, 'go1_estop_callback')
     ServerSenderNode = getattr(go1_module, 'ServerSenderNode')
+    Go1MissionReceiverNode = getattr(go1_module, 'Go1MissionReceiverNode')
+    Go1MissionDecisionNode = getattr(go1_module, 'Go1MissionDecisionNode')
+    Go1MissionDispatchNode = getattr(go1_module, 'Go1MissionDispatchNode')
     HAS_GO1 = True
 except (ImportError, AttributeError):
     HAS_GO1 = False
@@ -43,6 +46,9 @@ except (ImportError, AttributeError):
     aruco_settings = None
     go1_estop_callback = None
     ServerSenderNode = None
+    Go1MissionReceiverNode = None
+    Go1MissionDecisionNode = None
+    Go1MissionDispatchNode = None
 
 # Re-import as module for dynamic attributes
 try:
@@ -286,6 +292,23 @@ class NodeUIRenderer:
                 node.state['Z'] = dpg.is_key_down(dpg.mvKey_Z)
                 node.state['X'] = dpg.is_key_down(dpg.mvKey_X)
                 node.state['SPACE'] = dpg.is_key_down(dpg.mvKey_Spacebar)
+            elif t == "GO1_MISSION_RECV" and hasattr(node, 'combo_mode'):
+                node.state['mode'] = dpg.get_value(node.combo_mode)
+                node.state['source'] = dpg.get_value(node.field_source)
+                node.state['poll_interval_sec'] = dpg.get_value(node.field_poll)
+                node.state['request_timeout_sec'] = dpg.get_value(node.field_timeout)
+                node.state['decision_url'] = dpg.get_value(node.field_decision_url)
+            elif t == "GO1_MISSION_DECIDE" and hasattr(node, 'combo_decision_mode'):
+                node.state['decision_mode'] = dpg.get_value(node.combo_decision_mode)
+                node.state['allowed_mission_types'] = dpg.get_value(node.field_allowed_types)
+                node.state['decision_url'] = dpg.get_value(node.field_decision_url)
+                node.state['request_timeout_sec'] = dpg.get_value(node.field_timeout)
+                node.state['require_destination'] = dpg.get_value(node.chk_require_destination)
+            elif t == "GO1_MISSION_DISPATCH" and hasattr(node, 'field_default_frame'):
+                node.state['default_destination_frame'] = dpg.get_value(node.field_default_frame)
+                node.state['default_start_yaw_deg'] = dpg.get_value(node.field_default_start_yaw)
+                node.state['default_post_action_mode'] = dpg.get_value(node.field_default_post_action_mode)
+                node.state['default_post_action_value'] = dpg.get_value(node.field_default_post_action_value)
             elif t == "GO1_UNITY_KEYBOARD" and hasattr(node, 'combo_keys'):
                 node.state['keys'] = dpg.get_value(node.combo_keys)
             elif t == "VIS_ARUCO" and hasattr(node, 'ui_camera_id'):
@@ -405,6 +428,23 @@ class NodeUIRenderer:
             dpg.set_value(node.field_max_wz, float(node.state.get('path_max_wz', 0.60)))
             dpg.set_value(node.field_turn_only, float(node.state.get('path_turn_only_thresh', 0.35)))
             dpg.set_value(node.field_yaw_tol, float(node.state.get('path_yaw_reach_tol_deg', 8.0)))
+        elif t == "GO1_MISSION_RECV" and hasattr(node, 'combo_mode'):
+            dpg.set_value(node.combo_mode, node.state.get('mode', 'HTTP'))
+            dpg.set_value(node.field_source, node.state.get('source', getattr(go1_module, 'GO1_MISSION_PENDING_URL', 'http://100.65.158.54:18080/pending')))
+            dpg.set_value(node.field_poll, float(node.state.get('poll_interval_sec', getattr(go1_module, 'GO1_MISSION_POLL_SEC', 1.0))))
+            dpg.set_value(node.field_timeout, float(node.state.get('request_timeout_sec', getattr(go1_module, 'GO1_MISSION_TIMEOUT_SEC', 3.0))))
+            dpg.set_value(node.field_decision_url, node.state.get('decision_url', getattr(go1_module, 'GO1_MISSION_DECISION_URL', 'http://100.65.158.54:18080/decision')))
+        elif t == "GO1_MISSION_DECIDE" and hasattr(node, 'combo_decision_mode'):
+            dpg.set_value(node.combo_decision_mode, node.state.get('decision_mode', getattr(go1_module, 'GO1_MISSION_DECISION_MODE', 'accept_if_destination_present')))
+            dpg.set_value(node.field_allowed_types, node.state.get('allowed_mission_types', ', '.join(getattr(go1_module, 'GO1_MISSION_ALLOWED_TYPES', ['go1', 'unity_path', 'robot_action']))))
+            dpg.set_value(node.field_decision_url, node.state.get('decision_url', getattr(go1_module, 'GO1_MISSION_DECISION_URL', 'http://100.65.158.54:18080/decision')))
+            dpg.set_value(node.field_timeout, float(node.state.get('request_timeout_sec', getattr(go1_module, 'GO1_MISSION_TIMEOUT_SEC', 3.0))))
+            dpg.set_value(node.chk_require_destination, node.state.get('require_destination', True))
+        elif t == "GO1_MISSION_DISPATCH" and hasattr(node, 'field_default_frame'):
+            dpg.set_value(node.field_default_frame, node.state.get('default_destination_frame', 'go1_local_start'))
+            dpg.set_value(node.field_default_start_yaw, float(node.state.get('default_start_yaw_deg', 0.0)))
+            dpg.set_value(node.field_default_post_action_mode, node.state.get('default_post_action_mode', 'Stand'))
+            dpg.set_value(node.field_default_post_action_value, float(node.state.get('default_post_action_value', 0.2)))
         elif t == "VIS_ARUCO" and hasattr(node, 'ui_camera_id'):
             dpg.set_value(node.ui_camera_id, node.state.get('camera_id', 'go1_front'))
             dpg.set_value(node.ui_marker_size_m, node.state.get('marker_size_m', 0.03))
@@ -495,6 +535,9 @@ class NodeUIRenderer:
         elif t == "GO1_UNITY_KEYBOARD": NodeUIRenderer._render_go1_unity_keyboard(node)
         elif t == "GO1_UNITY_AUTO": NodeUIRenderer._render_go1_unity_auto(node)
         elif t == "GO1_ACTION": NodeUIRenderer._render_go1_action(node)
+        elif t == "GO1_MISSION_RECV": NodeUIRenderer._render_go1_mission_recv(node)
+        elif t == "GO1_MISSION_DECIDE": NodeUIRenderer._render_go1_mission_decide(node)
+        elif t == "GO1_MISSION_DISPATCH": NodeUIRenderer._render_go1_mission_dispatch(node)
         elif t == "GO1_SERVER_SENDER": NodeUIRenderer._render_go1_server_sender(node)
         elif t == "GO1_SERVER_JSON_RECV": NodeUIRenderer._render_go1_server_json_recv(node)
         elif t == "GO1_AUTO_AVOIDANCE": NodeUIRenderer._render_go1_auto_avoidance(node)
@@ -708,6 +751,7 @@ class NodeUIRenderer:
     def _render_go1_unity_auto(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="Unity Autonomy (Go1)"):
             with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.in_mission_path, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Mission Path")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_text("Unity Path UDP", color=(100,255,100))
                 node.field_ip = dpg.add_input_text(width=140, default_value=getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246'))
@@ -746,6 +790,7 @@ class NodeUIRenderer:
     def _render_go1_action(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="Go1 Action"):
             with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.in_mission_action, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Mission Action")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 node.combo_id = dpg.add_combo(
                     [
@@ -759,6 +804,69 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.in_val1, attribute_type=dpg.mvNode_Attr_Input):
                 dpg.add_text("Speed/Val")
                 node.field_v1 = dpg.add_input_float(width=60, default_value=0.2)
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_go1_mission_recv(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Mission Receiver (Go1)"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_mode = dpg.add_combo(["HTTP", "FILE"], default_value=node.state.get('mode', 'HTTP'), width=90)
+                node.field_source = dpg.add_input_text(width=240, default_value=node.state.get('source', getattr(go1_module, 'GO1_MISSION_PENDING_URL', 'http://100.65.158.54:18080/pending')))
+                node.field_poll = dpg.add_input_float(label="Poll (sec)", width=100, default_value=float(node.state.get('poll_interval_sec', getattr(go1_module, 'GO1_MISSION_POLL_SEC', 1.0))), step=0.1)
+                node.field_timeout = dpg.add_input_float(label="Request Timeout", width=120, default_value=float(node.state.get('request_timeout_sec', getattr(go1_module, 'GO1_MISSION_TIMEOUT_SEC', 3.0))), step=0.1)
+                node.field_decision_url = dpg.add_input_text(label="Decision URL", width=240, default_value=node.state.get('decision_url', getattr(go1_module, 'GO1_MISSION_DECISION_URL', 'http://100.65.158.54:18080/decision')))
+                dpg.add_text("Temporary mission schema: update YAML later.", color=(180,180,180))
+            with dpg.node_attribute(tag=node.out_raw_json, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Raw Mission JSON")
+            with dpg.node_attribute(tag=node.out_mission_id, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Mission ID")
+            with dpg.node_attribute(tag=node.out_has_mission, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Has Mission")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_go1_mission_decide(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Mission Decision (Go1)"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.in_raw_json, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Mission JSON")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_decision_mode = dpg.add_combo(
+                    ["accept_if_destination_present", "accept_all", "accept_if_allowed_type"],
+                    default_value=node.state.get('decision_mode', getattr(go1_module, 'GO1_MISSION_DECISION_MODE', 'accept_if_destination_present')),
+                    width=200,
+                )
+                node.field_allowed_types = dpg.add_input_text(label="Allowed Types", width=240, default_value=node.state.get('allowed_mission_types', ', '.join(getattr(go1_module, 'GO1_MISSION_ALLOWED_TYPES', ['go1', 'unity_path', 'robot_action']))))
+                node.field_decision_url = dpg.add_input_text(label="Decision URL", width=240, default_value=node.state.get('decision_url', getattr(go1_module, 'GO1_MISSION_DECISION_URL', 'http://100.65.158.54:18080/decision')))
+                node.field_timeout = dpg.add_input_float(label="Request Timeout", width=120, default_value=float(node.state.get('request_timeout_sec', getattr(go1_module, 'GO1_MISSION_TIMEOUT_SEC', 3.0))), step=0.1)
+                node.chk_require_destination = dpg.add_checkbox(label="Require Destination", default_value=bool(node.state.get('require_destination', True)))
+                dpg.add_text("Accept/reject is a placeholder policy until mission YAML is finalized.", color=(180,180,180))
+            with dpg.node_attribute(tag=node.out_raw_json, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Raw Mission JSON")
+            with dpg.node_attribute(tag=node.out_mission_id, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Mission ID")
+            with dpg.node_attribute(tag=node.out_decision, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Decision")
+            with dpg.node_attribute(tag=node.out_reason, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Reason")
+            with dpg.node_attribute(tag=node.out_accepted, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Accepted")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_go1_mission_dispatch(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Mission Dispatch (Go1)"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.in_raw_json, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Mission JSON")
+            with dpg.node_attribute(tag=node.in_decision, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Decision")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.field_default_frame = dpg.add_input_text(label="Default Frame", width=180, default_value=node.state.get('default_destination_frame', 'go1_local_start'))
+                node.field_default_start_yaw = dpg.add_input_float(label="Default Start Yaw", width=120, default_value=float(node.state.get('default_start_yaw_deg', 0.0)), step=0.5)
+                node.field_default_post_action_mode = dpg.add_input_text(label="Default Post Action", width=180, default_value=node.state.get('default_post_action_mode', 'Stand'))
+                node.field_default_post_action_value = dpg.add_input_float(label="Default Action Value", width=120, default_value=float(node.state.get('default_post_action_value', 0.2)), step=0.05)
+                dpg.add_text("Outputs mission path JSON and post-action JSON for downstream nodes.", color=(180,180,180))
+            with dpg.node_attribute(tag=node.out_path_json, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Path JSON")
+            with dpg.node_attribute(tag=node.out_action_json, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Action JSON")
+            with dpg.node_attribute(tag=node.out_mission_id, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Mission ID")
+            with dpg.node_attribute(tag=node.out_accepted, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Accepted")
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
@@ -1367,6 +1475,9 @@ def __init_ui__():
                 dpg.add_button(label="GO1 PATH", callback=add_node_cb, user_data="GO1_UNITY_AUTO")
                 dpg.add_button(label="GO1 DRIVER", callback=add_node_cb, user_data="GO1_DRIVER")
                 dpg.add_button(label="GO1 ACTION", callback=add_node_cb, user_data="GO1_ACTION")
+                dpg.add_button(label="GO1 MISSION RX", callback=add_node_cb, user_data="GO1_MISSION_RECV")
+                dpg.add_button(label="GO1 MISSION DEC", callback=add_node_cb, user_data="GO1_MISSION_DECIDE")
+                dpg.add_button(label="GO1 MISSION DST", callback=add_node_cb, user_data="GO1_MISSION_DISPATCH")
                 dpg.add_button(label="GO1 SENDER", callback=add_node_cb, user_data="GO1_SERVER_SENDER")
                 dpg.add_button(label="GO1 JSON RX", callback=add_node_cb, user_data="GO1_SERVER_JSON_RECV")
                 dpg.add_button(label="AUTO AVOID", callback=add_node_cb, user_data="GO1_AUTO_AVOIDANCE")

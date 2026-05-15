@@ -1271,3 +1271,17 @@ odes/robots/go1.py (함수/클래스 추가)
   - `nodes/robots/go1.py`
   - `nodes/robots/go1_quiz.py`
   - `nodes/robots/go1_answer.py`
+
+### [추가] Go1 - YAML로 분리된 하드코딩 변수 목록
+- `nodes/go1_config/auto_avoidance_config.yaml`:
+  - `class_to_group` (객체 클래스 → 그룹 매핑), `policy` (그룹별 행동: stop/avoid 등), `group_priority`, `image`(width/height), `escape`(left_x/right_x), `bbox`(min_width/min_height), `motion`(move_speed/move_duration_sec)
+- `nodes/go1_config/camera_config.yaml`:
+  - `camera_nanos`, `camera_config`(folder/id), `camera_save_state_defaults`, `gstreamer`(udp_port/ssh_key_path), `timing`(first_frame_wait_sec, upload_warmup_sec, sender_camera_wait_sec, proc_kill_timeout_sec)
+- `nodes/go1_config/model_config.yaml`:
+  - `da2_models`(모델별 encoder/features/out_channels), `runtime`(target_fps/interval), `aruco`(enabled/marker_size)
+- `nodes/go1_config/network_config.yaml`:
+  - 네트워크/포트/URL: `highlevel`, `local_port`, `go1_ip`, `go1_port`, `go1_unity_ip`, `unity_*_port`들, `go1_ap_ip`, `aruco_udp_port`, `server_upload_url`, `json_cmd_url`
+- `nodes/go1_config/robot_control.yaml`:
+  - 제어 파라미터: `dt`, `v_max`, `s_max`, `w_max`, `vx_cmd`, `vy_cmd`, `wz_cmd`, `body_height`(min/max/key_step), `timing`(hold_timeout_sec 등), `yaw_control`(unity_yaw_offset_deg 등), `estop`(hold_sec), `foot_raise_height`
+- `nodes/go1_config/special_actions.yaml`:
+  - `special_actions`(동작별 mode/trigger_sec/wait_timeout/recovery), `phase_timing`(prep_stand_sec 등)

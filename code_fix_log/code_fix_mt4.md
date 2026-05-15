@@ -396,3 +396,13 @@ dpg_manager.py: 유일하게 GUI 종속성을 갖는 파일입니다. 노드가 
   - 이를 통해 선을 연결할 때 정확한 문자열 ID를 기반으로 노드 간 출도착지(`src_node_id`, `dst_node_id`)가 레지스트리에 정상 등록되도록 하여, `UDP Receiver` $\rightarrow$ `Unity Logic` $\rightarrow$ `MT4 Core Driver`로 이어지는 데이터 흐름을 완벽하게 개통함.
 - 수정 파일:
   - `ui/dpg_manager.py`
+
+### [추가] MT4 - YAML로 분리된 하드코딩 변수 목록
+- `nodes/mt4_config/gcode_config.yaml`:
+  - `gcode`(homing_command, setup_commands), `home_position`(x/y/z/roll/gripper), `timing`(homing_wait_sec, startup_delay_sec, command_interval_sec, reconnect_interval_sec, manual_override_timeout_sec)
+- `nodes/mt4_config/hardware_config.yaml`:
+  - `limits`(x/y/z/roll min/max), `gripper`(min/max), `offset`(z_offset), `motion`(smooth_factor/gripper_speed/roll_speed)
+- `nodes/mt4_config/keyboard_config.yaml`:
+  - `keyboard`(keys_mode, step_size, grip_step, roll_step, cooldown_sec)
+- `nodes/mt4_config/network_config.yaml`:
+  - `serial`(port/baudrate/timeout_sec), `unity`(ip/feedback_port/ui_port), `paths`(record_dir/log_dir)
