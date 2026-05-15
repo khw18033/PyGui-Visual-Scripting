@@ -556,9 +556,9 @@ def ep_comm_thread():
                         opening = bool(action['open'])
                         write_log(f"EP: 그리퍼 {'열기' if opening else '닫기'}")
                         if opening:
-                            ep_robot_inst.robotic_gripper.open(power=EP_GRIPPER_POWER)
+                            ep_robot_inst.gripper.open(power=EP_GRIPPER_POWER)
                         else:
-                            ep_robot_inst.robotic_gripper.close(power=EP_GRIPPER_POWER)
+                            ep_robot_inst.gripper.close(power=EP_GRIPPER_POWER)
                         _ep_pending_arm_action = action
                         _ep_pending_action_start_time = time.monotonic()
                         
