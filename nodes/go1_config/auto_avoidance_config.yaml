@@ -109,11 +109,11 @@
     "left_x": 150,
     "right_x": 300
   },
-  "bbox": { # 감지 바운딩박스의 최소 크기 필터, 해당 크기보다 작을 시 회피하지 않음
+  "bbox": { # 감지 바운딩박스 최소 크기 필터, 해당 크기 미만 시 회피하지 않음
     "min_width": 24,
     "min_height": 24
   },
-  "height_filter": { # 높이 기준 거리보정 필터: normalized_height = bbox_height_px * distance_cm
+  "height_filter": { # 높이 기반 거리보정 필터 및 보정식 계수; a2/a1/a0: rel_depth→distance_cm 변환 계수 (distance_formula 참조), normalized_height = bbox_height_px * distance_cm
     "enabled": true,
     "formula": "normalized_height = bbox_height_px * distance_cm",
     "a2": -4.5353,
