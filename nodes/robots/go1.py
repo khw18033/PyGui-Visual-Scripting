@@ -298,6 +298,20 @@ _AUTO_AVOIDANCE_BBOX_CONFIG = dict(AUTO_AVOIDANCE_CONFIG.get('bbox', {}))
 GO1_AUTO_AVOIDANCE_MIN_BBOX_WIDTH = int(_AUTO_AVOIDANCE_BBOX_CONFIG.get('min_width', 24))
 GO1_AUTO_AVOIDANCE_MIN_BBOX_HEIGHT = int(_AUTO_AVOIDANCE_BBOX_CONFIG.get('min_height', 24))
 
+_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG = dict(AUTO_AVOIDANCE_CONFIG.get('height_filter', {}))
+GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A2 = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('a2', -4.5353))
+GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A1 = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('a1', 63.3057))
+GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A0 = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('a0', -3.6661))
+_height_filter_enabled_raw = _AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('enabled', True)
+if isinstance(_height_filter_enabled_raw, str):
+    GO1_AUTO_AVOIDANCE_HEIGHT_FILTER_ENABLED = _height_filter_enabled_raw.strip().lower() in ['1', 'true', 'yes', 'on']
+else:
+    GO1_AUTO_AVOIDANCE_HEIGHT_FILTER_ENABLED = bool(_height_filter_enabled_raw)
+GO1_AUTO_AVOIDANCE_HEIGHT_REF_PX = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('reference_height_px', 48.0))
+GO1_AUTO_AVOIDANCE_HEIGHT_REF_REL_DEPTH = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('reference_rel_depth', 0.5975030660629272))
+GO1_AUTO_AVOIDANCE_HEIGHT_THRESHOLD_SCALE = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('threshold_scale', 1.0))
+GO1_AUTO_AVOIDANCE_HEIGHT_MIN_PX_FALLBACK = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('min_height_px_fallback', GO1_AUTO_AVOIDANCE_MIN_BBOX_HEIGHT))
+
 _AUTO_AVOIDANCE_MOTION_CONFIG = dict(AUTO_AVOIDANCE_CONFIG.get('motion', {}))
 GO1_AUTO_AVOIDANCE_MOVE_SPEED = float(_AUTO_AVOIDANCE_MOTION_CONFIG.get('move_speed', 0.2))
 GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC = float(_AUTO_AVOIDANCE_MOTION_CONFIG.get('move_duration_sec', 0.5))
@@ -309,6 +323,22 @@ def _normalize_go1_detection_group(name, group):
         return normalized_group
     name_key = str(name or '').strip().lower()
     return GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP.get(name_key, 'UNKNOWN_OBSTACLE')
+
+
+def _calibrate_go1_rel_depth_to_cm(rel_depth):
+    try:
+        depth = float(rel_depth)
+    except Exception:
+        return None
+    if not math.isfinite(depth):
+        return None
+
+    distance_cm = (
+        GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A2 * (depth ** 2)
+        + GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A1 * depth
+        + GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A0
+    )
+    return max(0.0, float(distance_cm))
 
 
 def _mission_signature(value):
@@ -3096,20 +3126,65 @@ class Go1AutoAvoidanceNode(BaseNode):
         bbox_center_x = (x0 + x1) / 2.0
         return 'right' if bbox_center_x < center_x else 'left'
 
-    def _is_small_bbox(self, bbox):
+    def _compute_height_filter_metrics(self, bbox, rel_depth):
+        metrics = {
+            'valid': False,
+            'height_px': None,
+            'distance_cm': None,
+            'normalized_height': None,
+            'threshold': None,
+            'is_small': False,
+            'reason': '',
+        }
+
         if not bbox or len(bbox) < 4:
-            return False
+            metrics['reason'] = 'invalid_bbox'
+            return metrics
         try:
             x0 = float(bbox[0])
             y0 = float(bbox[1])
             x1 = float(bbox[2])
             y1 = float(bbox[3])
         except Exception:
-            return False
+            metrics['reason'] = 'invalid_bbox_value'
+            return metrics
 
-        width = abs(x1 - x0)
+        _ = abs(x1 - x0)
         height = abs(y1 - y0)
-        return width < GO1_AUTO_AVOIDANCE_MIN_BBOX_WIDTH or height < GO1_AUTO_AVOIDANCE_MIN_BBOX_HEIGHT
+        metrics['height_px'] = height
+        metrics['valid'] = True
+
+        if not GO1_AUTO_AVOIDANCE_HEIGHT_FILTER_ENABLED:
+            metrics['reason'] = 'height_filter_disabled'
+            metrics['is_small'] = height < GO1_AUTO_AVOIDANCE_MIN_BBOX_HEIGHT
+            return metrics
+
+        reference_distance_cm = _calibrate_go1_rel_depth_to_cm(GO1_AUTO_AVOIDANCE_HEIGHT_REF_REL_DEPTH)
+        if reference_distance_cm is None or reference_distance_cm <= 0.0:
+            metrics['reason'] = 'invalid_reference_depth'
+            metrics['is_small'] = height < GO1_AUTO_AVOIDANCE_HEIGHT_MIN_PX_FALLBACK
+            metrics['threshold'] = GO1_AUTO_AVOIDANCE_HEIGHT_MIN_PX_FALLBACK
+            return metrics
+
+        threshold = GO1_AUTO_AVOIDANCE_HEIGHT_REF_PX * reference_distance_cm * GO1_AUTO_AVOIDANCE_HEIGHT_THRESHOLD_SCALE
+        metrics['threshold'] = threshold
+
+        distance_cm = _calibrate_go1_rel_depth_to_cm(rel_depth)
+        if distance_cm is None:
+            metrics['reason'] = 'invalid_rel_depth'
+            metrics['is_small'] = height < GO1_AUTO_AVOIDANCE_HEIGHT_MIN_PX_FALLBACK
+            return metrics
+
+        normalized_height = height * distance_cm
+        metrics['distance_cm'] = distance_cm
+        metrics['normalized_height'] = normalized_height
+        metrics['reason'] = 'height_depth_normalized'
+        metrics['is_small'] = normalized_height <= threshold
+        return metrics
+
+    def _is_small_bbox(self, bbox, rel_depth):
+        metrics = self._compute_height_filter_metrics(bbox, rel_depth)
+        return bool(metrics.get('is_small', False))
 
     def _format_near_targets_for_log(self, near_objects):
         if not near_objects:
@@ -3213,21 +3288,24 @@ class Go1AutoAvoidanceNode(BaseNode):
         target_rel_depth = target.get('rel_depth')
         bbox = target.get('bbox_xyxy')
 
-        if self._is_small_bbox(bbox):
+        small_metrics = self._compute_height_filter_metrics(bbox, target_rel_depth)
+        if small_metrics.get('is_small', False):
             if is_new_input:
-                # 로그에 출력하기 위해 width/height 계산
-                try:
-                    x0, y0, x1, y1 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
-                    width = abs(x1 - x0)
-                    height = abs(y1 - y0)
+                height_px = small_metrics.get('height_px')
+                distance_cm = small_metrics.get('distance_cm')
+                normalized_height = small_metrics.get('normalized_height')
+                threshold = small_metrics.get('threshold')
+                reason = str(small_metrics.get('reason', 'unknown'))
+                if normalized_height is not None and threshold is not None and distance_cm is not None:
                     write_log(
                         f"[GO1 AUTO AVOID] action=observe | target={target_name}[{target_group}] | "
-                        f"bbox too small | width={width:.1f} (min={GO1_AUTO_AVOIDANCE_MIN_BBOX_WIDTH}) | "
-                        f"height={height:.1f} (min={GO1_AUTO_AVOIDANCE_MIN_BBOX_HEIGHT})"
+                        f"small by height*distance | h={height_px:.1f}px | d={distance_cm:.1f}cm | "
+                        f"h*d={normalized_height:.1f} <= threshold={threshold:.1f}"
                     )
-                except Exception as e:
+                else:
                     write_log(
-                        f"[GO1 AUTO AVOID] action=observe | target={target_name}[{target_group}] | bbox too small={bbox}"
+                        f"[GO1 AUTO AVOID] action=observe | target={target_name}[{target_group}] | "
+                        f"small by fallback({reason}) | h={float(height_px or 0.0):.1f}px < min={GO1_AUTO_AVOIDANCE_HEIGHT_MIN_PX_FALLBACK:.1f}px"
                     )
             go1_auto_avoidance_data['status'] = f"SMALL_BBOX_OBSERVED_{target_group}"
             self._last_status = go1_auto_avoidance_data['status']

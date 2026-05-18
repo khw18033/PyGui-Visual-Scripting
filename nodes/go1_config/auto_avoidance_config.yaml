@@ -113,6 +113,21 @@
     "min_width": 24,
     "min_height": 24
   },
+  "height_filter": { # 높이 기준 거리보정 필터: normalized_height = bbox_height_px * distance_cm
+    "enabled": true,
+    "formula": "normalized_height = bbox_height_px * distance_cm",
+    "a2": -4.5353,
+    "a1": 63.3057,
+    "a0": -3.6661,
+    "distance_formula": "distance_cm = a2 * rel_depth^2 + a1 * rel_depth + a0",
+    "rule": "if normalized_height <= threshold then observe else avoid",
+    "reference_height_px": 48,
+    "reference_rel_depth": 0.6,
+    "reference_distance_cm": 32,
+    "reference_normalized_height": 1560,
+    "threshold_scale": 1.0,
+    "min_height_px_fallback": 24.0
+  },
   "motion": { # 회피 시 로봇의 이동 속도 및 이동 지속시간(초)
     "move_speed": 0.2,
     "move_duration_sec": 0.5
