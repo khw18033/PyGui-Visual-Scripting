@@ -61,6 +61,12 @@
     # 매칭 코드 예시 : "tissue box": "SOFT_PUSHABLE",
   },
   "policy": { # 그룹별 회피 행동을 정의, hold_sec/back_sec: 정지 또는 후진 지속시간(초)
+    # 허용 액션 종류: "stop", "avoid", "stop_then_back", "skip"
+    #   - "stop": 즉시 정지(옵션으로 hold_sec 지정)
+    #   - "avoid": 회피 동작(경로 변경) — 이 경우 그룹별로 optional하게
+    #       "move_speed"와 "move_duration_sec"을 지정할 수 있음
+    #   - "stop_then_back": 정지 후 후진(back_sec 지정)
+    #   - "skip": 감지만 수행(다른 동작 없음)
     "AGENT": {
       "action": "stop",
       "hold_sec": 4.0
@@ -70,13 +76,19 @@
       "hold_sec": 4.0
     },
     "HARD_OBSTACLE": {
-      "action": "avoid"
+      "action": "avoid",
+      "move_speed": 0.2,
+      "move_duration_sec": 0.5
     },
     "SOFT_PUSHABLE": {
-      "action": "avoid"
+      "action": "avoid",
+      "move_speed": 0.2,
+      "move_duration_sec": 0.5
     },
     "LOW_OBSTACLE": {
-      "action": "avoid"
+      "action": "avoid",
+      "move_speed": 0.2,
+      "move_duration_sec": 0.5
     },
     "THIN_OBSTACLE": {
       "action": "stop_then_back",
@@ -87,8 +99,7 @@
       "back_sec": 1.0
     },
     "UNKNOWN_OBSTACLE": {
-      "action": "stop",
-      "hold_sec": 2.0
+      "action": "skip"
     }
   },
   "group_priority": { # 회피 결정 시 그룹 우선순위 (값이 낮을수록 우선)
@@ -109,28 +120,23 @@
     "left_x": 150,
     "right_x": 300
   },
-  "bbox": { # 감지 바운딩박스 최소 크기 필터, 해당 크기 미만 시 회피하지 않음
-    "min_width": 24,
-    "min_height": 24
-  },
   "height_filter": { # 높이 기반 거리보정 필터 및 보정식 계수; a2/a1/a0: rel_depth→distance_cm 변환 계수 (distance_formula 참조), normalized_height = bbox_height_px * distance_cm
-    "enabled": true,
-    "formula": "normalized_height = bbox_height_px * distance_cm",
-    "a2": -4.5353,
-    "a1": 63.3057,
-    "a0": -3.6661,
-    "distance_formula": "distance_cm = a2 * rel_depth^2 + a1 * rel_depth + a0",
-    "rule": "if normalized_height <= threshold then observe else avoid",
-    "reference_height_px": 48,
-    "reference_rel_depth": 0.6,
-    "reference_distance_cm": 32,
-    "reference_normalized_height": 1560,
-    "threshold_scale": 1.0,
-    "min_height_px_fallback": 24.0
+    # 보정식 : distance_cm = a2 * rel_depth^2 + a1 * rel_depth + a0
+    # 계산식
+    "formula": "normalized_height = bbox_height_px * distance_cm", # 정규화된 높이 계산식
+    "distance_formula": "distance_cm = a2 * rel_depth^2 + a1 * rel_depth + a0", # 거리 계산식
+    # 보정식 계수
+    "a2": -4.5353, # 거리 계산식의 2차항 계수
+    "a1": 63.3057, # 거리 계산식의 1차항 계수
+    "a0": -3.6661, # 거리 계산식의 상수항 계수
+    # 회피 판단 기준
+    "rule": "if normalized_height <= threshold then observe else avoid", # 회피 판단 기준
+    "reference_height_px": 48, # 기준이 되는 바운딩박스 높이 (픽셀)
+    "reference_rel_depth": 0.6, # 기준이 되는 상대 깊이 (0~1)
+    "reference_distance_cm": 32, # 기준이 되는 실제 거리 (cm)
+    "threshold_scale": 1.0, # 회피 판단 기준에 곱해지는 스케일 값 (기본값 1.0)
+    "min_height_px_fallback": 24.0 # 높이 필터 계산에 사용할 최소 바운딩박스 높이 (픽셀), 이 값보다 작은 바운딩박스는 이 높이를 사용하여 계산
   },
-  "motion": { # 회피 시 로봇의 이동 속도 및 이동 지속시간(초)
-    "move_speed": 0.2,
-    "move_duration_sec": 0.5
-  }
+  
 
 }

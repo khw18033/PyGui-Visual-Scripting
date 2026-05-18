@@ -2726,14 +2726,22 @@ class Go1ServerJsonRecvNode(BaseNode):
 
     def _inject_direction_motion(self, direction, move_speed, move_duration_sec, trigger_key):
         global go1_estop_hold_until
+        # Validate trigger key and prevent duplicate injection
         if not direction:
             return
-        if trigger_key == self._last_motion_trigger_key:
+        try:
+            trigger_key = str(trigger_key)
+        except Exception:
+            trigger_key = ''
+        if trigger_key and trigger_key == self._last_motion_trigger_key:
             return
 
         self._last_motion_trigger_key = trigger_key
         self._last_direction = direction
 
+        direction = str(direction or '').strip().lower()
+
+        # handle emergency stop command
         if direction == 'stop':
             go1_node_intent['vx'] = 0.0
             go1_node_intent['vy'] = 0.0
@@ -2750,18 +2758,29 @@ class Go1ServerJsonRecvNode(BaseNode):
             write_log(f"[GO1 JSON RX] command=stop -> E-STOP hold path ({ESTOP_HOLD_SEC:.1f}s)")
             return
 
+        # Coerce and clamp move parameters
+        move_speed_val = _coerce_float(move_speed, GO1_AUTO_AVOIDANCE_MOVE_SPEED)
+        move_speed_val = abs(move_speed_val)
+        # Duration: sane min/max
+        move_duration_val = _coerce_float(move_duration_sec, GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC)
+        move_duration_val = max(0.05, min(move_duration_val, 10.0))
+
         vx = 0.0
         vy = 0.0
         wz = 0.0
         if direction == 'front':
-            vx = move_speed
+            vx = move_speed_val
         elif direction == 'back':
-            vx = -move_speed
+            vx = -move_speed_val
         elif direction == 'left':
-            vy = move_speed
+            vy = move_speed_val
         elif direction == 'right':
-            vy = -move_speed
+            vy = -move_speed_val
+        else:
+            write_log(f"[GO1 JSON RX] invalid direction='{direction}'")
+            return
 
+        # Apply platform velocity limits
         go1_node_intent['vx'] = _clamp(vx, -V_MAX, V_MAX)
         go1_node_intent['vy'] = _clamp(vy, -S_MAX, S_MAX)
         go1_node_intent['wz'] = _clamp(wz, -W_MAX, W_MAX)
@@ -2769,25 +2788,37 @@ class Go1ServerJsonRecvNode(BaseNode):
         go1_node_intent['trigger_time'] = time.monotonic()
 
         self._motion_active = True
-        self._motion_until_mono = time.monotonic() + max(0.05, move_duration_sec)
+        self._motion_until_mono = time.monotonic() + move_duration_val
         self._motion_vx = go1_node_intent['vx']
         self._motion_vy = go1_node_intent['vy']
         self._motion_wz = go1_node_intent['wz']
         self._motion_force_stop = False
         write_log(
             f"[GO1 JSON RX] command={direction} -> move vx={go1_node_intent['vx']:.3f}, "
-            f"vy={go1_node_intent['vy']:.3f}, wz={go1_node_intent['wz']:.3f}, duration={move_duration_sec:.2f}s"
+            f"vy={go1_node_intent['vy']:.3f}, wz={go1_node_intent['wz']:.3f}, duration={move_duration_val:.2f}s"
         )
 
     def _inject_back_then_stop(self, move_speed, back_sec, trigger_key):
         """Move backward without a stop hold."""
-        if trigger_key == self._last_motion_trigger_key:
+        try:
+            trigger_key = str(trigger_key)
+        except Exception:
+            trigger_key = ''
+        if trigger_key and trigger_key == self._last_motion_trigger_key:
             return
 
         self._last_motion_trigger_key = trigger_key
 
-        back_duration = max(0.05, _coerce_float(back_sec, 1.0))
-        back_speed = -abs(_coerce_float(move_speed, GO1_AUTO_AVOIDANCE_MOVE_SPEED))
+        # validate duration and speed
+        back_duration = _coerce_float(back_sec, 1.0)
+        back_duration = max(0.05, min(back_duration, 10.0))
+        back_speed_val = _coerce_float(move_speed, GO1_AUTO_AVOIDANCE_MOVE_SPEED)
+        back_speed_val = abs(back_speed_val)
+        back_speed = -abs(back_speed_val)
+
+        # clamp by platform limits
+        back_speed = _clamp(back_speed, -V_MAX, V_MAX)
+
         go1_node_intent['vx'] = back_speed
         go1_node_intent['vy'] = 0.0
         go1_node_intent['wz'] = 0.0
@@ -3359,17 +3390,20 @@ class Go1AutoAvoidanceNode(BaseNode):
 
             if json_node and hasattr(json_node, '_inject_direction_motion'):
                 try:
+                    # 그룹별로 설정된 move_speed/move_duration_sec가 있으면 우선 사용
+                    move_speed = _coerce_float(action_target['policy'].get('move_speed', GO1_AUTO_AVOIDANCE_MOVE_SPEED), GO1_AUTO_AVOIDANCE_MOVE_SPEED)
+                    move_duration = _coerce_float(action_target['policy'].get('move_duration_sec', GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC), GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC)
                     json_node._inject_direction_motion(
                         inject_dir,
-                        GO1_AUTO_AVOIDANCE_MOVE_SPEED,
-                        GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC,
+                        move_speed,
+                        move_duration,
                         signature,
                     )
                     go1_auto_avoidance_data['status'] = f"MOVE_{inject_dir.upper()}_{target_group}"
                     self._last_status = go1_auto_avoidance_data['status']
                     write_log(
                         f"[GO1 AUTO AVOID] result=move {inject_dir.upper()} | target={target_name}[{target_group}] | "
-                        f"speed={GO1_AUTO_AVOIDANCE_MOVE_SPEED:.2f} | duration={GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC:.1f}s"
+                        f"speed={move_speed:.2f} | duration={move_duration:.1f}s"
                     )
                 except Exception:
                     write_log('[GO1 AUTO AVOID] 움직임 주입 실패 — 정지 명령 대체 실행')
@@ -3395,8 +3429,9 @@ class Go1AutoAvoidanceNode(BaseNode):
 
             if json_node and hasattr(json_node, '_inject_back_then_stop'):
                 try:
+                    move_speed = _coerce_float(action_target['policy'].get('move_speed', GO1_AUTO_AVOIDANCE_MOVE_SPEED), GO1_AUTO_AVOIDANCE_MOVE_SPEED)
                     json_node._inject_back_then_stop(
-                        GO1_AUTO_AVOIDANCE_MOVE_SPEED,
+                        move_speed,
                         back_sec,
                         signature,
                     )
@@ -3404,7 +3439,7 @@ class Go1AutoAvoidanceNode(BaseNode):
                     self._last_status = go1_auto_avoidance_data['status']
                     write_log(
                         f"[GO1 AUTO AVOID] result=back({back_sec:.1f}s) | target={target_name}[{target_group}] | "
-                        f"speed={GO1_AUTO_AVOIDANCE_MOVE_SPEED:.2f}"
+                        f"speed={move_speed:.2f}"
                     )
                 except Exception:
                     write_log('[GO1 AUTO AVOID] 백업 동작 주입 실패 — 대체 이동 불가')
