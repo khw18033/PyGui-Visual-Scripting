@@ -1,6 +1,5 @@
-
 {
-  "class_to_group": { # 객체 감지 클래스 이름을 회피 그룹으로 매핑
+  "class_to_group": {
     "person": "AGENT",
     "pedestrian": "AGENT",
     "child": "AGENT",
@@ -55,18 +54,8 @@
     "speed bump": "GROUND_HAZARD",
     "puddle": "GROUND_HAZARD",
     "traffic cone": "UNKNOWN_OBSTACLE"
-
-    # 정의 가능한 클래스 종류: person, pedestrian, child, dog, cat, robot, quadruped robot, robot dog, car, truck, bus, motorcycle, bicycle, scooter, large_obstacle, box, cardboard box, chair, table, bench, barrier, fence, guardrail, wall, pillar, door, pole, bollard, trash bin, fire extinguisher, umbrella, rock, backpack, bag, paper bag, tissue box, toilet paper roll, trash, plastic bag, laptop, card, power strip, small_object, movable_object, wire, cable, hose, branch, curb, stairs ramp speed bump puddle traffic cone
-    # 회피 그룹 종류: AGENT, VEHICLE, HARD_OBSTACLE, SOFT_PUSHABLE, LOW_OBSTACLE, THIN_OBSTACLE, GROUND_HAZARD, UNKNOWN_OBSTACLE
-    # 매칭 코드 예시 : "tissue box": "SOFT_PUSHABLE",
   },
-  "policy": { # 그룹별 회피 행동을 정의, hold_sec/back_sec: 정지 또는 후진 지속시간(초)
-    # 허용 액션 종류: "stop", "avoid", "stop_then_back", "skip"
-    #   - "stop": 즉시 정지(옵션으로 hold_sec 지정)
-    #   - "avoid": 회피 동작(경로 변경) — 이 경우 그룹별로 optional하게
-    #       "move_speed"와 "move_duration_sec"을 지정할 수 있음
-    #   - "stop_then_back": 정지 후 후진(back_sec 지정)
-    #   - "skip": 감지만 수행(다른 동작 없음)
+  "policy": {
     "AGENT": {
       "action": "stop",
       "hold_sec": 4.0
@@ -102,7 +91,7 @@
       "action": "skip"
     }
   },
-  "group_priority": { # 회피 결정 시 그룹 우선순위 (값이 낮을수록 우선)
+  "group_priority": {
     "AGENT": 0,
     "VEHICLE": 1,
     "GROUND_HAZARD": 2,
@@ -112,31 +101,22 @@
     "SOFT_PUSHABLE": 6,
     "LOW_OBSTACLE": 7
   },
-  "image": { # 회피 시 좌우 회피 판단 기준에 사용 (수정 X)
+  "image": {
     "width": 464,
     "height": 400
   },
-  "escape": { # left 좌표 이하, right 좌표 이상 시 로봇의 이동에 방해가 되지 않는 위치로 판단하여 회피하지 않음
+  "escape": {
     "left_x": 150,
     "right_x": 300
   },
-  "height_filter": { # 높이 기반 거리보정 필터 및 보정식 계수; a2/a1/a0: rel_depth→distance_cm 변환 계수 (distance_formula 참조), normalized_height = bbox_height_px * distance_cm
-    # 보정식 : distance_cm = a2 * rel_depth^2 + a1 * rel_depth + a0
-    # 계산식
-    "formula": "normalized_height = bbox_height_px * distance_cm", # 정규화된 높이 계산식
-    "distance_formula": "distance_cm = a2 * rel_depth^2 + a1 * rel_depth + a0", # 거리 계산식
-    # 보정식 계수
-    "a2": -4.5353, # 거리 계산식의 2차항 계수
-    "a1": 63.3057, # 거리 계산식의 1차항 계수
-    "a0": -3.6661, # 거리 계산식의 상수항 계수
-    # 회피 판단 기준
-    "rule": "if normalized_height <= threshold then observe else avoid", # 회피 판단 기준
-    "reference_height_px": 56, # 기준이 되는 바운딩박스 높이 (픽셀) — 샘플 3개 평균값 기준
-    "reference_rel_depth": 0.852, # 기준이 되는 상대 깊이 (0~1) — 샘플 3개 평균값 기준
-    "reference_distance_cm": 46.7, # 기준이 되는 실제 거리 (cm) — 샘플 3개 평균값 기준
-    "threshold_scale": 1.10, # 회피 판단 기준에 곱해지는 스케일 값 — 3개 샘플 모두 observe 대상으로 설정
-    "min_height_px_fallback": 24.0 # 높이 필터 계산에 사용할 최소 바운딩박스 높이 (픽셀), 이 값보다 작은 바운딩박스는 이 높이를 사용하여 계산
-  },
-  
-
+  "height_filter": {
+    "a2": -4.5353,
+    "a1": 63.3057,
+    "a0": -3.6661,
+    "reference_height_px": 56,
+    "reference_rel_depth": 0.852,
+    "reference_distance_cm": 46.7,
+    "threshold_scale": 1.10,
+    "min_height_px_fallback": 24.0
+  }
 }
