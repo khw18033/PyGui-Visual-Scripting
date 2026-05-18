@@ -251,10 +251,28 @@ def _load_json_compatible_config(filename, default):
 
     try:
         with open(path, 'r', encoding='utf-8') as f:
-            loaded = json.load(f)
+            content = f.read()
+        
+        # Remove comments: strip lines that start with # or contain # after whitespace
+        lines = content.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            # Remove inline comments (but be careful with # inside strings)
+            comment_idx = line.find('#')
+            if comment_idx != -1:
+                # Simple heuristic: if # is not inside quotes, remove from there
+                before_hash = line[:comment_idx]
+                quote_count = before_hash.count('"') + before_hash.count("'")
+                if quote_count % 2 == 0:  # Even number of quotes = # is outside strings
+                    line = before_hash
+            cleaned_lines.append(line)
+        
+        cleaned_content = '\n'.join(cleaned_lines)
+        loaded = json.loads(cleaned_content)
+        
         if isinstance(loaded, dict):
             return _deep_merge(default, loaded)
-    except Exception:
+    except Exception as e:
         pass
 
     return copy.deepcopy(default)
