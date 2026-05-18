@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+import re
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 CONFIG_DIR = os.path.join(BASE_DIR, 'nodes', 'go1_config')
@@ -253,18 +254,32 @@ def _load_json_compatible_config(filename, default):
         with open(path, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        # Remove comments: strip lines that start with # or contain # after whitespace
+        # Remove comments: # to end of line, but only if outside quoted strings
         lines = content.split('\n')
         cleaned_lines = []
         for line in lines:
-            # Remove inline comments (but be careful with # inside strings)
-            comment_idx = line.find('#')
-            if comment_idx != -1:
-                # Simple heuristic: if # is not inside quotes, remove from there
-                before_hash = line[:comment_idx]
-                quote_count = before_hash.count('"') + before_hash.count("'")
-                if quote_count % 2 == 0:  # Even number of quotes = # is outside strings
-                    line = before_hash
+            # Find comment position outside of strings
+            in_string = False
+            in_escape = False
+            comment_pos = -1
+            
+            for i, char in enumerate(line):
+                if in_escape:
+                    in_escape = False
+                    continue
+                if char == '\\' and in_string:
+                    in_escape = True
+                    continue
+                if char == '"':
+                    in_string = not in_string
+                    continue
+                if char == '#' and not in_string:
+                    comment_pos = i
+                    break
+            
+            if comment_pos >= 0:
+                line = line[:comment_pos]
+            
             cleaned_lines.append(line)
         
         cleaned_content = '\n'.join(cleaned_lines)
