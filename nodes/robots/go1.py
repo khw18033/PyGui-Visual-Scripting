@@ -3215,9 +3215,20 @@ class Go1AutoAvoidanceNode(BaseNode):
 
         if self._is_small_bbox(bbox):
             if is_new_input:
-                write_log(
-                    f"[GO1 AUTO AVOID] action=observe | target={target_name}[{target_group}] | bbox too small={bbox}"
-                )
+                # 로그에 출력하기 위해 width/height 계산
+                try:
+                    x0, y0, x1, y1 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
+                    width = abs(x1 - x0)
+                    height = abs(y1 - y0)
+                    write_log(
+                        f"[GO1 AUTO AVOID] action=observe | target={target_name}[{target_group}] | "
+                        f"bbox too small | width={width:.1f} (min={GO1_AUTO_AVOIDANCE_MIN_BBOX_WIDTH}) | "
+                        f"height={height:.1f} (min={GO1_AUTO_AVOIDANCE_MIN_BBOX_HEIGHT})"
+                    )
+                except Exception as e:
+                    write_log(
+                        f"[GO1 AUTO AVOID] action=observe | target={target_name}[{target_group}] | bbox too small={bbox}"
+                    )
             go1_auto_avoidance_data['status'] = f"SMALL_BBOX_OBSERVED_{target_group}"
             self._last_status = go1_auto_avoidance_data['status']
             return self.out_flow

@@ -1,5 +1,6 @@
+
 {
-  "class_to_group": {
+  "class_to_group": { # 객체 감지 클래스 이름을 회피 그룹으로 매핑
     "person": "AGENT",
     "pedestrian": "AGENT",
     "child": "AGENT",
@@ -54,8 +55,12 @@
     "speed bump": "GROUND_HAZARD",
     "puddle": "GROUND_HAZARD",
     "traffic cone": "UNKNOWN_OBSTACLE"
+
+    # 정의 가능한 클래스 종류: person, pedestrian, child, dog, cat, robot, quadruped robot, robot dog, car, truck, bus, motorcycle, bicycle, scooter, large_obstacle, box, cardboard box, chair, table, bench, barrier, fence, guardrail, wall, pillar, door, pole, bollard, trash bin, fire extinguisher, umbrella, rock, backpack, bag, paper bag, tissue box, toilet paper roll, trash, plastic bag, laptop, card, power strip, small_object, movable_object, wire, cable, hose, branch, curb, stairs ramp speed bump puddle traffic cone
+    # 회피 그룹 종류: AGENT, VEHICLE, HARD_OBSTACLE, SOFT_PUSHABLE, LOW_OBSTACLE, THIN_OBSTACLE, GROUND_HAZARD, UNKNOWN_OBSTACLE
+    # 매칭 코드 예시 : "tissue box": "SOFT_PUSHABLE",
   },
-  "policy": {
+  "policy": { # 그룹별 회피 행동을 정의, hold_sec/back_sec: 정지 또는 후진 지속시간(초)
     "AGENT": {
       "action": "stop",
       "hold_sec": 4.0
@@ -86,7 +91,7 @@
       "hold_sec": 2.0
     }
   },
-  "group_priority": {
+  "group_priority": { # 회피 결정 시 그룹 우선순위 (값이 낮을수록 우선)
     "AGENT": 0,
     "VEHICLE": 1,
     "GROUND_HAZARD": 2,
@@ -96,20 +101,21 @@
     "SOFT_PUSHABLE": 6,
     "LOW_OBSTACLE": 7
   },
-  "image": {
+  "image": { # 회피 시 좌우 회피 판단 기준에 사용 (수정 X)
     "width": 464,
     "height": 400
   },
-  "escape": {
+  "escape": { # left 좌표 이하, right 좌표 이상 시 로봇의 이동에 방해가 되지 않는 위치로 판단하여 회피하지 않음
     "left_x": 150,
     "right_x": 300
   },
-  "bbox": {
+  "bbox": { # 감지 바운딩박스의 최소 크기 필터, 해당 크기보다 작을 시 회피하지 않음
     "min_width": 24,
     "min_height": 24
   },
-  "motion": {
+  "motion": { # 회피 시 로봇의 이동 속도 및 이동 지속시간(초)
     "move_speed": 0.2,
     "move_duration_sec": 0.5
   }
+
 }
