@@ -302,11 +302,8 @@ _AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG = dict(AUTO_AVOIDANCE_CONFIG.get('height_fi
 GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A2 = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('a2', -4.5353))
 GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A1 = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('a1', 63.3057))
 GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A0 = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('a0', -3.6661))
-_height_filter_enabled_raw = _AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('enabled', True)
-if isinstance(_height_filter_enabled_raw, str):
-    GO1_AUTO_AVOIDANCE_HEIGHT_FILTER_ENABLED = _height_filter_enabled_raw.strip().lower() in ['1', 'true', 'yes', 'on']
-else:
-    GO1_AUTO_AVOIDANCE_HEIGHT_FILTER_ENABLED = bool(_height_filter_enabled_raw)
+# Height filter is always enabled; use normalized_height for small object detection
+GO1_AUTO_AVOIDANCE_HEIGHT_FILTER_ENABLED = True
 GO1_AUTO_AVOIDANCE_HEIGHT_REF_PX = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('reference_height_px', 48.0))
 GO1_AUTO_AVOIDANCE_HEIGHT_REF_REL_DEPTH = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('reference_rel_depth', 0.5975030660629272))
 GO1_AUTO_AVOIDANCE_HEIGHT_THRESHOLD_SCALE = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('threshold_scale', 1.0))
@@ -3185,27 +3182,22 @@ class Go1AutoAvoidanceNode(BaseNode):
         metrics['height_px'] = height
         metrics['valid'] = True
 
-        if not GO1_AUTO_AVOIDANCE_HEIGHT_FILTER_ENABLED:
-            metrics['reason'] = 'height_filter_disabled'
-            metrics['is_small'] = height < GO1_AUTO_AVOIDANCE_MIN_BBOX_HEIGHT
-            return metrics
-
+        # Always use height_filter; calculate reference distance and threshold
         reference_distance_cm = _calibrate_go1_rel_depth_to_cm(GO1_AUTO_AVOIDANCE_HEIGHT_REF_REL_DEPTH)
         if reference_distance_cm is None or reference_distance_cm <= 0.0:
             metrics['reason'] = 'invalid_reference_depth'
-            metrics['is_small'] = height < GO1_AUTO_AVOIDANCE_HEIGHT_MIN_PX_FALLBACK
-            metrics['threshold'] = GO1_AUTO_AVOIDANCE_HEIGHT_MIN_PX_FALLBACK
             return metrics
 
         threshold = GO1_AUTO_AVOIDANCE_HEIGHT_REF_PX * reference_distance_cm * GO1_AUTO_AVOIDANCE_HEIGHT_THRESHOLD_SCALE
         metrics['threshold'] = threshold
 
+        # Calculate actual distance from rel_depth
         distance_cm = _calibrate_go1_rel_depth_to_cm(rel_depth)
         if distance_cm is None:
             metrics['reason'] = 'invalid_rel_depth'
-            metrics['is_small'] = height < GO1_AUTO_AVOIDANCE_HEIGHT_MIN_PX_FALLBACK
             return metrics
 
+        # Determine if object is small by normalized height comparison
         normalized_height = height * distance_cm
         metrics['distance_cm'] = distance_cm
         metrics['normalized_height'] = normalized_height
