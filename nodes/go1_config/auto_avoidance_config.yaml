@@ -131,10 +131,10 @@
     "a0": -3.6661, # 거리 계산식의 상수항 계수
     # 회피 판단 기준
     "rule": "if normalized_height <= threshold then observe else avoid", # 회피 판단 기준
-    "reference_height_px": 48, # 기준이 되는 바운딩박스 높이 (픽셀)
-    "reference_rel_depth": 0.6, # 기준이 되는 상대 깊이 (0~1)
-    "reference_distance_cm": 32, # 기준이 되는 실제 거리 (cm)
-    "threshold_scale": 1.0, # 회피 판단 기준에 곱해지는 스케일 값 (기본값 1.0)
+    "reference_height_px": 56, # 기준이 되는 바운딩박스 높이 (픽셀) — 샘플 3개 평균값 기준
+    "reference_rel_depth": 0.852, # 기준이 되는 상대 깊이 (0~1) — 샘플 3개 평균값 기준
+    "reference_distance_cm": 46.7, # 기준이 되는 실제 거리 (cm) — 샘플 3개 평균값 기준
+    "threshold_scale": 1.10, # 회피 판단 기준에 곱해지는 스케일 값 — 3개 샘플 모두 observe 대상으로 설정
     "min_height_px_fallback": 24.0 # 높이 필터 계산에 사용할 최소 바운딩박스 높이 (픽셀), 이 값보다 작은 바운딩박스는 이 높이를 사용하여 계산
   },
   
