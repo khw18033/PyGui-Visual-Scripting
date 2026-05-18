@@ -309,14 +309,6 @@ GO1_AUTO_AVOIDANCE_HEIGHT_REF_REL_DEPTH = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CO
 GO1_AUTO_AVOIDANCE_HEIGHT_THRESHOLD_SCALE = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('threshold_scale', 1.0))
 GO1_AUTO_AVOIDANCE_HEIGHT_MIN_PX_FALLBACK = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('min_height_px_fallback', GO1_AUTO_AVOIDANCE_MIN_BBOX_HEIGHT))
 
-# DEBUG: Log loaded height filter config values
-write_log(
-    f"[GO1 HEIGHT FILTER CONFIG LOADED] "
-    f"ref_height_px={GO1_AUTO_AVOIDANCE_HEIGHT_REF_PX:.1f}, "
-    f"ref_rel_depth={GO1_AUTO_AVOIDANCE_HEIGHT_REF_REL_DEPTH:.4f}, "
-    f"threshold_scale={GO1_AUTO_AVOIDANCE_HEIGHT_THRESHOLD_SCALE:.2f}"
-)
-
 _AUTO_AVOIDANCE_MOTION_CONFIG = dict(AUTO_AVOIDANCE_CONFIG.get('motion', {}))
 GO1_AUTO_AVOIDANCE_MOVE_SPEED = float(_AUTO_AVOIDANCE_MOTION_CONFIG.get('move_speed', 0.2))
 GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC = float(_AUTO_AVOIDANCE_MOTION_CONFIG.get('move_duration_sec', 0.5))
@@ -3211,15 +3203,6 @@ class Go1AutoAvoidanceNode(BaseNode):
         metrics['normalized_height'] = normalized_height
         metrics['reason'] = 'height_depth_normalized'
         metrics['is_small'] = normalized_height <= threshold
-        
-        # DEBUG: Log detailed height filter calculation
-        write_log(
-            f"[GO1 HEIGHT FILTER DEBUG] "
-            f"h={height:.1f}px, rel_depth={rel_depth:.4f}, d={distance_cm:.1f}cm, "
-            f"h*d={normalized_height:.1f} vs threshold={threshold:.1f}, "
-            f"is_small={metrics['is_small']}"
-        )
-        
         return metrics
 
     def _is_small_bbox(self, bbox, rel_depth):
