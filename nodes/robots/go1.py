@@ -3120,7 +3120,7 @@ class Go1AutoAvoidanceNode(BaseNode):
                 'rel_depth': rel_depth_value,
             }
             matched_objects.append(entry)
-            if str(policy.get('action', '')).strip().lower() != 'observe':
+            if str(policy.get('action', '')).strip().lower() != 'skip':
                 action_candidates.append(entry)
 
         def _sort_key(entry):
@@ -3297,9 +3297,9 @@ class Go1AutoAvoidanceNode(BaseNode):
 
         if action_target is None:
             if is_new_input:
-                write_log("[GO1 AUTO AVOID] action=observe | result=pass-through (no robot motion)")
-            go1_auto_avoidance_data['status'] = 'SMALL_OBSTACLE_OBSERVED'
-            self._last_status = 'SMALL_OBSTACLE_OBSERVED'
+                write_log("[GO1 AUTO AVOID] action=skip | result=pass-through (no robot motion)")
+            go1_auto_avoidance_data['status'] = 'SMALL_OBSTACLE_SKIPPED'
+            self._last_status = 'SMALL_OBSTACLE_SKIPPED'
             return self.out_flow
 
         target = action_target['det']
@@ -3320,16 +3320,16 @@ class Go1AutoAvoidanceNode(BaseNode):
                 reason = str(small_metrics.get('reason', 'unknown'))
                 if normalized_height is not None and threshold is not None and distance_cm is not None:
                     write_log(
-                        f"[GO1 AUTO AVOID] action=observe | target={target_name}[{target_group}] | "
+                        f"[GO1 AUTO AVOID] action=skip | target={target_name}[{target_group}] | "
                         f"small by height*distance | h={height_px:.1f}px | d={distance_cm:.1f}cm | "
                         f"h*d={normalized_height:.1f} <= threshold={threshold:.1f}"
                     )
                 else:
                     write_log(
-                        f"[GO1 AUTO AVOID] action=observe | target={target_name}[{target_group}] | "
+                        f"[GO1 AUTO AVOID] action=skip | target={target_name}[{target_group}] | "
                         f"small by fallback({reason}) | h={float(height_px or 0.0):.1f}px < min={GO1_AUTO_AVOIDANCE_HEIGHT_MIN_PX_FALLBACK:.1f}px"
                     )
-            go1_auto_avoidance_data['status'] = f"SMALL_BBOX_OBSERVED_{target_group}"
+            go1_auto_avoidance_data['status'] = f"SMALL_BBOX_SKIPPED_{target_group}"
             self._last_status = go1_auto_avoidance_data['status']
             return self.out_flow
 
