@@ -846,6 +846,60 @@ if ep_manager is not None:
     except Exception:
         pass
 
+    # Network scan UI
+    try:
+        def _scan_network_callback(sender, app_data, user_data):
+            prefix = dpg.get_value('ep_scan_prefix')
+            port = int(dpg.get_value('ep_scan_port'))
+            dpg.set_value('ep_scan_result', 'Scanning...')
+            found = []
+            try:
+                found = ep_manager.scan_network(prefix, port, start=1, end=254, timeout=0.12)
+            except Exception as e:
+                print('scan error', e)
+            items = [f"{ip}:{p} -> {txt}" for ip, p, txt in found]
+            dpg.configure_item('ep_scan_list', items=items)
+            dpg.set_value('ep_scan_result', f'Found: {len(items)}')
+
+        def _connect_selected_callback(sender, app_data, user_data):
+            sel = dpg.get_value('ep_scan_list')
+            if not sel:
+                return
+            # item text is like '192.168.42.10:40900 -> 87'
+            text = sel
+            ipport = text.split('->', 1)[0].strip()
+            ip = ipport.split(':', 1)[0]
+            port = int(ipport.split(':', 1)[1])
+            # spawn worker and connect
+            iid = f"ep_{ip.replace('.', '_')}"
+            ep_manager.spawn_worker(iid, worker_port=12000 + int(ip.split('.')[-1]) % 1000, ep_ip=ip, ep_port=port, flask_port=5050)
+            time.sleep(0.3)
+            ep_manager.send_cmd(iid, 'connect', {'conn_type': 'sta'})
+            # fetch state and display SN if available
+            time.sleep(0.8)
+            st = ep_manager.get_state(iid)
+            sn = None
+            try:
+                sn = st.get('result', {}).get('ep_dashboard', {}).get('sn') if st else None
+            except Exception:
+                sn = None
+            if sn:
+                dpg.set_value('ep_last_sn', f'Connected SN: {sn} (instance {iid})')
+            else:
+                dpg.set_value('ep_last_sn', f'Connected (no SN yet) (instance {iid})')
+
+        with dpg.window(label='EP Network Scan', pos=(10, 160), width=420, height=220, on_close=lambda: None):
+            dpg.add_text('Scan local subnet for EP devices')
+            dpg.add_input_text(label='Subnet prefix (e.g. 192.168.42)', default_value='192.168.42', tag='ep_scan_prefix')
+            dpg.add_input_text(label='EP UDP Port', default_value='40900', tag='ep_scan_port')
+            dpg.add_button(label='Scan', callback=_scan_network_callback)
+            dpg.add_text('', tag='ep_scan_result')
+            dpg.add_listbox(items=[], num_items=6, tag='ep_scan_list')
+            dpg.add_button(label='Connect Selected', callback=_connect_selected_callback)
+            dpg.add_text('', tag='ep_last_sn')
+    except Exception:
+        pass
+
     @staticmethod
     def _render_go1_mission_recv(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="Mission Receiver (Go1)"):

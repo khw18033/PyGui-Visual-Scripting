@@ -634,7 +634,7 @@ def ep_comm_thread():
                                 ep_gripper_action_queue.insert(0, gaction)
                             write_log(f"EP 그리퍼 액션: 재시도 {retry}/{EP_ARM_MAX_RETRY}")
                         else:
-                            write_log("EP 그리퍼 액션: 최대 재시도 횟수 초과, 삭제됨")
+                            write_log("EP 그리퍼 액션: 최대 재시도 횟수 초과, 삭제됨") 
                             _ep_pending_gripper_action = None
                     else:
                         _ep_pending_gripper_action = None

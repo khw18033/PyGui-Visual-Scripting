@@ -89,3 +89,32 @@ def get_state(instance_id, timeout=1.0):
 
 def list_workers():
     return list(WORKERS.keys())
+
+
+def scan_network(subnet_prefix, port=40900, start=1, end=254, timeout=0.25):
+    """Scan IPv4 addresses in subnet_prefix (e.g. '192.168.42') for responsive EP UDP port.
+    Sends a simple text probe (battery ?;) to each ip:port via UDP and collects responders.
+    Returns list of (ip, port, resp_text).
+    """
+    responders = []
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    probe = b"battery ?;"
+    for i in range(start, end + 1):
+        ip = f"{subnet_prefix}.{i}"
+        try:
+            sock.sendto(probe, (ip, port))
+            data, _ = sock.recvfrom(1024)
+            try:
+                txt = data.decode('utf-8').strip()
+            except Exception:
+                txt = repr(data)
+            responders.append((ip, port, txt))
+        except socket.timeout:
+            continue
+        except OSError:
+            continue
+        except Exception:
+            continue
+    sock.close()
+    return responders
