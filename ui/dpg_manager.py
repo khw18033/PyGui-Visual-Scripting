@@ -67,6 +67,11 @@ try:
 except ImportError:
     HAS_EP = False
 
+try:
+    import core.ep_manager as ep_manager
+except Exception:
+    ep_manager = None
+
 sys_net_str = "Loading Network..."
 def network_monitor_thread():
     global sys_net_str
@@ -803,6 +808,43 @@ class NodeUIRenderer:
                 dpg.add_text("Speed/Val")
                 node.field_v1 = dpg.add_input_float(width=60, default_value=0.2)
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+
+# --- EP Manager UI Panel (minimal) ---
+if ep_manager is not None:
+    def _ep_start_workers_callback(sender, app_data, user_data):
+        cfgs = [
+            {'id': 'ep01_a', 'port': 12000, 'ep_ip': '192.168.42.10', 'ep_port': 40900, 'flask': 5050},
+            {'id': 'ep01_b', 'port': 12001, 'ep_ip': '192.168.42.11', 'ep_port': 40901, 'flask': 5051},
+        ]
+        ep_manager.start_workers(cfgs)
+
+    def _ep_connect_both_callback(sender, app_data, user_data):
+        for iid in ep_manager.list_workers():
+            ep_manager.send_cmd(iid, 'connect', {'conn_type': 'sta'})
+
+    def _ep_get_states_callback(sender, app_data, user_data):
+        out = []
+        for iid in ep_manager.list_workers():
+            st = ep_manager.get_state(iid)
+            out.append((iid, st))
+        print('EP States:', out)
+
+    def _ep_stop_workers_callback(sender, app_data, user_data):
+        for iid in list(ep_manager.list_workers()):
+            ep_manager.stop_worker(iid)
+
+    try:
+        with dpg.window(label='EP Manager', pos=(10, 10), width=320, height=140, on_close=lambda: None):
+            dpg.add_text('EP Worker Control')
+            dpg.add_button(label='Start 2 Workers', callback=_ep_start_workers_callback)
+            dpg.add_same_line()
+            dpg.add_button(label='Connect Both', callback=_ep_connect_both_callback)
+            dpg.add_button(label='Get States (print)', callback=_ep_get_states_callback)
+            dpg.add_same_line()
+            dpg.add_button(label='Stop Workers', callback=_ep_stop_workers_callback)
+    except Exception:
+        pass
 
     @staticmethod
     def _render_go1_mission_recv(node):
