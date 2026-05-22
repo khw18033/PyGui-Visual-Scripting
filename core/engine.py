@@ -15,7 +15,7 @@ class PortType(Enum):
 node_registry = {}
 link_registry = {}
 is_running = False
-SAVE_DIR = "Node_File_MT4"
+SAVE_DIR = "Node_Files"
 if not os.path.exists(SAVE_DIR): 
     os.makedirs(SAVE_DIR)
 system_log_buffer = deque(maxlen=50)
