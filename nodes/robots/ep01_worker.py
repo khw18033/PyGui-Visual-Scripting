@@ -102,6 +102,10 @@ class WorkerServer(threading.Thread):
                     conn_type = args.get('conn_type', 'sta')
                     sn = args.get('sn')
                     robot_ip = args.get('robot_ip')
+                    try:
+                        ep01_mod.ensure_ep_comm_thread_started()
+                    except Exception:
+                        pass
                     t = threading.Thread(target=ep01_mod.connect_ep_thread_func, args=(conn_type, sn, robot_ip), daemon=True)
                     t.start()
                     return {'type': 'resp', 'req_id': req_id, 'ok': True, 'result': {'msg': 'connect started'}}
@@ -140,7 +144,7 @@ class WorkerServer(threading.Thread):
                     y = float(args.get('y', 0.0))
                     z = float(args.get('z', 0.0))
                     try:
-                        # set intent; ep_comm_thread will pick it up
+                        # set intent; ep_comm_thread in this worker will pick it up
                         ep01_mod.ep_node_intent['vx'] = x
                         ep01_mod.ep_node_intent['vy'] = y
                         ep01_mod.ep_node_intent['wz'] = z

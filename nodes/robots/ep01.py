@@ -135,6 +135,7 @@ ep_gripper_action_queue = []  # Queue of {'type':'grip', 'open': bool, 'retry': 
 _ep_gripper_lock = threading.Lock()
 _ep_pending_gripper_action = None
 _ep_pending_gripper_start_time = None
+_ep_comm_thread_started = False
 
 _ep_cam_lock = threading.Lock()
 _ep_cam_cap = None
@@ -604,6 +605,14 @@ def ep_status_thread():
     
     # 통신 루프 실행
     ep_comm_thread()
+
+
+def ensure_ep_comm_thread_started():
+    global _ep_comm_thread_started
+    if _ep_comm_thread_started:
+        return
+    _ep_comm_thread_started = True
+    threading.Thread(target=ep_status_thread, daemon=True).start()
 
 def ep_comm_thread():
     """
