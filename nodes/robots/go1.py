@@ -1936,18 +1936,25 @@ class Go1ActionNode(BaseNode):
                 self._last_mission_action_signature = mission_action_signature
                 mission_action_payload, _ = _normalize_mission_container(mission_action_raw)
                 if isinstance(mission_action_payload, dict):
-                    if str(mission_action_payload.get('type', '')).strip().lower() == 'sequence':
+                    action_type = str(mission_action_payload.get('type', '')).strip().lower()
+                    mission_id_log = mission_action_payload.get('mission_id', 'unknown')
+                    if action_type == 'sequence':
+                        steps = mission_action_payload.get('steps', [])
+                        write_log(f"[GO1 ACTION] 시퀀스 미션 수신: id={mission_id_log} steps={len(steps)}")
                         if not self._seq_running:
                             self._seq_running = True
                             self._seq_thread = threading.Thread(
                                 target=self._run_sequence,
-                                args=(mission_action_payload.get('steps', []),),
+                                args=(steps,),
                                 daemon=True,
                             )
                             self._seq_thread.start()
+                        else:
+                            write_log("[GO1 ACTION] 이전 시퀀스 실행 중 - 새 시퀀스 스킵")
                         return self.out_flow
                     mode = _resolve_go1_action_mode(mission_action_payload, default_mode=mode)
                     v1 = _coerce_float(mission_action_payload.get('v1', mission_action_payload.get('value', v1)), v1)
+                    write_log(f"[GO1 ACTION] 단일 액션 수신: id={mission_id_log} mode={mode} v1={v1}")
 
         if mode == "Stand":
             go1_node_intent['stop'] = True
@@ -3651,6 +3658,7 @@ class Go1MissionDecisionNode(BaseNode):
         raw_json = self.fetch_input_data(self.in_raw_json)
         payload, signature = _normalize_mission_container(raw_json)
         if not payload:
+            write_log("[GO1 MISSION DECIDE] 입력 payload 없음 - 스킵")
             return None
 
         mission_id = _extract_mission_id(payload)
@@ -3681,9 +3689,10 @@ class Go1MissionDecisionNode(BaseNode):
 
         if mission_id and signature and signature != self._last_post_signature:
             self._last_post_signature = signature
+            write_log(f"[GO1 MISSION DECIDE] 미션={mission_id} type={mission_type} mode={mode} -> {decision} (이유: {reason})")
             try:
                 status_code, body = _post_json_payload(decision_url, post_payload, timeout_sec)
-                write_log(f"[GO1 MISSION DECIDE] {mission_id or 'unknown'} -> {decision} (rc={status_code})")
+                write_log(f"[GO1 MISSION DECIDE] POST {decision_url} -> rc={status_code}")
                 if body:
                     write_log(f"[GO1 MISSION DECIDE] response: {body[:200]}")
                 go1_mission_state.update({
@@ -3707,7 +3716,9 @@ class Go1MissionDecisionNode(BaseNode):
                     'last_error': str(e),
                     'updated_ts': time.time(),
                 })
-                write_log(f"[GO1 MISSION DECIDE] post failed: {e}")
+                write_log(f"[GO1 MISSION DECIDE] POST 실패 (서버 없음 등): {e} → 결정은 {decision}으로 계속 진행")
+        elif mission_id and signature and signature == self._last_post_signature:
+            write_log(f"[GO1 MISSION DECIDE] 중복 미션 스킵: {mission_id}")
         elif not mission_id:
             go1_mission_state.update({
                 'status': 'Rejected',
@@ -3759,6 +3770,7 @@ class Go1MissionDispatchNode(BaseNode):
         decision = self.fetch_input_data(self.in_decision)
         payload, signature = _normalize_mission_container(raw_json)
         if not payload:
+            write_log("[GO1 MISSION DISPATCH] 입력 payload 없음 - 스킵")
             return None
 
         mission_id = _extract_mission_id(payload)
@@ -3786,10 +3798,15 @@ class Go1MissionDispatchNode(BaseNode):
             })
             if signature and signature != self._last_dispatch_signature:
                 self._last_dispatch_signature = signature
-                write_log(f"[GO1 MISSION DISPATCH] prepared mission {mission_id or 'unknown'}")
+                action_preview = (action_json[:120] + '...') if action_json and len(action_json) > 120 else action_json
+                write_log(f"[GO1 MISSION DISPATCH] 미션 디스패치: {mission_id or 'unknown'}")
+                write_log(f"[GO1 MISSION DISPATCH] action_json: {action_preview}")
+            elif signature and signature == self._last_dispatch_signature:
+                write_log(f"[GO1 MISSION DISPATCH] 중복 미션 스킵: {mission_id}")
         else:
             path_json = ''
             action_json = ''
+            write_log(f"[GO1 MISSION DISPATCH] 미션 거부됨: {mission_id or 'unknown'} (decision={decision})")
             go1_mission_state.update({
                 'status': 'Rejected',
                 'mission_id': mission_id,
