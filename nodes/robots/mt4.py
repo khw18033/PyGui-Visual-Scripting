@@ -312,15 +312,14 @@ class UniversalRobotNode(BaseNode):
     def execute(self):
         inputs = {k: self.fetch_input_data(aid) for k, aid in self.in_pins.items()}
         settings = {k: self.fetch_input_data(aid) for k, aid in self.setting_pins.items()}
-        
-        for k in inputs:
-            if inputs[k] is None: 
-                inputs[k] = self.state.get(k, 0.0)
-                
+
+        # inputs: 연결된 링크가 없으면 None을 유지. execute_command에서 None=무시로 처리.
+        # (이전: 연결 없어도 state 기본값으로 채워 GO1_DRIVER가 매 프레임 속도를 0으로 덮어쓰는 버그)
+
         for k in settings:
-            if settings[k] is None: 
+            if settings[k] is None:
                 settings[k] = self.state.get(k, 1.0)
-            
+
         new_state = self.driver.execute_command(inputs, settings)
 
         if new_state:
