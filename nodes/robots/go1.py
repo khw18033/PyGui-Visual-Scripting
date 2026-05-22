@@ -1898,11 +1898,13 @@ class Go1ActionNode(BaseNode):
         self._seq_running = False
         self._seq_thread = None
         self._last_run_id = -1
+        self._seq_gen = 0
 
-    def _run_sequence(self, steps):
+    def _run_sequence(self, steps, seq_gen):
         write_log(f"[GO1 ACTION SEQ] 시퀀스 시작: {len(steps)}단계")
         for i, step in enumerate(steps):
-            if not self._seq_running:
+            if not self._seq_running or self._seq_gen != seq_gen:
+                write_log("[GO1 ACTION SEQ] 시퀀스 중단 (재시작 감지)")
                 break
             mode = _resolve_go1_action_mode(step, default_mode='Stand')
             v1 = _coerce_float(step.get('v1', step.get('value', 0.2)), 0.2)
@@ -1925,7 +1927,7 @@ class Go1ActionNode(BaseNode):
                 go1_node_intent['wz'] = v1 if mode == "Turn" else 0.0
                 go1_node_intent['trigger_time'] = time.monotonic()
                 deadline = time.monotonic() + duration
-                while time.monotonic() < deadline and self._seq_running:
+                while time.monotonic() < deadline and self._seq_running and self._seq_gen == seq_gen:
                     go1_node_intent['trigger_time'] = time.monotonic()
                     time.sleep(0.02)  # 20ms: hold_timeout(100ms) 대비 5배 여유
 
@@ -1946,6 +1948,8 @@ class Go1ActionNode(BaseNode):
         if _go1_mission_run_id != self._last_run_id:
             self._last_run_id = _go1_mission_run_id
             self._last_mission_action_signature = ''
+            self._seq_gen += 1
+            self._seq_running = False
 
         mode = self.state.get('mode', 'Stand')
         v1 = self.fetch_input_data(self.in_val1)
@@ -1965,9 +1969,10 @@ class Go1ActionNode(BaseNode):
                         write_log(f"[GO1 ACTION] 시퀀스 미션 수신: id={mission_id_log} steps={len(steps)}")
                         if not self._seq_running:
                             self._seq_running = True
+                            gen = self._seq_gen
                             self._seq_thread = threading.Thread(
                                 target=self._run_sequence,
-                                args=(steps,),
+                                args=(steps, gen),
                                 daemon=True,
                             )
                             self._seq_thread.start()
@@ -3691,30 +3696,38 @@ def _evaluate_mission_conditions(conditions):
         if batt < min_pct:
             return False, f'go1 battery too low ({batt}% < {min_pct:.0f}%)'
 
+    def _get_ep01_dashboard():
+        import sys as _sys
+        for _name in ('nodes.robots.ep01', 'ep01'):
+            _mod = _sys.modules.get(_name)
+            if _mod is not None and hasattr(_mod, 'ep_dashboard'):
+                return getattr(_mod, 'ep_dashboard', {}), getattr(_mod, 'ep_state', {})
+        return None, None
+
     if _coerce_bool(conditions.get('ep01_connected', False), False):
-        try:
-            from nodes.robots.ep01 import ep_dashboard as _ep_dashboard
-            hw = _ep_dashboard.get('hw_link', 'Offline')
-            if 'Online' not in hw:
-                return False, f'ep01 not connected (hw_link={hw})'
-        except ImportError:
-            return False, 'ep01 module not available'
+        _ep_dash, _ = _get_ep01_dashboard()
+        if _ep_dash is None:
+            write_log('[CONDITION] ep01 모듈을 찾을 수 없음 (nodes.robots.ep01 / ep01 모두 미로드)')
+            return False, 'ep01 module not loaded'
+        hw = _ep_dash.get('hw_link', 'Offline')
+        write_log(f'[CONDITION] ep01 hw_link={hw!r}')
+        if 'Online' not in hw:
+            return False, f'ep01 not connected (hw_link={hw})'
 
     ep01_batt_min = conditions.get('ep01_battery_min')
     if ep01_batt_min is not None:
-        try:
-            from nodes.robots.ep01 import ep_dashboard as _ep_dashboard, ep_state as _ep_state
-            hw = _ep_dashboard.get('hw_link', 'Offline')
-            if 'Online' not in hw:
-                return False, 'ep01 not connected (cannot check battery)'
-            min_pct = _coerce_float(ep01_batt_min, 0.0)
-            batt = _ep_state.get('battery', -1)
-            if batt < 0:
-                return False, 'ep01 battery unknown'
-            if batt < min_pct:
-                return False, f'ep01 battery too low ({batt}% < {min_pct:.0f}%)'
-        except ImportError:
-            return False, 'ep01 module not available'
+        _ep_dash, _ep_st = _get_ep01_dashboard()
+        if _ep_dash is None:
+            return False, 'ep01 module not loaded'
+        hw = _ep_dash.get('hw_link', 'Offline')
+        if 'Online' not in hw:
+            return False, 'ep01 not connected (cannot check battery)'
+        min_pct = _coerce_float(ep01_batt_min, 0.0)
+        batt = (_ep_st or {}).get('battery', -1)
+        if batt < 0:
+            return False, 'ep01 battery unknown'
+        if batt < min_pct:
+            return False, f'ep01 battery too low ({batt}% < {min_pct:.0f}%)'
 
     return True, ''
 
