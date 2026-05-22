@@ -77,6 +77,7 @@ ep_state = {
 }
 ep_target_vel = {'vx': 0.0, 'vy': 0.0, 'vz': 0.0}
 ep_node_intent = {"vx": 0.0, "vy": 0.0, "wz": 0.0, "stop": False, "trigger_time": time.monotonic()}
+ep_selected_worker_id = None
 
 sys_net_str = "Loading Network..."
 
@@ -116,22 +117,83 @@ def _ensure_default_ep_worker(conn_type='sta'):
         return None
 
 
+def _ep_worker_ids():
+    if ep_manager is None:
+        return []
+    return list(ep_manager.list_workers())
+
+
+def _ep_pick_selected_worker():
+    global ep_selected_worker_id
+    worker_ids = _ep_worker_ids()
+    if not worker_ids:
+        ep_selected_worker_id = None
+        return None
+    if ep_selected_worker_id in worker_ids:
+        return ep_selected_worker_id
+    ep_selected_worker_id = worker_ids[0]
+    return ep_selected_worker_id
+
+
+def _ep_refresh_worker_list_ui():
+    if not dpg.does_item_exist("ep_worker_list"):
+        return
+    worker_ids = _ep_worker_ids()
+    dpg.configure_item("ep_worker_list", items=worker_ids)
+    selected = _ep_pick_selected_worker()
+    if selected and selected in worker_ids:
+        try:
+            dpg.set_value("ep_worker_list", selected)
+        except Exception:
+            pass
+
+
+def _ep_start_new_worker(sender=None, app_data=None, user_data=None):
+    if ep_manager is None:
+        return
+    worker_index = len(_ep_worker_ids()) + 1
+    worker_id = f"ep01_{worker_index}"
+    ep_ip = str(EP01_NETWORK_CONFIG.get('ep_ip', '192.168.42.2'))
+    ep_port = int(EP01_NETWORK_CONFIG.get('ep_port', 40924))
+    flask_port = int(EP01_NETWORK_CONFIG.get('flask_port', 5050)) + max(0, worker_index - 1)
+    worker_port = 12000 + max(0, worker_index - 1)
+    try:
+        ep_manager.spawn_worker(worker_id, worker_port=worker_port, ep_ip=ep_ip, ep_port=ep_port, flask_port=flask_port)
+        global ep_selected_worker_id
+        ep_selected_worker_id = worker_id
+        _ep_refresh_worker_list_ui()
+    except Exception as e:
+        write_log(f"[EP] failed to start worker {worker_id}: {e}")
+
+
+def _ep_on_select_worker(sender, app_data, user_data):
+    global ep_selected_worker_id
+    choice = str(app_data or "").strip()
+    if choice:
+        ep_selected_worker_id = choice
+
+
+def _ep_connect_selected_worker(conn_type='sta'):
+    worker_id = _ep_pick_selected_worker()
+    if ep_manager is None or not worker_id:
+        return
+    ep_manager.send_cmd(worker_id, 'connect', {'conn_type': conn_type})
+
+
 def btn_connect_ep_sta(sender=None, app_data=None, user_data=None):
     if ep_manager is None:
         return
-    worker_id = _ensure_default_ep_worker('sta')
-    if not worker_id:
-        return
-    ep_manager.send_cmd(worker_id, 'connect', {'conn_type': 'sta'})
+    worker_id = _ep_pick_selected_worker() or _ensure_default_ep_worker('sta')
+    if worker_id:
+        ep_manager.send_cmd(worker_id, 'connect', {'conn_type': 'sta'})
 
 
 def btn_connect_ep_ap(sender=None, app_data=None, user_data=None):
     if ep_manager is None:
         return
-    worker_id = _ensure_default_ep_worker('ap')
-    if not worker_id:
-        return
-    ep_manager.send_cmd(worker_id, 'connect', {'conn_type': 'ap'})
+    worker_id = _ep_pick_selected_worker() or _ensure_default_ep_worker('ap')
+    if worker_id:
+        ep_manager.send_cmd(worker_id, 'connect', {'conn_type': 'ap'})
 
 
 def stop_ep_camera_pipeline():
@@ -1491,6 +1553,11 @@ def __init_ui__():
                         dpg.add_text("Battery: -%", tag="ep_dash_battery", color=(100,255,100))
                         dpg.add_text("SN: Unknown", tag="ep_dash_sn", color=(200,200,200))
                         dpg.add_spacer(height=5)
+                        dpg.add_text("Worker Select", color=(120,200,255))
+                        dpg.add_listbox(items=[], num_items=4, tag="ep_worker_list", callback=_ep_on_select_worker)
+                        dpg.add_button(label="Refresh Workers", callback=lambda: _ep_refresh_worker_list_ui(), width=120)
+                        dpg.add_same_line()
+                        dpg.add_button(label="Start New EP", callback=_ep_start_new_worker, width=100)
                         with dpg.group(horizontal=True):
                             dpg.add_button(label="Conn STA", callback=btn_connect_ep_sta, width=80)
                             dpg.add_button(label="Conn AP", callback=btn_connect_ep_ap, width=80)
@@ -1590,6 +1657,9 @@ def start_gui():
     last_fb_time = 0
 
     while dpg.is_dearpygui_running():
+        if ep_manager is not None:
+            _ep_refresh_worker_list_ui()
+
         # --- MT4 UI Update ---
         if mt4_dashboard["last_pkt_time"] > 0: dpg.set_value("mt4_dash_status", f"Status: {mt4_dashboard['status']}")
         if dpg.does_item_exist("mt4_dash_latency"): 
@@ -1692,6 +1762,17 @@ def start_gui():
                 dpg.set_value("dash_net_if", f"Interfaces: {sys_net_str.replace(chr(10), ' | ')}")
             
         if HAS_EP:
+            selected_worker = _ep_pick_selected_worker()
+            if ep_manager is not None and selected_worker:
+                try:
+                    resp = ep_manager.get_state(selected_worker, timeout=0.3)
+                    result = (resp or {}).get('result', {}) if isinstance(resp, dict) else {}
+                    if isinstance(result, dict):
+                        ep_dashboard.update(result.get('ep_dashboard', {}))
+                        ep_state.update(result.get('ep_state', {}))
+                except Exception:
+                    pass
+
             ep_link = ep_dashboard.get('hw_link', 'Offline')
             dpg.set_value("ep_dash_link", f"HW: {ep_link}")
             if "Online" in ep_link: dpg.configure_item("ep_dash_link", color=(0,255,0))
@@ -1708,6 +1789,11 @@ def start_gui():
             dpg.set_value("ep_dash_vx", f"Vx Cmd: {ep_node_intent.get('vx', 0.0):.2f}")
             dpg.set_value("ep_dash_vy", f"Vy Cmd: {ep_node_intent.get('vy', 0.0):.2f}")
             dpg.set_value("ep_dash_wz", f"Wz Cmd: {ep_node_intent.get('wz', 0.0):.2f}")
+            if dpg.does_item_exist("ep_worker_list") and selected_worker:
+                try:
+                    dpg.set_value("ep_worker_list", selected_worker)
+                except Exception:
+                    pass
 
         # --- Node Engine Tick ---
         if engine_module.is_running and (time.time() - last_logic_time > LOGIC_RATE):
