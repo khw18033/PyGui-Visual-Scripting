@@ -15,6 +15,7 @@ class PortType(Enum):
 node_registry = {}
 link_registry = {}
 is_running = False
+run_generation = 0  # RUN 버튼 누를 때마다 증가 → RECV 재시작 감지용
 SAVE_DIR = "Node_Files"
 if not os.path.exists(SAVE_DIR): 
     os.makedirs(SAVE_DIR)

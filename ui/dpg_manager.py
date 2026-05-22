@@ -1362,8 +1362,10 @@ class NodeUIRenderer:
                 dpg.add_text("Flow Out")
 
 # Callback functions
-def toggle_exec(s, a): 
+def toggle_exec(s, a):
     engine_module.is_running = not engine_module.is_running
+    if engine_module.is_running:
+        engine_module.run_generation += 1
     dpg.set_item_label("btn_run", "STOP" if engine_module.is_running else "RUN SCRIPT")
     if HAS_GO1 and engine_module.is_running:
         for node in node_registry.values():

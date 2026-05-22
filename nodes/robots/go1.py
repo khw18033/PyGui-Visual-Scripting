@@ -1941,7 +1941,8 @@ class Go1ActionNode(BaseNode):
                 go1_node_intent['stop'] = True
                 time.sleep(0.15)
 
-        self._seq_running = False
+        if self._seq_gen == seq_gen:
+            self._seq_running = False
         write_log("[GO1 ACTION SEQ] 시퀀스 완료")
 
     def execute(self):
@@ -3567,7 +3568,7 @@ class Go1MissionReceiverNode(BaseNode):
         self._last_has_mission = False
         self._last_error = ''
         self._new_mission_pulse = False
-        self._was_running = False
+        self._last_run_generation = -1
 
     def _read_source_text(self, mode, source, timeout_sec):
         source = str(source or '').strip()
@@ -3594,14 +3595,14 @@ class Go1MissionReceiverNode(BaseNode):
             return resp.read().decode(charset, errors='replace')
 
     def execute(self):
-        now_running = bool(engine_module.is_running)
-        if now_running and not self._was_running:
+        cur_gen = engine_module.run_generation
+        if cur_gen != self._last_run_generation:
+            self._last_run_generation = cur_gen
             global _go1_mission_run_id
             _go1_mission_run_id += 1
             self._last_signature = ''
             self._last_poll_mono = 0.0
             write_log("[GO1 MISSION RX] 스크립트 재시작 감지 - 시그니처 초기화")
-        self._was_running = now_running
 
         # go1가 연결된 상태에서 배터리 값이 아직 수신되지 않은 경우 폴링 대기
         # (SDK 초기화 직후 battery=0으로 나오는 race condition 방지)
@@ -3698,11 +3699,22 @@ def _evaluate_mission_conditions(conditions):
 
     def _get_ep01_dashboard():
         import sys as _sys
-        for _name in ('nodes.robots.ep01', 'ep01'):
+        # Online 상태를 보이는 모듈 우선 반환 (ep_manager worker 모드에서는
+        # 메인 프로세스의 ep01.ep_dashboard가 Offline이고
+        # ui.dpg_manager.ep_dashboard가 실제 상태를 반영함)
+        candidates = ('nodes.robots.ep01', 'ep01', 'ui.dpg_manager', 'dpg_manager')
+        fallback = (None, None)
+        for _name in candidates:
             _mod = _sys.modules.get(_name)
-            if _mod is not None and hasattr(_mod, 'ep_dashboard'):
-                return getattr(_mod, 'ep_dashboard', {}), getattr(_mod, 'ep_state', {})
-        return None, None
+            if _mod is None or not hasattr(_mod, 'ep_dashboard'):
+                continue
+            _dash = getattr(_mod, 'ep_dashboard', {})
+            _st = getattr(_mod, 'ep_state', {})
+            if 'Online' in _dash.get('hw_link', ''):
+                return _dash, _st
+            if fallback == (None, None):
+                fallback = (_dash, _st)
+        return fallback
 
     if _coerce_bool(conditions.get('ep01_connected', False), False):
         _ep_dash, _ = _get_ep01_dashboard()
