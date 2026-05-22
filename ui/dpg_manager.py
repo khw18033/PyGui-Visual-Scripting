@@ -1534,16 +1534,16 @@ def __init_ui__():
                     with dpg.child_window(width=260, height=160, border=True):
                         dpg.add_text("STA Robots", color=(120,255,180))
                         dpg.add_listbox(items=[], num_items=4, tag="ep_sta_robot_list", callback=_ep_on_select_sta_robot)
-                        dpg.add_button(label="Scan STA", callback=_ep_scan_sta_robots, width=90)
-                        dpg.add_same_line()
-                        dpg.add_button(label="Connect", callback=_ep_connect_selected_sta_robot, width=90)
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="Refresh", callback=lambda: _ep_refresh_worker_list_ui(), width=70)
+                            dpg.add_button(label="New", callback=_ep_start_new_worker, width=50)
 
                     with dpg.child_window(width=300, height=160, border=True):
                         dpg.add_text("Odometry", color=(0,255,255))
                         dpg.add_text("Pos X: 0.000", tag="ep_dash_px")
-                        dpg.add_text("Pos Y: 0.000", tag="ep_dash_py")
-                        dpg.add_text("Speed: 0.000", tag="ep_dash_spd")
-                        dpg.add_text("Accel Z: 0.000", tag="ep_dash_acc")
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="Scan STA", callback=_ep_scan_sta_robots, width=90)
+                            dpg.add_button(label="Connect", callback=_ep_connect_selected_sta_robot, width=90)
 
                     with dpg.child_window(width=250, height=160, border=True):
                         dpg.add_text("Commands", color=(255,200,0))
@@ -1635,27 +1635,6 @@ def __init_ui__():
             # ================= [EP Dashboard Tab] =================
             with dpg.tab(label="EP Dashboard"):
                 with dpg.group(horizontal=True):
-                    with dpg.child_window(width=250, height=150, border=True):
-                        dpg.add_text("EP Status", color=(150,150,150))
-                        dpg.add_text("HW: Offline", tag="ep_dash_link", color=(0,255,0))
-                        dpg.add_text("Battery: -%", tag="ep_dash_battery", color=(100,255,100))
-                        dpg.add_text("SN: Unknown", tag="ep_dash_sn", color=(200,200,200))
-                        dpg.add_spacer(height=5)
-                        dpg.add_text("Worker Select", color=(120,200,255))
-                        dpg.add_listbox(items=[], num_items=4, tag="ep_worker_list", callback=_ep_on_select_worker)
-                        dpg.add_button(label="Refresh Workers", callback=lambda: _ep_refresh_worker_list_ui(), width=120)
-                        dpg.add_same_line()
-                        dpg.add_button(label="Start New EP", callback=_ep_start_new_worker, width=100)
-                        dpg.add_spacer(height=5)
-                        dpg.add_text("STA Robots", color=(120,255,180))
-                        dpg.add_listbox(items=[], num_items=4, tag="ep_sta_robot_list", callback=_ep_on_select_sta_robot)
-                        dpg.add_button(label="Scan STA Robots", callback=_ep_scan_sta_robots, width=120)
-                        dpg.add_same_line()
-                        dpg.add_button(label="Connect Selected", callback=_ep_connect_selected_sta_robot, width=120)
-                        with dpg.group(horizontal=True):
-                            dpg.add_button(label="Conn STA", callback=btn_connect_ep_sta, width=80)
-                            dpg.add_button(label="Conn AP", callback=btn_connect_ep_ap, width=80)
-
                     with dpg.child_window(width=300, height=150, border=True):
                         dpg.add_text("Odometry", color=(0,255,255))
                         dpg.add_text("Pos X: 0.000", tag="ep_dash_px")
