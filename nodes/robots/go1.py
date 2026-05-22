@@ -1886,6 +1886,7 @@ class Go1ActionNode(BaseNode):
         self._last_mission_action_signature = ''
         self._seq_running = False
         self._seq_thread = None
+        self._was_running = False
 
     def _run_sequence(self, steps):
         write_log(f"[GO1 ACTION SEQ] 시퀀스 시작: {len(steps)}단계")
@@ -1895,7 +1896,7 @@ class Go1ActionNode(BaseNode):
             mode = _resolve_go1_action_mode(step, default_mode='Stand')
             v1 = _coerce_float(step.get('v1', step.get('value', 0.2)), 0.2)
             duration = _coerce_float(step.get('duration_sec', step.get('duration', 0.5)), 0.5)
-            write_log(f"[GO1 ACTION SEQ] 단계 {i+1}/{len(steps)}: mode={mode} v1={v1} duration={duration}s")
+            write_log(f"[GO1 ACTION SEQ] 단계 {i+1}/{len(steps)} 시작: mode={mode} v1={v1} duration={duration}s")
 
             if mode == "Stand":
                 go1_node_intent['stop'] = True
@@ -1903,7 +1904,11 @@ class Go1ActionNode(BaseNode):
                 go1_node_intent['vy'] = 0.0
                 go1_node_intent['wz'] = 0.0
                 go1_node_intent['trigger_time'] = time.monotonic()
+                if duration > 0:
+                    time.sleep(duration)
             else:
+                # stop 플래그를 명시적으로 해제하고 모션 시작
+                go1_node_intent['stop'] = False
                 go1_node_intent['vx'] = v1 if mode == "Walk Fwd/Back" else 0.0
                 go1_node_intent['vy'] = v1 if mode == "Walk Strafe" else 0.0
                 go1_node_intent['wz'] = v1 if mode == "Turn" else 0.0
@@ -1911,20 +1916,27 @@ class Go1ActionNode(BaseNode):
                 deadline = time.monotonic() + duration
                 while time.monotonic() < deadline and self._seq_running:
                     go1_node_intent['trigger_time'] = time.monotonic()
-                    time.sleep(0.05)
+                    time.sleep(0.02)  # 20ms: hold_timeout(100ms) 대비 5배 여유
+
+            write_log(f"[GO1 ACTION SEQ] 단계 {i+1}/{len(steps)} 완료")
 
             if i < len(steps) - 1:
+                # 단계 간 정지: trigger_time 갱신 없이 stop만 설정 → driver가 소비 후 자연 만료
                 go1_node_intent['vx'] = 0.0
                 go1_node_intent['vy'] = 0.0
                 go1_node_intent['wz'] = 0.0
                 go1_node_intent['stop'] = True
-                go1_node_intent['trigger_time'] = time.monotonic()
-                time.sleep(0.1)
+                time.sleep(0.15)
 
         self._seq_running = False
         write_log("[GO1 ACTION SEQ] 시퀀스 완료")
 
     def execute(self):
+        now_running = bool(engine_module.is_running)
+        if now_running and not self._was_running:
+            self._last_mission_action_signature = ''
+        self._was_running = now_running
+
         mode = self.state.get('mode', 'Stand')
         v1 = self.fetch_input_data(self.in_val1)
         v1 = float(v1) if v1 is not None else float(self.state.get('v1', 0.2))
@@ -3540,6 +3552,7 @@ class Go1MissionReceiverNode(BaseNode):
         self._last_has_mission = False
         self._last_error = ''
         self._new_mission_pulse = False
+        self._was_running = False
 
     def _read_source_text(self, mode, source, timeout_sec):
         source = str(source or '').strip()
@@ -3566,6 +3579,13 @@ class Go1MissionReceiverNode(BaseNode):
             return resp.read().decode(charset, errors='replace')
 
     def execute(self):
+        now_running = bool(engine_module.is_running)
+        if now_running and not self._was_running:
+            self._last_signature = ''
+            self._last_poll_mono = 0.0
+            write_log("[GO1 MISSION RX] 스크립트 재시작 감지 - 시그니처 초기화")
+        self._was_running = now_running
+
         mode = str(self.state.get('mode', 'HTTP')).strip().upper()
         source = str(self.state.get('source', GO1_MISSION_PENDING_URL)).strip()
         poll_interval_sec = max(0.0, _coerce_float(self.state.get('poll_interval_sec', GO1_MISSION_POLL_SEC), GO1_MISSION_POLL_SEC))
