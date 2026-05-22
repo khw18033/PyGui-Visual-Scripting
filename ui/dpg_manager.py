@@ -81,6 +81,7 @@ ep_selected_worker_id = None
 ep_selected_robot_sn = None
 ep_selected_robot_ip = None
 ep_scanned_sta_robots = []
+ep_worker_states = {}
 
 sys_net_str = "Loading Network..."
 
@@ -211,7 +212,8 @@ def _ep_connect_selected_sta_robot(sender=None, app_data=None, user_data=None):
         _ep_scan_sta_robots()
     if not ep_selected_robot_sn:
         return
-    ep_manager.send_cmd(worker_id, 'connect', {'conn_type': 'sta', 'sn': ep_selected_robot_sn})
+    write_log(f"[EP] Connecting worker={worker_id} to SN={ep_selected_robot_sn} IP={ep_selected_robot_ip}")
+    ep_manager.send_cmd(worker_id, 'connect', {'conn_type': 'sta', 'sn': ep_selected_robot_sn, 'robot_ip': ep_selected_robot_ip})
 
 
 def _ep_start_new_worker(sender=None, app_data=None, user_data=None):
@@ -1515,24 +1517,43 @@ def __init_ui__():
             # ================= [MT4 Dashboard Tab] =================
             with dpg.tab(label="MT4 Dashboard"):
                 with dpg.group(horizontal=True):
-                    with dpg.child_window(width=250, height=130, border=True):
+                    with dpg.child_window(width=240, height=160, border=True):
                         dpg.add_text("MT4 Status", color=(150,150,150)); 
                         dpg.add_text("Status: Idle", tag="mt4_dash_status", color=(0,255,0))
                         dpg.add_text("HW: Offline", tag="mt4_dash_link", color=(255,0,0))
                         dpg.add_text("Latency: 0.0 ms", tag="mt4_dash_latency", color=(255,255,0))
-                    with dpg.child_window(width=350, height=130, border=True):
-                        dpg.add_text("Manual Control", color=(255,200,0))
+                        dpg.add_text("", tag="ep_dash_workers", wrap=210, color=(220,220,220))
+
+                    with dpg.child_window(width=180, height=160, border=True):
+                        dpg.add_text("Worker Select", color=(120,200,255))
+                        dpg.add_listbox(items=[], num_items=4, tag="ep_worker_list", callback=_ep_on_select_worker)
+                        dpg.add_button(label="Refresh", callback=lambda: _ep_refresh_worker_list_ui(), width=70)
+                        dpg.add_same_line()
+                        dpg.add_button(label="New", callback=_ep_start_new_worker, width=50)
+
+                    with dpg.child_window(width=260, height=160, border=True):
+                        dpg.add_text("STA Robots", color=(120,255,180))
+                        dpg.add_listbox(items=[], num_items=4, tag="ep_sta_robot_list", callback=_ep_on_select_sta_robot)
+                        dpg.add_button(label="Scan STA", callback=_ep_scan_sta_robots, width=90)
+                        dpg.add_same_line()
+                        dpg.add_button(label="Connect", callback=_ep_connect_selected_sta_robot, width=90)
+
+                    with dpg.child_window(width=300, height=160, border=True):
+                        dpg.add_text("Odometry", color=(0,255,255))
+                        dpg.add_text("Pos X: 0.000", tag="ep_dash_px")
+                        dpg.add_text("Pos Y: 0.000", tag="ep_dash_py")
+                        dpg.add_text("Speed: 0.000", tag="ep_dash_spd")
+                        dpg.add_text("Accel Z: 0.000", tag="ep_dash_acc")
+
+                    with dpg.child_window(width=250, height=160, border=True):
+                        dpg.add_text("Commands", color=(255,200,0))
+                        dpg.add_text("Vx Cmd: 0.00", tag="ep_dash_vx")
+                        dpg.add_text("Vy Cmd: 0.00", tag="ep_dash_vy")
+                        dpg.add_text("Wz Cmd: 0.00", tag="ep_dash_wz")
+
                         with dpg.group(horizontal=True):
-                            dpg.add_button(label="X+", width=60, callback=mt4_manual_control_callback, user_data=('x', 10))
-                            dpg.add_button(label="X-", width=60, callback=mt4_manual_control_callback, user_data=('x', -10))
-                            dpg.add_text("|")
-                            dpg.add_button(label="Y+", width=60, callback=mt4_manual_control_callback, user_data=('y', 10))
-                            dpg.add_button(label="Y-", width=60, callback=mt4_manual_control_callback, user_data=('y', -10))
-                        with dpg.group(horizontal=True):
-                            dpg.add_button(label="Z+", width=60, callback=mt4_manual_control_callback, user_data=('z', 10))
-                            dpg.add_button(label="Z-", width=60, callback=mt4_manual_control_callback, user_data=('z', -10))
-                            dpg.add_text("|")
-                            dpg.add_button(label="G+", width=60, callback=mt4_manual_control_callback, user_data=('gripper', 5))
+                            dpg.add_button(label="Conn STA", callback=btn_connect_ep_sta, width=80)
+                            dpg.add_button(label="Conn AP", callback=btn_connect_ep_ap, width=80)
                             dpg.add_button(label="G-", width=60, callback=mt4_manual_control_callback, user_data=('gripper', -5))
                         with dpg.group(horizontal=True):
                             dpg.add_button(label="R+", width=60, callback=mt4_manual_control_callback, user_data=('roll', 5))
@@ -1836,15 +1857,44 @@ def start_gui():
             
         if HAS_EP:
             selected_worker = _ep_pick_selected_worker()
-            if ep_manager is not None and selected_worker:
-                try:
-                    resp = ep_manager.get_state(selected_worker, timeout=0.3)
-                    result = (resp or {}).get('result', {}) if isinstance(resp, dict) else {}
-                    if isinstance(result, dict):
-                        ep_dashboard.update(result.get('ep_dashboard', {}))
-                        ep_state.update(result.get('ep_state', {}))
-                except Exception:
-                    pass
+            worker_ids = _ep_worker_ids()
+            worker_lines = []
+            if ep_manager is not None and worker_ids:
+                for worker_id in worker_ids:
+                    try:
+                        resp = ep_manager.get_state(worker_id, timeout=0.2)
+                        result = (resp or {}).get('result', {}) if isinstance(resp, dict) else {}
+                        if not isinstance(result, dict):
+                            continue
+                        worker_dashboard = result.get('ep_dashboard', {}) or {}
+                        worker_state = result.get('ep_state', {}) or {}
+                        ep_worker_states[worker_id] = {
+                            'ep_dashboard': dict(worker_dashboard),
+                            'ep_state': dict(worker_state),
+                        }
+                        sn = worker_dashboard.get('sn', 'Unknown')
+                        hw = worker_dashboard.get('hw_link', 'Offline')
+                        bat = worker_state.get('battery', -1)
+                        px = worker_state.get('pos_x', 0.0)
+                        py = worker_state.get('pos_y', 0.0)
+                        spd = worker_state.get('speed', 0.0)
+                        worker_lines.append(f"{worker_id} | {sn} | {hw} | Bat {bat if bat >= 0 else '-'} | ({px:.2f}, {py:.2f}) | {spd:.2f}")
+                    except Exception:
+                        continue
+
+            selected_bundle = ep_worker_states.get(selected_worker, {}) if selected_worker else {}
+            selected_dash = selected_bundle.get('ep_dashboard', {}) or {}
+            selected_state = selected_bundle.get('ep_state', {}) or {}
+            if selected_dash:
+                ep_dashboard.update(selected_dash)
+            if selected_state:
+                ep_state.update(selected_state)
+
+            if dpg.does_item_exist("ep_dash_workers"):
+                if worker_lines:
+                    dpg.set_value("ep_dash_workers", "\n".join(worker_lines))
+                else:
+                    dpg.set_value("ep_dash_workers", "No connected EP workers")
 
             ep_link = ep_dashboard.get('hw_link', 'Offline')
             dpg.set_value("ep_dash_link", f"HW: {ep_link}")
@@ -1867,6 +1917,7 @@ def start_gui():
                     dpg.set_value("ep_worker_list", selected_worker)
                 except Exception:
                     pass
+            _ep_refresh_sta_robot_list_ui()
 
         # --- Node Engine Tick ---
         if engine_module.is_running and (time.time() - last_logic_time > LOGIC_RATE):

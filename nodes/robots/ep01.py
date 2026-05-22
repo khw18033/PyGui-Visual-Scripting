@@ -45,11 +45,19 @@ if EP_USE_MEDIA_MOCK:
 try:
     from robomaster import robot
     from robomaster import conn as rm_conn
+    from robomaster import config as rm_config
     HAS_ROBOMASTER_SDK = True
 except ImportError as e:
     rm_conn = None
+    rm_config = None
     HAS_ROBOMASTER_SDK = False
     write_log(f"Warning: 'robomaster' module not found. ({e})")
+
+if rm_config is not None and not hasattr(rm_config, 'DEFAULT_CONN_PROTO'):
+    try:
+        rm_config.DEFAULT_CONN_PROTO = getattr(rm_config, 'DEFAULT_PROTO_TYPE', 'udp')
+    except Exception:
+        rm_config.DEFAULT_CONN_PROTO = 'udp'
 
 ep_cmd_sock = None
 ep_robot_inst = None
@@ -221,8 +229,9 @@ def _normalize_ep_conn_type(conn_mode):
         return rm_conn.CONNECTION_USB_RNDIS
     return conn_mode
 
-def connect_ep_thread_func(conn_mode, sn=None):
+def connect_ep_thread_func(conn_mode, sn=None, robot_ip=None):
     global ep_robot_inst
+    previous_robot_ip = None
 
     if not HAS_ROBOMASTER_SDK:
         ep_dashboard["hw_link"] = "Simulation"
@@ -243,6 +252,11 @@ def connect_ep_thread_func(conn_mode, sn=None):
     try:
         write_log("EP_DEBUG: Instantiating robot.Robot()...")
         ep_robot_inst = robot.Robot()
+
+        if rm_config is not None and robot_ip:
+            previous_robot_ip = getattr(rm_config, 'ROBOT_IP_STR', None)
+            rm_config.ROBOT_IP_STR = robot_ip
+            write_log(f"EP_DEBUG: Using discovered robot_ip='{robot_ip}' for connection.")
 
         normalized_conn_mode = _normalize_ep_conn_type(conn_mode)
         if sn:
@@ -276,9 +290,17 @@ def connect_ep_thread_func(conn_mode, sn=None):
         ep_robot_inst.chassis.sub_imu(freq=10, callback=ep_sub_imu)
         write_log("EP_DEBUG: All subscriptions active.")
 
+        if rm_config is not None and robot_ip:
+            rm_config.ROBOT_IP_STR = previous_robot_ip
+
     except Exception as e:
         ep_robot_inst = None
         ep_dashboard["hw_link"] = "Offline"
+        if rm_config is not None and robot_ip:
+            try:
+                rm_config.ROBOT_IP_STR = previous_robot_ip
+            except Exception:
+                pass
         import traceback
         error_details = traceback.format_exc()
         write_log(f"EP Connect Error (Detailed): {e}")

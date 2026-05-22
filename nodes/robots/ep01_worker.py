@@ -101,7 +101,8 @@ class WorkerServer(threading.Thread):
                     # call connect in a background thread to avoid blocking
                     conn_type = args.get('conn_type', 'sta')
                     sn = args.get('sn')
-                    t = threading.Thread(target=ep01_mod.connect_ep_thread_func, args=(conn_type, sn), daemon=True)
+                    robot_ip = args.get('robot_ip')
+                    t = threading.Thread(target=ep01_mod.connect_ep_thread_func, args=(conn_type, sn, robot_ip), daemon=True)
                     t.start()
                     return {'type': 'resp', 'req_id': req_id, 'ok': True, 'result': {'msg': 'connect started'}}
                 elif cmd == 'scan_sta':
