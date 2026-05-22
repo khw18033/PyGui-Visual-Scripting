@@ -90,7 +90,7 @@ def main():
                 if not target:
                     print('unknown id')
                     continue
-                req = {'type': 'cmd', 'req_id': 10, 'cmd': 'drive_speed', 'args': {'x': float(sx), 'y': float(sy), 'z': float(sz)}}
+                req = {'type': 'cmd', 'req_id': 10, 'cmd': 'drive_wheels', 'args': {'x': float(sx), 'y': float(sy), 'z': float(sz)}}
                 resp = send_and_recv('127.0.0.1', target['port'], req)
                 print('resp', resp)
             elif parts[0] == 'action' and len(parts) >= 3:

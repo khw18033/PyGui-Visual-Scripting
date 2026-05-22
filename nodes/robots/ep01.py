@@ -61,7 +61,7 @@ if rm_config is not None and not hasattr(rm_config, 'DEFAULT_CONN_PROTO'):
 
 ep_cmd_sock = None
 ep_robot_inst = None
-ep_drive_speed_sender = None
+ep_drive_wheels_sender = None
 ep_command_sender = None
 EP_IP = EP01_NETWORK_CONFIG['ep_ip']
 EP_PORT = EP01_NETWORK_CONFIG['ep_port']
@@ -220,9 +220,28 @@ def _wait_for_action_completion(action_obj, timeout_sec=EP_ARM_ACTION_TIMEOUT):
             waiter()
 
 
-def set_ep_drive_speed_sender(sender):
-    global ep_drive_speed_sender
-    ep_drive_speed_sender = sender
+def set_ep_drive_wheels_sender(sender):
+    global ep_drive_wheels_sender
+    ep_drive_wheels_sender = sender
+
+
+def _ep_velocity_to_wheels(vx, vy, wz):
+    # Convert chassis velocity command into mecanum wheel RPM command.
+    rpm_per_ms = 220.0
+    rpm_per_deg = 2.2
+    trans_x = float(vx) * rpm_per_ms
+    trans_y = float(vy) * rpm_per_ms
+    rot = -float(wz) * rpm_per_deg
+
+    w1 = trans_x - trans_y + rot
+    w2 = trans_x + trans_y - rot
+    w3 = trans_x - trans_y - rot
+    w4 = trans_x + trans_y + rot
+
+    def _clamp(v):
+        return int(max(-1000, min(1000, round(v))))
+
+    return _clamp(w1), _clamp(w2), _clamp(w3), _clamp(w4)
 
 
 def set_ep_command_sender(sender):
@@ -617,7 +636,7 @@ def ensure_ep_comm_thread_started():
 def ep_comm_thread():
     """
     EP 로봇 통신 스레드
-    - 움직임 명령 처리 (drive_speed)
+    - 움직임 명령 처리 (drive_wheels)
     - 팔/그리퍼 액션 큐 처리
     - 떨림 방지: 이전 속도와 다를 때만 전송
     """
@@ -757,7 +776,7 @@ def ep_comm_thread():
                 write_log("EP: 정지 신호 (Clean Brake)")
                 try:
                     # 정지 명령을 한 번만 전송
-                    ep_robot_inst.chassis.drive_speed(x=0, y=0, z=0, timeout=0.1)
+                    ep_robot_inst.chassis.drive_wheels(w1=0, w2=0, w3=0, w4=0, timeout=0.1)
                 except Exception as e:
                     write_log(f"EP 정지 오류: {e}")
                 
@@ -782,7 +801,8 @@ def ep_comm_thread():
         
         if vx != last_vx or vy != last_vy or wz != last_wz:
             try:
-                ep_robot_inst.chassis.drive_speed(x=vx, y=vy, z=wz, timeout=0.5)
+                w1, w2, w3, w4 = _ep_velocity_to_wheels(vx, vy, wz)
+                ep_robot_inst.chassis.drive_wheels(w1=w1, w2=w2, w3=w3, w4=w4, timeout=0.5)
                 is_moving = True
                 last_vx = vx
                 last_vy = vy
@@ -989,9 +1009,9 @@ class EPKeyboardNode(BaseNode):
             _ep_set_gripper(False)
             send_ep_command("grip_close")
 
-        if callable(ep_drive_speed_sender):
+        if callable(ep_drive_wheels_sender):
             try:
-                ep_drive_speed_sender(vx, vy, wz)
+                ep_drive_wheels_sender(vx, vy, wz)
             except Exception:
                 pass
 

@@ -139,7 +139,7 @@ class WorkerServer(threading.Thread):
                     except Exception as e:
                         return {'type': 'resp', 'req_id': req_id, 'ok': False, 'result': {'error': str(e)}}
                     return {'type': 'resp', 'req_id': req_id, 'ok': ok, 'result': {}}
-                elif cmd == 'drive_speed':
+                elif cmd == 'drive_wheels':
                     x = float(args.get('x', 0.0))
                     y = float(args.get('y', 0.0))
                     z = float(args.get('z', 0.0))

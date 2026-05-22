@@ -253,14 +253,14 @@ def _ep_connect_selected_worker(conn_type='sta'):
     ep_manager.send_cmd(worker_id, 'connect', {'conn_type': conn_type})
 
 
-def _ep_send_worker_drive_speed(vx, vy, wz):
+def _ep_send_worker_drive_wheels(vx, vy, wz):
     if ep_manager is None:
         return False
     worker_id = _ep_pick_selected_worker() or _ensure_default_ep_worker('sta')
     if not worker_id:
         return False
     try:
-        ep_manager.send_cmd(worker_id, 'drive_speed', {'x': float(vx), 'y': float(vy), 'z': float(wz)})
+        ep_manager.send_cmd(worker_id, 'drive_wheels', {'x': float(vx), 'y': float(vy), 'z': float(wz)})
         return True
     except Exception:
         return False
@@ -281,7 +281,7 @@ def _ep_send_worker_action(cmd_str):
 
 if ep01_module is not None:
     try:
-        ep01_module.set_ep_drive_speed_sender(_ep_send_worker_drive_speed)
+        ep01_module.set_ep_drive_wheels_sender(_ep_send_worker_drive_wheels)
         ep01_module.set_ep_command_sender(_ep_send_worker_action)
     except Exception:
         pass
