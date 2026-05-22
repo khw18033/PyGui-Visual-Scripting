@@ -7,6 +7,7 @@ import json
 import threading
 import subprocess
 import importlib
+from core.engine import write_log
 
 from core.engine import node_registry, link_registry, system_log_buffer, generate_uuid, PortType, HwStatus
 from core.input_manager import input_manager
@@ -61,6 +62,8 @@ try:
 except Exception:
     ep_manager = None
 
+from core.ep01_config import EP01_NETWORK_CONFIG
+
 HAS_EP = ep_manager is not None
 ep_dashboard = {"hw_link": "Offline", "sn": "Unknown", "conn_type": "None"}
 ep_state = {
@@ -88,6 +91,51 @@ def network_monitor_thread():
         except Exception:
             pass
         time.sleep(2)
+
+
+def _ensure_default_ep_worker(conn_type='sta'):
+    if ep_manager is None:
+        return None
+    workers = ep_manager.list_workers()
+    if workers:
+        return workers[0]
+
+    cfg = {
+        'id': 'ep01_default',
+        'port': 12000,
+        'ep_ip': str(EP01_NETWORK_CONFIG.get('ep_ip', '192.168.42.2')),
+        'ep_port': int(EP01_NETWORK_CONFIG.get('ep_port', 40924)),
+        'flask': int(EP01_NETWORK_CONFIG.get('flask_port', 5050)),
+    }
+    try:
+        ep_manager.spawn_worker(cfg['id'], worker_port=cfg['port'], ep_ip=cfg['ep_ip'], ep_port=cfg['ep_port'], flask_port=cfg['flask'])
+        time.sleep(0.3)
+        return cfg['id']
+    except Exception as e:
+        write_log(f"[EP] failed to start default worker: {e}")
+        return None
+
+
+def btn_connect_ep_sta(sender=None, app_data=None, user_data=None):
+    if ep_manager is None:
+        return
+    worker_id = _ensure_default_ep_worker('sta')
+    if not worker_id:
+        return
+    ep_manager.send_cmd(worker_id, 'connect', {'conn_type': 'sta'})
+
+
+def btn_connect_ep_ap(sender=None, app_data=None, user_data=None):
+    if ep_manager is None:
+        return
+    worker_id = _ensure_default_ep_worker('ap')
+    if not worker_id:
+        return
+    ep_manager.send_cmd(worker_id, 'connect', {'conn_type': 'ap'})
+
+
+def stop_ep_camera_pipeline():
+    return
 
 
 go1_manual_override_until = 0.0
