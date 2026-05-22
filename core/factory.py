@@ -55,17 +55,6 @@ except (ImportError, AttributeError) as e:
     Go1ServerJsonRecvNode = None
     Go1AutoAvoidanceNode = None
 
-from nodes.robots.ep01 import (
-    EPRobotDriver,
-    EPActionNode,
-    EPKeyboardNode,
-    EPCameraSourceNode,
-    EPCameraStreamNode,
-    EPVideoFrameSaveNode,
-    EPServerSenderNode,
-    EPServerJsonRecvNode,
-)
-
 class NodeFactory:
     @staticmethod
     def create_node(node_type, node_id=None):
@@ -111,14 +100,44 @@ class NodeFactory:
         elif node_type == "GO1_SERVER_SENDER" and HAS_GO1: node = ServerSenderNode(node_id)
         elif node_type == "GO1_SERVER_JSON_RECV" and HAS_GO1: node = Go1ServerJsonRecvNode(node_id)
         elif node_type == "GO1_AUTO_AVOIDANCE" and HAS_GO1: node = Go1AutoAvoidanceNode(node_id)
-        elif node_type == "EP_DRIVER": node = UniversalRobotNode(node_id, EPRobotDriver(), "EP Driver", "EP_DRIVER")
-        elif node_type == "EP_KEYBOARD": node = EPKeyboardNode(node_id)
-        elif node_type == "EP_ACTION": node = EPActionNode(node_id)
-        elif node_type == "EP_CAM_SRC": node = EPCameraSourceNode(node_id)
-        elif node_type == "EP_CAM_STREAM": node = EPCameraStreamNode(node_id)
-        elif node_type == "EP_VIS_SAVE": node = EPVideoFrameSaveNode(node_id)
-        elif node_type == "EP_SERVER_SENDER": node = EPServerSenderNode(node_id)
-        elif node_type == "EP_SERVER_JSON_RECV": node = EPServerJsonRecvNode(node_id)
+        elif node_type.startswith("EP_"):
+            try:
+                ep_module = importlib.import_module('nodes.robots.ep01')
+                EPRobotDriver = getattr(ep_module, 'EPRobotDriver')
+                EPActionNode = getattr(ep_module, 'EPActionNode')
+                EPKeyboardNode = getattr(ep_module, 'EPKeyboardNode')
+                EPCameraSourceNode = getattr(ep_module, 'EPCameraSourceNode')
+                EPCameraStreamNode = getattr(ep_module, 'EPCameraStreamNode')
+                EPVideoFrameSaveNode = getattr(ep_module, 'EPVideoFrameSaveNode')
+                EPServerSenderNode = getattr(ep_module, 'EPServerSenderNode')
+                EPServerJsonRecvNode = getattr(ep_module, 'EPServerJsonRecvNode')
+            except Exception as e:
+                print(f"⚠️  Failed to load EP nodes: {e}")
+                EPRobotDriver = None
+                EPActionNode = None
+                EPKeyboardNode = None
+                EPCameraSourceNode = None
+                EPCameraStreamNode = None
+                EPVideoFrameSaveNode = None
+                EPServerSenderNode = None
+                EPServerJsonRecvNode = None
+
+            if node_type == "EP_DRIVER" and EPRobotDriver is not None:
+                node = UniversalRobotNode(node_id, EPRobotDriver(), "EP Driver", "EP_DRIVER")
+            elif node_type == "EP_KEYBOARD" and EPKeyboardNode is not None:
+                node = EPKeyboardNode(node_id)
+            elif node_type == "EP_ACTION" and EPActionNode is not None:
+                node = EPActionNode(node_id)
+            elif node_type == "EP_CAM_SRC" and EPCameraSourceNode is not None:
+                node = EPCameraSourceNode(node_id)
+            elif node_type == "EP_CAM_STREAM" and EPCameraStreamNode is not None:
+                node = EPCameraStreamNode(node_id)
+            elif node_type == "EP_VIS_SAVE" and EPVideoFrameSaveNode is not None:
+                node = EPVideoFrameSaveNode(node_id)
+            elif node_type == "EP_SERVER_SENDER" and EPServerSenderNode is not None:
+                node = EPServerSenderNode(node_id)
+            elif node_type == "EP_SERVER_JSON_RECV" and EPServerJsonRecvNode is not None:
+                node = EPServerJsonRecvNode(node_id)
         
         if node: 
             node_registry[node_id] = node

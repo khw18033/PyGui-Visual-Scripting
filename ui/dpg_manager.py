@@ -56,21 +56,43 @@ try:
 except (ImportError, AttributeError):
     go1_module = None
 
-# --- [추가] RoboMaster EP 연동 ---
-try:
-    from nodes.robots.ep01 import (
-        ep_dashboard, ep_state, ep_target_vel, ep_node_intent,
-        btn_connect_ep_sta, btn_connect_ep_ap, stop_ep_camera_pipeline
-    )
-    import nodes.robots.ep01 as ep_module
-    HAS_EP = True
-except ImportError:
-    HAS_EP = False
-
 try:
     import core.ep_manager as ep_manager
 except Exception:
     ep_manager = None
+
+# --- [추가] RoboMaster EP 연동 ---
+# Do not import nodes.robots.ep01 in the GUI process. The SDK should be loaded
+# only inside worker processes spawned by core.ep_manager.
+HAS_EP = ep_manager is not None
+ep_dashboard = {"hw_link": "Offline", "sn": "Unknown", "conn_type": "None"}
+ep_state = {
+    "battery": -1,
+    "pos_x": 0.0,
+    "pos_y": 0.0,
+    "speed": 0.0,
+    "accel_x": 0.0,
+    "accel_y": 0.0,
+    "accel_z": 0.0,
+}
+ep_target_vel = {'vx': 0.0, 'vy': 0.0, 'vz': 0.0}
+ep_node_intent = {"vx": 0.0, "vy": 0.0, "wz": 0.0, "stop": False, "trigger_time": time.monotonic()}
+
+def btn_connect_ep_sta(sender=None, app_data=None, user_data=None):
+    if ep_manager is None:
+        return
+    for iid in ep_manager.list_workers():
+        ep_manager.send_cmd(iid, 'connect', {'conn_type': 'sta'})
+
+def btn_connect_ep_ap(sender=None, app_data=None, user_data=None):
+    if ep_manager is None:
+        return
+    for iid in ep_manager.list_workers():
+        ep_manager.send_cmd(iid, 'connect', {'conn_type': 'ap'})
+
+def stop_ep_camera_pipeline():
+    # camera pipeline is owned by worker processes now
+    return
 
 sys_net_str = "Loading Network..."
 def network_monitor_thread():
@@ -133,7 +155,8 @@ def go1_action_callback(sender, app_data, user_data):
         except: pass
 
 def ep_manual_control_callback(sender, app_data, user_data):
-    if not HAS_EP: return
+    if not HAS_EP:
+        return
     axis, step = user_data
     if axis in ("vx", "vy"):
         ep_node_intent[axis] = ep_node_intent.get(axis, 0.0) + step
@@ -146,8 +169,12 @@ def ep_manual_control_callback(sender, app_data, user_data):
     ep_target_vel['vz'] = ep_node_intent.get('wz', 0.0)
 
 def ep_action_callback(sender, app_data, user_data):
-    if not HAS_EP: return
-    ep_module.send_ep_command(user_data)
+    if ep_manager is None:
+        return
+    workers = ep_manager.list_workers()
+    if not workers:
+        return
+    ep_manager.send_cmd(workers[0], 'action', {'name': user_data})
 
 class NodeUIRenderer:
     key_map = {"A": 65, "B": 66, "C": 67, "S": 83, "W": 87, "SPACE": 32}
