@@ -9,7 +9,11 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from core import config
 from nodes.robots.mt4 import init_mt4_serial, auto_reconnect_mt4_thread, mt4_background_logger_thread
-from nodes.robots.ep01 import init_ep_network, ep_status_thread
+# Avoid importing nodes.robots.ep01 at module import time because it may load
+# native SDKs (robomaster, cv2, etc.) that can cause crashes in the GUI process.
+# Use the worker-based approach (core.ep_manager) to spawn separate processes
+# that load the SDK safely.
+import core.ep_manager as ep_manager
 from ui.dpg_manager import start_gui
 
 def select_go1_module():
@@ -78,8 +82,9 @@ def main():
         if go1_keepalive_thread_fn:
             threading.Thread(target=go1_keepalive_thread_fn, daemon=True).start()
 
-    init_ep_network()
-    threading.Thread(target=ep_status_thread, daemon=True).start()
+    # Do not initialize EP SDK in the main process. Use the GUI's EP Manager
+    # controls to start worker processes which will perform SDK initialization.
+    # Example: ep_manager.start_workers(configs)
     
     # Start DPG main UI
     start_gui()
