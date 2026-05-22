@@ -25,22 +25,31 @@ def select_go1_module():
     if not go1_files:
         print("No go1*.py files found in nodes/robots/")
         return False
-    
+
+    if len(go1_files) == 1:
+        selected = go1_files[0]
+        config.GO1_MODULE_NAME = selected
+        config_path = os.path.join(os.path.dirname(__file__), 'core', 'config.py')
+        with open(config_path, 'w') as f:
+            f.write(f"# Go1 Module Configuration\nGO1_MODULE_NAME = '{selected}'\n")
+        print(f"Go1 module auto-selected: {selected}\n")
+        return True
+
     print("\nAvailable Go1 modules:")
     for i, module_name in enumerate(go1_files, 1):
         print(f"  [{i}] {module_name}.py")
-    
+
     try:
         choice = int(input("\nSelect module (number): ")) - 1
         if 0 <= choice < len(go1_files):
             selected = go1_files[choice]
             config.GO1_MODULE_NAME = selected
-            
+
             # Update config.py file
             config_path = os.path.join(os.path.dirname(__file__), 'core', 'config.py')
             with open(config_path, 'w') as f:
                 f.write(f"# Go1 Module Configuration\nGO1_MODULE_NAME = '{selected}'\n")
-            
+
             print(f"Selected: {selected}\n")
             return True
         else:
