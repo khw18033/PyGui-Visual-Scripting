@@ -210,6 +210,7 @@ go1_state = {
     'mode': 1,
     'reason': "NONE",
     'battery': -1,
+    'battery_confirmed': False,  # True: 실제 배터리 값 수신 완료
     'control_latency_ms': 0.0,
 }
 
@@ -267,6 +268,8 @@ GO1_MISSION_DECISION_MODE = str(GO1_MISSION_CONFIG.get('decision_mode', 'accept_
 GO1_MISSION_ALLOWED_TYPES = list(GO1_MISSION_CONFIG.get('allowed_mission_types', ['go1', 'unity_path', 'robot_action']))
 GO1_MISSION_SCHEMA = dict(GO1_MISSION_CONFIG.get('schema', {}))
 GO1_MISSION_DEFAULTS = dict(GO1_MISSION_CONFIG.get('defaults', {}))
+
+_go1_mission_run_id = 0  # RECV 재시작 시 증가 → ACTION 시그니처 리셋 트리거
 
 go1_mission_state = {
     'status': 'Idle',
@@ -1478,17 +1481,25 @@ def go1_keepalive_thread():
                     go1_dashboard["hw_link"] = "Online (Active)" if go1_in_use else "Online (Listen)"
                     try:
                         if hasattr(state.bms, 'SOC'):
-                            go1_state['battery'] = int(state.bms.SOC)
+                            batt_val = int(state.bms.SOC)
+                            go1_state['battery'] = batt_val
+                            if batt_val > 0:
+                                go1_state['battery_confirmed'] = True
                         elif hasattr(state.bms, 'soc'):
-                            go1_state['battery'] = int(state.bms.soc)
+                            batt_val = int(state.bms.soc)
+                            go1_state['battery'] = batt_val
+                            if batt_val > 0:
+                                go1_state['battery_confirmed'] = True
                     except Exception:
                         pass
                 else:
                     go1_dashboard["hw_link"] = "Offline"
                     go1_state['battery'] = -1
+                    go1_state['battery_confirmed'] = False
             except Exception:
                 go1_dashboard["hw_link"] = "Offline"
                 go1_state['battery'] = -1
+                go1_state['battery_confirmed'] = False
 
         if not yaw0_initialized:
             yaw0 = raw_yaw
@@ -1886,7 +1897,7 @@ class Go1ActionNode(BaseNode):
         self._last_mission_action_signature = ''
         self._seq_running = False
         self._seq_thread = None
-        self._was_running = False
+        self._last_run_id = -1
 
     def _run_sequence(self, steps):
         write_log(f"[GO1 ACTION SEQ] 시퀀스 시작: {len(steps)}단계")
@@ -1932,10 +1943,9 @@ class Go1ActionNode(BaseNode):
         write_log("[GO1 ACTION SEQ] 시퀀스 완료")
 
     def execute(self):
-        now_running = bool(engine_module.is_running)
-        if now_running and not self._was_running:
+        if _go1_mission_run_id != self._last_run_id:
+            self._last_run_id = _go1_mission_run_id
             self._last_mission_action_signature = ''
-        self._was_running = now_running
 
         mode = self.state.get('mode', 'Stand')
         v1 = self.fetch_input_data(self.in_val1)
@@ -3581,10 +3591,18 @@ class Go1MissionReceiverNode(BaseNode):
     def execute(self):
         now_running = bool(engine_module.is_running)
         if now_running and not self._was_running:
+            global _go1_mission_run_id
+            _go1_mission_run_id += 1
             self._last_signature = ''
             self._last_poll_mono = 0.0
             write_log("[GO1 MISSION RX] 스크립트 재시작 감지 - 시그니처 초기화")
         self._was_running = now_running
+
+        # go1가 연결된 상태에서 배터리 값이 아직 수신되지 않은 경우 폴링 대기
+        # (SDK 초기화 직후 battery=0으로 나오는 race condition 방지)
+        hw_link = go1_dashboard.get('hw_link', 'Offline')
+        if hw_link in ('Online (Active)', 'Online (Listen)') and not go1_state.get('battery_confirmed', False):
+            return None
 
         mode = str(self.state.get('mode', 'HTTP')).strip().upper()
         source = str(self.state.get('source', GO1_MISSION_PENDING_URL)).strip()
