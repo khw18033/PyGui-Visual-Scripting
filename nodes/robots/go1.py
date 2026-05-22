@@ -551,6 +551,13 @@ def _build_go1_post_action_json(payload):
     action_payload = _extract_mission_post_action(payload)
     mission_id = _extract_mission_id(payload)
 
+    if isinstance(action_payload, dict) and str(action_payload.get('type', '')).strip().lower() == 'sequence':
+        return json.dumps({
+            'mission_id': mission_id,
+            'type': 'sequence',
+            'steps': action_payload.get('steps', []),
+        }, ensure_ascii=False)
+
     result = {
         'mission_id': mission_id,
         'mode': _resolve_go1_action_mode(action_payload, default_mode=default_mode),
@@ -1877,6 +1884,45 @@ class Go1ActionNode(BaseNode):
         self.state['mode'] = "Stand"
         self.state['v1'] = 0.2
         self._last_mission_action_signature = ''
+        self._seq_running = False
+        self._seq_thread = None
+
+    def _run_sequence(self, steps):
+        write_log(f"[GO1 ACTION SEQ] 시퀀스 시작: {len(steps)}단계")
+        for i, step in enumerate(steps):
+            if not self._seq_running:
+                break
+            mode = _resolve_go1_action_mode(step, default_mode='Stand')
+            v1 = _coerce_float(step.get('v1', step.get('value', 0.2)), 0.2)
+            duration = _coerce_float(step.get('duration_sec', step.get('duration', 0.5)), 0.5)
+            write_log(f"[GO1 ACTION SEQ] 단계 {i+1}/{len(steps)}: mode={mode} v1={v1} duration={duration}s")
+
+            if mode == "Stand":
+                go1_node_intent['stop'] = True
+                go1_node_intent['vx'] = 0.0
+                go1_node_intent['vy'] = 0.0
+                go1_node_intent['wz'] = 0.0
+                go1_node_intent['trigger_time'] = time.monotonic()
+            else:
+                go1_node_intent['vx'] = v1 if mode == "Walk Fwd/Back" else 0.0
+                go1_node_intent['vy'] = v1 if mode == "Walk Strafe" else 0.0
+                go1_node_intent['wz'] = v1 if mode == "Turn" else 0.0
+                go1_node_intent['trigger_time'] = time.monotonic()
+                deadline = time.monotonic() + duration
+                while time.monotonic() < deadline and self._seq_running:
+                    go1_node_intent['trigger_time'] = time.monotonic()
+                    time.sleep(0.05)
+
+            if i < len(steps) - 1:
+                go1_node_intent['vx'] = 0.0
+                go1_node_intent['vy'] = 0.0
+                go1_node_intent['wz'] = 0.0
+                go1_node_intent['stop'] = True
+                go1_node_intent['trigger_time'] = time.monotonic()
+                time.sleep(0.1)
+
+        self._seq_running = False
+        write_log("[GO1 ACTION SEQ] 시퀀스 완료")
 
     def execute(self):
         mode = self.state.get('mode', 'Stand')
@@ -1890,6 +1936,16 @@ class Go1ActionNode(BaseNode):
                 self._last_mission_action_signature = mission_action_signature
                 mission_action_payload, _ = _normalize_mission_container(mission_action_raw)
                 if isinstance(mission_action_payload, dict):
+                    if str(mission_action_payload.get('type', '')).strip().lower() == 'sequence':
+                        if not self._seq_running:
+                            self._seq_running = True
+                            self._seq_thread = threading.Thread(
+                                target=self._run_sequence,
+                                args=(mission_action_payload.get('steps', []),),
+                                daemon=True,
+                            )
+                            self._seq_thread.start()
+                        return self.out_flow
                     mode = _resolve_go1_action_mode(mission_action_payload, default_mode=mode)
                     v1 = _coerce_float(mission_action_payload.get('v1', mission_action_payload.get('value', v1)), v1)
 
