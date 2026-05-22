@@ -645,6 +645,8 @@ def ep_comm_thread():
     last_vx = None
     last_vy = None
     last_wz = None
+    last_send_time = 0.0
+    KEEPALIVE_INTERVAL = 0.3  # SDK timeout=0.5 보다 짧게 재전송해 키 홀드 시 연속 주행
 
     while True:
         time.sleep(0.05)
@@ -781,6 +783,7 @@ def ep_comm_thread():
                     write_log(f"EP 정지 오류: {e}")
                 
                 is_moving = False
+                last_send_time = 0.0
                 ep_node_intent['stop'] = False
                 ep_node_intent['vx'] = 0.0
                 ep_node_intent['vy'] = 0.0
@@ -794,12 +797,14 @@ def ep_comm_thread():
             ep_target_vel['vz'] = 0.0
             continue
 
-        # 속도값이 변경되었을 때만 전송 (떨림 방지)
+        # 속도값이 변경되었거나 SDK timeout 전에 keepalive 재전송
         vx = ep_node_intent['vx']
         vy = ep_node_intent['vy']
         wz = ep_node_intent['wz']
-        
-        if vx != last_vx or vy != last_vy or wz != last_wz:
+
+        changed = vx != last_vx or vy != last_vy or wz != last_wz
+        needs_keepalive = is_moving and (tnow - last_send_time) > KEEPALIVE_INTERVAL
+        if changed or needs_keepalive:
             try:
                 w1, w2, w3, w4 = _ep_velocity_to_wheels(vx, vy, wz)
                 ep_robot_inst.chassis.drive_wheels(w1=w1, w2=w2, w3=w3, w4=w4, timeout=0.5)
@@ -807,6 +812,7 @@ def ep_comm_thread():
                 last_vx = vx
                 last_vy = vy
                 last_wz = wz
+                last_send_time = tnow
                 ep_target_vel['vx'] = vx
                 ep_target_vel['vy'] = vy
                 ep_target_vel['vz'] = wz
