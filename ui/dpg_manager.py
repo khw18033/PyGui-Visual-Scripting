@@ -89,6 +89,65 @@ def network_monitor_thread():
             pass
         time.sleep(2)
 
+
+go1_manual_override_until = 0.0
+
+
+def mt4_manual_control_callback(sender, app_data, user_data):
+    axis, step = user_data
+    mt4_module.mt4_manual_override_until = time.time() + 1.5
+    mt4_module.mt4_target_goal[axis] = mt4_module.mt4_current_pos[axis] + step
+    mt4_apply_limits()
+
+
+def mt4_move_to_coord_callback(sender, app_data, user_data):
+    mt4_module.mt4_manual_override_until = time.time() + 2.0
+    mt4_module.mt4_target_goal['x'] = float(dpg.get_value("input_x"))
+    mt4_module.mt4_target_goal['y'] = float(dpg.get_value("input_y"))
+    mt4_module.mt4_target_goal['z'] = float(dpg.get_value("input_z"))
+    mt4_module.mt4_target_goal['gripper'] = float(dpg.get_value("input_g"))
+    if dpg.does_item_exist("input_r"):
+        mt4_module.mt4_target_goal['roll'] = float(dpg.get_value("input_r"))
+    mt4_apply_limits()
+
+
+def go1_manual_control_callback(sender, app_data, user_data):
+    global go1_manual_override_until
+    if not HAS_GO1:
+        return
+    go1_manual_override_until = time.time() + 1.5
+    axis, step = user_data
+    go1_target_vel[axis] = go1_target_vel.get(axis, 0.0) + step
+
+
+def go1_move_to_coord_callback(sender, app_data, user_data):
+    global go1_manual_override_until
+    if not HAS_GO1:
+        return
+    go1_manual_override_until = time.time() + 2.0
+    go1_target_vel['vx'] = float(dpg.get_value("go1_input_vx"))
+    go1_target_vel['vy'] = float(dpg.get_value("go1_input_vy"))
+    go1_target_vel['vyaw'] = float(dpg.get_value("go1_input_vyaw"))
+
+
+def go1_action_callback(sender, app_data, user_data):
+    if not HAS_GO1:
+        return
+    cmd_str = str(user_data or "").strip()
+    if not cmd_str:
+        return
+
+    if cmd_str.startswith("SPECIAL_") and hasattr(go1_module, 'request_go1_special_action'):
+        action_name = cmd_str.split("_", 1)[1].lower()
+        go1_module.request_go1_special_action(action_name)
+        return
+
+    if getattr(go1_module, 'go1_sock', None):
+        try:
+            go1_module.go1_sock.sendto(cmd_str.encode(), (go1_module.GO1_IP, go1_module.GO1_PORT))
+        except Exception:
+            pass
+
 def ep_manual_control_callback(sender, app_data, user_data):
     if not HAS_EP:
         return
