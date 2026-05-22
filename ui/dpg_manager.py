@@ -61,6 +61,34 @@ try:
 except Exception:
     ep_manager = None
 
+HAS_EP = ep_manager is not None
+ep_dashboard = {"hw_link": "Offline", "sn": "Unknown", "conn_type": "None"}
+ep_state = {
+    "battery": -1,
+    "pos_x": 0.0,
+    "pos_y": 0.0,
+    "speed": 0.0,
+    "accel_x": 0.0,
+    "accel_y": 0.0,
+    "accel_z": 0.0,
+}
+ep_target_vel = {'vx': 0.0, 'vy': 0.0, 'vz': 0.0}
+ep_node_intent = {"vx": 0.0, "vy": 0.0, "wz": 0.0, "stop": False, "trigger_time": time.monotonic()}
+
+sys_net_str = "Loading Network..."
+
+
+def network_monitor_thread():
+    global sys_net_str
+    while True:
+        try:
+            out = subprocess.check_output("ip -o -4 addr show", shell=True).decode('utf-8')
+            info = [f"[{p.split()[1]}] {p.split()[3].split('/')[0]}" for p in out.strip().split('\n') if ' lo ' not in p and len(p.split()) >= 4]
+            sys_net_str = "\n".join(info) if info else "Offline"
+        except Exception:
+            pass
+        time.sleep(2)
+
 def ep_manual_control_callback(sender, app_data, user_data):
     if not HAS_EP:
         return
