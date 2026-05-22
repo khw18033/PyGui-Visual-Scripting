@@ -62,6 +62,11 @@ try:
 except Exception:
     ep_manager = None
 
+try:
+    import nodes.robots.ep01 as ep01_module
+except Exception:
+    ep01_module = None
+
 from core.ep01_config import EP01_NETWORK_CONFIG
 
 HAS_EP = ep_manager is not None
@@ -246,6 +251,40 @@ def _ep_connect_selected_worker(conn_type='sta'):
     if ep_manager is None or not worker_id:
         return
     ep_manager.send_cmd(worker_id, 'connect', {'conn_type': conn_type})
+
+
+def _ep_send_worker_drive_speed(vx, vy, wz):
+    if ep_manager is None:
+        return False
+    worker_id = _ep_pick_selected_worker() or _ensure_default_ep_worker('sta')
+    if not worker_id:
+        return False
+    try:
+        ep_manager.send_cmd(worker_id, 'drive_speed', {'x': float(vx), 'y': float(vy), 'z': float(wz)})
+        return True
+    except Exception:
+        return False
+
+
+def _ep_send_worker_action(cmd_str):
+    if ep_manager is None:
+        return False
+    worker_id = _ep_pick_selected_worker() or _ensure_default_ep_worker('sta')
+    if not worker_id:
+        return False
+    try:
+        ep_manager.send_cmd(worker_id, 'action', {'name': str(cmd_str)})
+        return True
+    except Exception:
+        return False
+
+
+if ep01_module is not None:
+    try:
+        ep01_module.set_ep_drive_speed_sender(_ep_send_worker_drive_speed)
+        ep01_module.set_ep_command_sender(_ep_send_worker_action)
+    except Exception:
+        pass
 
 
 def btn_connect_ep_sta(sender=None, app_data=None, user_data=None):

@@ -61,6 +61,8 @@ if rm_config is not None and not hasattr(rm_config, 'DEFAULT_CONN_PROTO'):
 
 ep_cmd_sock = None
 ep_robot_inst = None
+ep_drive_speed_sender = None
+ep_command_sender = None
 EP_IP = EP01_NETWORK_CONFIG['ep_ip']
 EP_PORT = EP01_NETWORK_CONFIG['ep_port']
 
@@ -217,6 +219,16 @@ def _wait_for_action_completion(action_obj, timeout_sec=EP_ARM_ACTION_TIMEOUT):
             waiter()
 
 
+def set_ep_drive_speed_sender(sender):
+    global ep_drive_speed_sender
+    ep_drive_speed_sender = sender
+
+
+def set_ep_command_sender(sender):
+    global ep_command_sender
+    ep_command_sender = sender
+
+
 def _normalize_ep_conn_type(conn_mode):
     conn_mode = str(conn_mode or '').strip().lower()
     if rm_conn is None:
@@ -353,6 +365,13 @@ def scan_ep_sta_robots(timeout=3.0):
 
 def send_ep_command(cmd_str):
     global ep_cmd_sock
+
+    if callable(ep_command_sender):
+        try:
+            if ep_command_sender(cmd_str):
+                return True
+        except Exception:
+            pass
 
     if ep_robot_inst is not None:
         try:
@@ -944,12 +963,28 @@ class EPKeyboardNode(BaseNode):
 
         if arm_dx or arm_dy:
             _ep_move_arm(delta_x=arm_dx, delta_y=arm_dy)
+            if arm_dy > 0:
+                send_ep_command("arm_up")
+            elif arm_dy < 0:
+                send_ep_command("arm_down")
+            if arm_dx > 0:
+                send_ep_command("arm_right")
+            elif arm_dx < 0:
+                send_ep_command("arm_left")
 
         # Gripper: queue-based (each frame if pressed)
         if grip_open:
             _ep_set_gripper(True)
+            send_ep_command("grip_open")
         elif grip_close:
             _ep_set_gripper(False)
+            send_ep_command("grip_close")
+
+        if callable(ep_drive_speed_sender):
+            try:
+                ep_drive_speed_sender(vx, vy, wz)
+            except Exception:
+                pass
 
         self.output_data[self.out_vx] = vx
         self.output_data[self.out_vy] = vy
