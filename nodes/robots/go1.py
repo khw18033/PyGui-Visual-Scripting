@@ -3647,6 +3647,60 @@ class Go1MissionReceiverNode(BaseNode):
         return None
 
 
+def _evaluate_mission_conditions(conditions):
+    """
+    conditions: dict with optional keys:
+        go1_connected (bool)        : go1 must be Online (Active/Listen)
+        go1_battery_min (int/float) : go1 battery must be >= n %
+        ep01_connected (bool)       : ep01 must be Online
+        ep01_battery_min (int/float): ep01 battery must be >= n %
+    Returns (passed: bool, fail_reason: str)
+    """
+    if not isinstance(conditions, dict):
+        return True, ''
+
+    if _coerce_bool(conditions.get('go1_connected', False), False):
+        hw = go1_dashboard.get('hw_link', 'Offline')
+        if hw not in ('Online (Active)', 'Online (Listen)'):
+            return False, f'go1 not connected (hw_link={hw})'
+
+    go1_batt_min = conditions.get('go1_battery_min')
+    if go1_batt_min is not None:
+        min_pct = _coerce_float(go1_batt_min, 0.0)
+        batt = go1_state.get('battery', -1)
+        if batt < 0:
+            return False, 'go1 battery unknown (not connected)'
+        if batt < min_pct:
+            return False, f'go1 battery too low ({batt}% < {min_pct:.0f}%)'
+
+    if _coerce_bool(conditions.get('ep01_connected', False), False):
+        try:
+            from nodes.robots.ep01 import ep_dashboard as _ep_dashboard
+            hw = _ep_dashboard.get('hw_link', 'Offline')
+            if 'Online' not in hw:
+                return False, f'ep01 not connected (hw_link={hw})'
+        except ImportError:
+            return False, 'ep01 module not available'
+
+    ep01_batt_min = conditions.get('ep01_battery_min')
+    if ep01_batt_min is not None:
+        try:
+            from nodes.robots.ep01 import ep_dashboard as _ep_dashboard, ep_state as _ep_state
+            hw = _ep_dashboard.get('hw_link', 'Offline')
+            if 'Online' not in hw:
+                return False, 'ep01 not connected (cannot check battery)'
+            min_pct = _coerce_float(ep01_batt_min, 0.0)
+            batt = _ep_state.get('battery', -1)
+            if batt < 0:
+                return False, 'ep01 battery unknown'
+            if batt < min_pct:
+                return False, f'ep01 battery too low ({batt}% < {min_pct:.0f}%)'
+        except ImportError:
+            return False, 'ep01 module not available'
+
+    return True, ''
+
+
 class Go1MissionDecisionNode(BaseNode):
     def __init__(self, node_id):
         super().__init__(node_id, "Mission Decision (Go1)", "GO1_MISSION_DECIDE")
@@ -3689,7 +3743,17 @@ class Go1MissionDecisionNode(BaseNode):
         require_destination = _coerce_bool(self.state.get('require_destination', True), True)
         allowed_types = [item.strip().lower() for item in str(self.state.get('allowed_mission_types', ', '.join(GO1_MISSION_ALLOWED_TYPES))).split(',') if item.strip()]
 
-        if not mission_id:
+        conditions = payload.get('conditions')
+        cond_fail = ''
+        if isinstance(conditions, dict) and conditions:
+            cond_ok, cond_fail = _evaluate_mission_conditions(conditions)
+            if not cond_ok:
+                cond_fail = f'condition failed: {cond_fail}'
+
+        if cond_fail:
+            decision = 'reject'
+            reason = cond_fail
+        elif not mission_id:
             decision = 'reject'
             reason = 'missing mission_id'
         elif mode == 'accept_all':
