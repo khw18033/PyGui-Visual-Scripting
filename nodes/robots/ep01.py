@@ -221,7 +221,7 @@ def _normalize_ep_conn_type(conn_mode):
         return rm_conn.CONNECTION_USB_RNDIS
     return conn_mode
 
-def connect_ep_thread_func(conn_mode):
+def connect_ep_thread_func(conn_mode, sn=None):
     global ep_robot_inst
 
     if not HAS_ROBOMASTER_SDK:
@@ -245,8 +245,12 @@ def connect_ep_thread_func(conn_mode):
         ep_robot_inst = robot.Robot()
 
         normalized_conn_mode = _normalize_ep_conn_type(conn_mode)
-        write_log(f"EP_DEBUG: Calling initialize(conn_type='{conn_mode}', proto_type='tcp')...")
-        ep_robot_inst.initialize(conn_type=normalized_conn_mode, proto_type='tcp')
+        if sn:
+            write_log(f"EP_DEBUG: Calling initialize(conn_type='{conn_mode}', proto_type='tcp', sn='{sn}')...")
+            ep_robot_inst.initialize(conn_type=normalized_conn_mode, proto_type='tcp', sn=sn)
+        else:
+            write_log(f"EP_DEBUG: Calling initialize(conn_type='{conn_mode}', proto_type='tcp')...")
+            ep_robot_inst.initialize(conn_type=normalized_conn_mode, proto_type='tcp')
         write_log("EP_DEBUG: Initialize completed successfully.")
 
         try:
@@ -285,6 +289,45 @@ def btn_connect_ep_sta(sender=None, app_data=None):
 
 def btn_connect_ep_ap(sender=None, app_data=None):
     threading.Thread(target=connect_ep_thread_func, args=("ap",), daemon=True).start()
+
+
+def scan_ep_sta_robots(timeout=3.0):
+    """Return [{'sn': ..., 'ip': ...}, ...] for EP robots broadcasting on STA network."""
+    robots = []
+    if not HAS_ROBOMASTER_SDK:
+        return robots
+    try:
+        import robomaster.conn as rm_conn
+    except Exception:
+        return robots
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind(("0.0.0.0", rm_conn.config.ROBOT_BROADCAST_PORT))
+        sock.settimeout(1)
+        start = time.time()
+        seen = set()
+        while time.time() - start < timeout:
+            try:
+                data, ip = sock.recvfrom(1024)
+            except socket.timeout:
+                continue
+            except Exception:
+                continue
+            try:
+                sn = rm_conn.get_sn_form_data(data)
+            except Exception:
+                continue
+            if not sn or sn in seen:
+                continue
+            seen.add(sn)
+            robots.append({'sn': sn, 'ip': ip[0]})
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+    return robots
 
 def send_ep_command(cmd_str):
     global ep_cmd_sock

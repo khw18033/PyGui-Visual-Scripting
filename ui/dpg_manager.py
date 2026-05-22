@@ -78,6 +78,9 @@ ep_state = {
 ep_target_vel = {'vx': 0.0, 'vy': 0.0, 'vz': 0.0}
 ep_node_intent = {"vx": 0.0, "vy": 0.0, "wz": 0.0, "stop": False, "trigger_time": time.monotonic()}
 ep_selected_worker_id = None
+ep_selected_robot_sn = None
+ep_selected_robot_ip = None
+ep_scanned_sta_robots = []
 
 sys_net_str = "Loading Network..."
 
@@ -148,6 +151,69 @@ def _ep_refresh_worker_list_ui():
             pass
 
 
+def _ep_refresh_sta_robot_list_ui():
+    if not dpg.does_item_exist("ep_sta_robot_list"):
+        return
+    items = [f"{item['sn']} | {item['ip']}" for item in ep_scanned_sta_robots]
+    dpg.configure_item("ep_sta_robot_list", items=items)
+    if ep_selected_robot_sn:
+        selected_text = f"{ep_selected_robot_sn} | {ep_selected_robot_ip or ''}".strip()
+        try:
+            dpg.set_value("ep_sta_robot_list", selected_text)
+        except Exception:
+            pass
+
+
+def _ep_scan_sta_robots(sender=None, app_data=None, user_data=None):
+    global ep_scanned_sta_robots, ep_selected_robot_sn, ep_selected_robot_ip
+    worker_id = _ep_pick_selected_worker() or _ensure_default_ep_worker('sta')
+    if ep_manager is None or not worker_id:
+        return
+    try:
+        resp = ep_manager.send_cmd(worker_id, 'scan_sta', {'timeout': 3.0}, req_id=201, timeout=4.0)
+        robots = ((resp or {}).get('result', {}) or {}).get('robots', []) if isinstance(resp, dict) else []
+        ep_scanned_sta_robots = []
+        for item in robots:
+            sn = str(item.get('sn', '')).strip()
+            ip = str(item.get('ip', '')).strip()
+            if sn and ip:
+                ep_scanned_sta_robots.append({'sn': sn, 'ip': ip})
+        if ep_scanned_sta_robots:
+            ep_selected_robot_sn = ep_scanned_sta_robots[0]['sn']
+            ep_selected_robot_ip = ep_scanned_sta_robots[0]['ip']
+            write_log("[EP] STA scan result:")
+            for item in ep_scanned_sta_robots:
+                write_log(f"[EP]   SN={item['sn']} IP={item['ip']}")
+        else:
+            ep_selected_robot_sn = None
+            ep_selected_robot_ip = None
+            write_log("[EP] STA scan result: no robots found")
+        _ep_refresh_sta_robot_list_ui()
+    except Exception as e:
+        write_log(f"[EP] STA scan failed: {e}")
+
+
+def _ep_on_select_sta_robot(sender, app_data, user_data):
+    global ep_selected_robot_sn, ep_selected_robot_ip
+    text = str(app_data or "").strip()
+    if not text or '|' not in text:
+        return
+    sn, ip = [x.strip() for x in text.split('|', 1)]
+    ep_selected_robot_sn = sn
+    ep_selected_robot_ip = ip
+
+
+def _ep_connect_selected_sta_robot(sender=None, app_data=None, user_data=None):
+    worker_id = _ep_pick_selected_worker() or _ensure_default_ep_worker('sta')
+    if ep_manager is None or not worker_id:
+        return
+    if not ep_selected_robot_sn:
+        _ep_scan_sta_robots()
+    if not ep_selected_robot_sn:
+        return
+    ep_manager.send_cmd(worker_id, 'connect', {'conn_type': 'sta', 'sn': ep_selected_robot_sn})
+
+
 def _ep_start_new_worker(sender=None, app_data=None, user_data=None):
     if ep_manager is None:
         return
@@ -181,11 +247,12 @@ def _ep_connect_selected_worker(conn_type='sta'):
 
 
 def btn_connect_ep_sta(sender=None, app_data=None, user_data=None):
-    if ep_manager is None:
-        return
-    worker_id = _ep_pick_selected_worker() or _ensure_default_ep_worker('sta')
-    if worker_id:
-        ep_manager.send_cmd(worker_id, 'connect', {'conn_type': 'sta'})
+    # First click scans and lists STA robots by SN/IP. If a robot is already selected,
+    # connect to that specific SN.
+    if ep_selected_robot_sn:
+        _ep_connect_selected_sta_robot()
+    else:
+        _ep_scan_sta_robots()
 
 
 def btn_connect_ep_ap(sender=None, app_data=None, user_data=None):
@@ -1558,6 +1625,12 @@ def __init_ui__():
                         dpg.add_button(label="Refresh Workers", callback=lambda: _ep_refresh_worker_list_ui(), width=120)
                         dpg.add_same_line()
                         dpg.add_button(label="Start New EP", callback=_ep_start_new_worker, width=100)
+                        dpg.add_spacer(height=5)
+                        dpg.add_text("STA Robots", color=(120,255,180))
+                        dpg.add_listbox(items=[], num_items=4, tag="ep_sta_robot_list", callback=_ep_on_select_sta_robot)
+                        dpg.add_button(label="Scan STA Robots", callback=_ep_scan_sta_robots, width=120)
+                        dpg.add_same_line()
+                        dpg.add_button(label="Connect Selected", callback=_ep_connect_selected_sta_robot, width=120)
                         with dpg.group(horizontal=True):
                             dpg.add_button(label="Conn STA", callback=btn_connect_ep_sta, width=80)
                             dpg.add_button(label="Conn AP", callback=btn_connect_ep_ap, width=80)

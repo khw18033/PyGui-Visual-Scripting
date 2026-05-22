@@ -100,9 +100,20 @@ class WorkerServer(threading.Thread):
                 if cmd == 'connect':
                     # call connect in a background thread to avoid blocking
                     conn_type = args.get('conn_type', 'sta')
-                    t = threading.Thread(target=ep01_mod.connect_ep_thread_func, args=(conn_type,), daemon=True)
+                    sn = args.get('sn')
+                    t = threading.Thread(target=ep01_mod.connect_ep_thread_func, args=(conn_type, sn), daemon=True)
                     t.start()
                     return {'type': 'resp', 'req_id': req_id, 'ok': True, 'result': {'msg': 'connect started'}}
+                elif cmd == 'scan_sta':
+                    try:
+                        timeout = float(args.get('timeout', 3.0))
+                    except Exception:
+                        timeout = 3.0
+                    try:
+                        robots = ep01_mod.scan_ep_sta_robots(timeout=timeout)
+                        return {'type': 'resp', 'req_id': req_id, 'ok': True, 'result': {'robots': robots}}
+                    except Exception as e:
+                        return {'type': 'resp', 'req_id': req_id, 'ok': False, 'result': {'error': str(e)}}
                 elif cmd == 'disconnect':
                     try:
                         if ep01_mod.ep_robot_inst is not None:
