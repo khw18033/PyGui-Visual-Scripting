@@ -44,8 +44,10 @@ if EP_USE_MEDIA_MOCK:
 
 try:
     from robomaster import robot
+    from robomaster import conn as rm_conn
     HAS_ROBOMASTER_SDK = True
 except ImportError as e:
+    rm_conn = None
     HAS_ROBOMASTER_SDK = False
     write_log(f"Warning: 'robomaster' module not found. ({e})")
 
@@ -206,6 +208,19 @@ def _wait_for_action_completion(action_obj, timeout_sec=EP_ARM_ACTION_TIMEOUT):
         except TypeError:
             waiter()
 
+
+def _normalize_ep_conn_type(conn_mode):
+    conn_mode = str(conn_mode or '').strip().lower()
+    if rm_conn is None:
+        return conn_mode
+    if conn_mode == 'sta':
+        return rm_conn.CONNECTION_WIFI_STA
+    if conn_mode == 'ap':
+        return rm_conn.CONNECTION_WIFI_AP
+    if conn_mode == 'rndis':
+        return rm_conn.CONNECTION_USB_RNDIS
+    return conn_mode
+
 def connect_ep_thread_func(conn_mode):
     global ep_robot_inst
 
@@ -229,8 +244,9 @@ def connect_ep_thread_func(conn_mode):
         write_log("EP_DEBUG: Instantiating robot.Robot()...")
         ep_robot_inst = robot.Robot()
 
-        write_log(f"EP_DEBUG: Calling initialize(conn_type='{conn_mode}')...")
-        ep_robot_inst.initialize(conn_type=conn_mode)
+        normalized_conn_mode = _normalize_ep_conn_type(conn_mode)
+        write_log(f"EP_DEBUG: Calling initialize(conn_type='{conn_mode}', proto_type='tcp')...")
+        ep_robot_inst.initialize(conn_type=normalized_conn_mode, proto_type='tcp')
         write_log("EP_DEBUG: Initialize completed successfully.")
 
         try:
@@ -242,8 +258,8 @@ def connect_ep_thread_func(conn_mode):
         write_log("EP_DEBUG: Getting Serial Number...")
         ep_dashboard["sn"] = ep_robot_inst.get_sn()
 
-        ep_dashboard["hw_link"] = f"Online ({conn_mode.upper()})"
-        ep_dashboard["conn_type"] = conn_mode.upper()
+        ep_dashboard["hw_link"] = f"Online ({str(conn_mode).upper()})"
+        ep_dashboard["conn_type"] = str(conn_mode).upper()
         write_log(f"System: EP Connected! (SN: {ep_dashboard['sn']})")
 
         with _ep_arm_lock:
