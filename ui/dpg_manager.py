@@ -1611,6 +1611,10 @@ def __init_ui__():
                         dpg.add_text("Status: Idle", tag="mt4_dash_status", color=(0,255,0))
                         dpg.add_text("HW: Offline", tag="mt4_dash_link", color=(255,0,0))
                         dpg.add_text("Latency: 0.0 ms", tag="mt4_dash_latency", color=(255,255,0))
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="Conn USB", width=90, callback=btn_connect_mt4_usb)
+                            dpg.add_button(label="Conn Raspi", width=90, callback=btn_connect_mt4_raspi)
+                            dpg.add_button(label="Disconnect", width=90, callback=btn_disconnect_mt4)
                     with dpg.child_window(width=300, height=130, border=True):
                         dpg.add_text("Direct Coord", color=(0,255,255))
                         with dpg.group(horizontal=True):
