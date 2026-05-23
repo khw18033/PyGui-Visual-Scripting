@@ -79,12 +79,9 @@ def main():
     else:
         go1_keepalive_thread_fn, init_go1_connection_fn = import_go1_modules()
     
-    # Initialize MT4 serial port immediately
-    init_mt4_serial()
-    
-    # Launch background auto-reconnect and logger for MT4
-    threading.Thread(target=auto_reconnect_mt4_thread, daemon=True).start()
-    threading.Thread(target=mt4_background_logger_thread, daemon=True).start()
+    # MT4 serial initialization is now controlled from the GUI.
+    # Use the GUI buttons to connect via USB or Raspi bridge.
+    # If needed for headless runs, call nodes.robots.mt4.connect_mt4_local() manually.
 
     if init_go1_connection_fn:
         init_go1_connection_fn()

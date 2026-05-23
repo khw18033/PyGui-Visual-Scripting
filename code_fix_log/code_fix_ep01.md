@@ -270,3 +270,38 @@
   - `arm`(step_size/min_position/max_position/action_timeout_sec/retry_delay_sec/max_retries), `gripper`(power_level), `keyboard_config`(keys_mode/v_max/w_max), `camera`(default_url/prefer_sdk/save_folder)
 - `nodes/ep01_config/network_config.yaml`:
   - `ep_ip`, `ep_port`, `ep_use_media_mock`, `flask_port`, `ep_sender_target_fps`, `ep_sender_watch_folder`, `ep_server_upload_url`
+
+### [2026-05-22] drive_wheels 전환 및 worker 연결 보장 변경 요약
+
+- 문제 요약:
+  - UI의 키보드 노드가 `ep_node_intent`에 teleop 명령(vx, vy, wz)을 기록하였으나, multi-worker 구조에서 worker별 통신 루프가 보장되지 않아 실제 `chassis` 호출이 발생하지 않음. 또한 기존 `drive_speed` 반복 전송으로 주행 떨림이 발생함.
+
+- 적용 변경(주요 파일):
+  - `nodes/robots/ep01.py`:
+    - `ensure_ep_comm_thread_started()` 추가: worker 환경에서 통신 루프가 반드시 시작되도록 보장.
+    - `set_ep_drive_wheels_sender()` 및 `ep_drive_wheels_sender` 훅 추가(UI에서 sender 주입).
+    - `_ep_velocity_to_wheels(vx,vy,wz)` 변환기 추가: 선속/회전 값을 각 바퀴 휠(RPM 계수) 명령으로 변환.
+    - `ep_comm_thread()` 내 `chassis.drive_speed(...)` 호출을 `chassis.drive_wheels(...)`로 대체하고 정지/중복 전송 방지 로직 강화.
+
+  - `nodes/robots/ep01_worker.py`:
+    - IPC 'connect' 처리 시 `ensure_ep_comm_thread_started()` 호출 추가.
+    - IPC 명령 분기에서 `'drive_speed'` → `'drive_wheels'`로 변경 반영.
+
+  - `ui/dpg_manager.py`:
+    - UI 로컬 sender 이름을 `_ep_send_worker_drive_wheels(vx,vy,wz)`로 변경.
+    - worker로 전송하는 IPC 명령을 `'drive_wheels'`로 변경하고, `set_ep_drive_wheels_sender(...)`로 모듈에 등록.
+
+  - `scripts/ep01_manager.py`:
+    - CLI/스크립트 호출에서 `drive_wheels` 명령 사용으로 변경.
+
+- 결과 및 주의사항:
+  - UI에서 입력된 teleop 명령이 worker에 전달되어 `ep_comm_thread()`에서 `drive_wheels`로 실제 바퀴 제어 호출을 시도하도록 연결됨.
+  - `drive_wheels`로 전환하면서 로우 레벨 휠 제어가 가능해졌으나, `vx/vy/wz` → 휠 RPM 변환 계수(`rpm_per_ms`, `rpm_per_deg`)는 하드웨어별 튜닝이 필요함. 현재 값은 초기 추정치이며 현장 테스트로 조정해야 함.
+  - 개발 환경에서 `robomaster`, `cv2`, `aiohttp` 등 외부 SDK/라이브러리가 설치되어 있지 않으면 정적 분석(Pylance) 경고가 발생함. 런타임 테스트는 실제 장비 또는 해당 라이브러리가 설치된 환경에서 수행해야 함.
+
+- 향후 권장 작업:
+  1. 하드웨어 연결 후 `rpm_per_ms`/`rpm_per_deg` 값 튜닝 및 떨림 관찰(필요시 필터/데드존 적용).
+  2. `ep_comm_thread()`의 송신 빈도와 중복 전송 억제 로직 추가 검토(더 강한 데바운스 또는 stateful 전송).
+  3. 변경 사항 로그 및 간단 테스트 스크립트(예: 연속 정지/전진/회전 시퀀스) 작성하여 현장 검증 자동화.
+
+---

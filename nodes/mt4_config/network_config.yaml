@@ -1,16 +1,21 @@
-{
-  "serial": {
-    "port": "/dev/ttyUSB0",
-    "baudrate": 115200,
-    "timeout_sec": 0.05
-  },
-  "unity": {
-    "ip": "192.168.50.63",
-    "feedback_port": 5005,
-    "ui_port": 5007
-  },
-  "paths": {
-    "record_dir": "path_record",
-    "log_dir": "result_log"
-  }
-}
+serial:
+  port: /dev/ttyUSB0
+  baudrate: 115200
+  timeout_sec: 0.05
+
+raspi:
+  ssh_user: physical
+  ssh_host: pi2.local
+  ssh_target: physical@pi2.local
+  ip: 192.168.50.50
+  mt4_usb_dir: MT4_USB
+  bridge_port: 12020
+
+unity:
+  ip: 192.168.50.63
+  feedback_port: 5005
+  ui_port: 5007
+
+paths:
+  record_dir: path_record
+  log_dir: result_log

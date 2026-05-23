@@ -30,6 +30,26 @@ mt4_log_event_queue = deque()
 
 MT4_UNITY_IP = MT4_NETWORK_CONFIG['unity']['ip']
 MT4_FEEDBACK_PORT = MT4_NETWORK_CONFIG['unity']['feedback_port']
+MT4_RASPI_CONFIG = dict(MT4_NETWORK_CONFIG.get('raspi', {}))
+MT4_RASPI_SSH_USER = str(MT4_RASPI_CONFIG.get('ssh_user', 'physical'))
+MT4_RASPI_SSH_HOST = str(MT4_RASPI_CONFIG.get('ssh_host', 'pi2.local'))
+MT4_RASPI_SSH_TARGET = str(MT4_RASPI_CONFIG.get('ssh_target') or f"{MT4_RASPI_SSH_USER}@{MT4_RASPI_SSH_HOST}")
+MT4_RASPI_IP = str(MT4_RASPI_CONFIG.get('ip', '192.168.50.50'))
+MT4_RASPI_MT4_USB_DIR = str(MT4_RASPI_CONFIG.get('mt4_usb_dir', 'MT4_USB'))
+MT4_RASPI_BRIDGE_PORT = int(MT4_RASPI_CONFIG.get('bridge_port', 12020))
+
+
+def get_mt4_raspi_bridge_info():
+    return {
+        'ssh_user': MT4_RASPI_SSH_USER,
+        'ssh_host': MT4_RASPI_SSH_HOST,
+        'ssh_target': MT4_RASPI_SSH_TARGET,
+        'ip': MT4_RASPI_IP,
+        'mt4_usb_dir': MT4_RASPI_MT4_USB_DIR,
+        'bridge_port': MT4_RASPI_BRIDGE_PORT,
+    }
+
+
 # Convert config format to old format for backward compatibility
 _limits = MT4_HARDWARE_CONFIG['limits']
 MT4_LIMITS = {'min_x': _limits['x']['min'], 'max_x': _limits['x']['max'], 
@@ -189,6 +209,64 @@ def mt4_apply_limits():
         ser.write(cmd.encode())
         mt4_current_pos.update(mt4_target_goal)
     sync_manual_to_node_state()
+
+
+def _send_raspi_cmd(cmd_obj, timeout=2.0):
+    """Send a single-line JSON command to the Raspberry Pi bridge and return the parsed response."""
+    try:
+        addr = (MT4_RASPI_IP, MT4_RASPI_BRIDGE_PORT)
+        with socket.create_connection(addr, timeout=timeout) as s:
+            data = json.dumps(cmd_obj, ensure_ascii=False) + '\n'
+            s.sendall(data.encode('utf-8'))
+            s.settimeout(timeout)
+            resp = b''
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                resp += chunk
+                if b'\n' in resp:
+                    line, _ = resp.split(b'\n', 1)
+                    try:
+                        return json.loads(line.decode('utf-8'))
+                    except Exception:
+                        return {'ok': False, 'error': 'invalid-json'}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+
+def connect_mt4_local():
+    """Initialize local USB serial connection. Returns True on success."""
+    init_mt4_serial()
+    # Start background threads if not already started
+    try:
+        threading.Thread(target=auto_reconnect_mt4_thread, daemon=True).start()
+    except Exception:
+        pass
+    try:
+        threading.Thread(target=mt4_background_logger_thread, daemon=True).start()
+    except Exception:
+        pass
+    return ser is not None
+
+
+def connect_mt4_raspi():
+    """Request the Raspberry Pi bridge to open MT4 serial. Returns True on success."""
+    resp = _send_raspi_cmd({'type': 'cmd', 'cmd': 'connect', 'args': {}})
+    ok = bool(resp and resp.get('ok'))
+    if ok:
+        mt4_dashboard['hw_link'] = HwStatus.ONLINE
+        write_log('MT4: connected via Raspi bridge')
+    else:
+        mt4_dashboard['hw_link'] = HwStatus.SIMULATION
+        write_log(f"MT4: raspi connect failed: {resp}")
+    return ok
+
+
+def disconnect_mt4_raspi():
+    resp = _send_raspi_cmd({'type': 'cmd', 'cmd': 'disconnect', 'args': {}})
+    mt4_dashboard['hw_link'] = HwStatus.OFFLINE
+    return bool(resp and resp.get('ok'))
 
 def play_mt4_path_thread(filepath):
     global mt4_mode, mt4_target_goal, mt4_manual_override_until

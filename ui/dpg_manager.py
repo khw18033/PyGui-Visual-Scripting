@@ -304,6 +304,54 @@ def btn_connect_ep_ap(sender=None, app_data=None, user_data=None):
         ep_manager.send_cmd(worker_id, 'connect', {'conn_type': 'ap'})
 
 
+def btn_connect_mt4_usb(sender=None, app_data=None, user_data=None):
+    try:
+        import nodes.robots.mt4 as mt4_module
+        ok = mt4_module.connect_mt4_local()
+        if ok:
+            write_log('MT4: USB connected')
+        else:
+            write_log('MT4: USB connect failed')
+    except Exception as e:
+        write_log(f'MT4 USB connect error: {e}')
+
+
+def btn_connect_mt4_raspi(sender=None, app_data=None, user_data=None):
+    try:
+        import nodes.robots.mt4 as mt4_module
+        ok = mt4_module.connect_mt4_raspi()
+        if ok:
+            write_log('MT4: connected via Raspi')
+        else:
+            write_log('MT4: Raspi connect failed')
+    except Exception as e:
+        write_log(f'MT4 Raspi connect error: {e}')
+
+
+def btn_disconnect_mt4(sender=None, app_data=None, user_data=None):
+    try:
+        import nodes.robots.mt4 as mt4_module
+        # Try local serial close if present
+        try:
+            if getattr(mt4_module, 'ser', None) is not None:
+                try:
+                    mt4_module.ser.close()
+                except Exception:
+                    pass
+                mt4_module.ser = None
+        except Exception:
+            pass
+        # Tell raspi bridge to disconnect as well
+        try:
+            mt4_module.disconnect_mt4_raspi()
+        except Exception:
+            pass
+        write_log('MT4: disconnected')
+        dpg.set_value('mt4_dash_link', 'HW: Offline')
+    except Exception as e:
+        write_log(f'MT4 disconnect error: {e}')
+
+
 def stop_ep_camera_pipeline():
     return
 

@@ -1285,3 +1285,159 @@ odes/robots/go1.py (함수/클래스 추가)
   - 제어 파라미터: `dt`, `v_max`, `s_max`, `w_max`, `vx_cmd`, `vy_cmd`, `wz_cmd`, `body_height`(min/max/key_step), `timing`(hold_timeout_sec 등), `yaw_control`(unity_yaw_offset_deg 등), `estop`(hold_sec), `foot_raise_height`
 - `nodes/go1_config/special_actions.yaml`:
   - `special_actions`(동작별 mode/trigger_sec/wait_timeout/recovery), `phase_timing`(prep_stand_sec 등)
+
+---
+
+### [2026-05-22] Go1 미션 시스템 초기 통합 트러블슈팅
+
+#### 1. "pending mission received" 로그 출력 후 이후 동작 없음
+
+- **현상**: 실행 시 미션 수신 로그만 출력되고 DECIDE, DISPATCH, ACTION이 호출되지 않음.
+- **원인**: `core/engine.py`의 pre-exec 루프에서 `GO1_MISSION_RECV`가 일반 폴링 노드 목록에 포함되어 있었음. 해당 노드는 새 미션 감지 시 내부 `_new_mission_pulse` 플래그를 세우고 `out_flow`를 반환하는데, pre-exec에서 반환값을 버리는 방식으로 실행되어 pulse가 소비된 후 main flow에서 사용할 pulse가 없어짐.
+- **수정**: `engine.py`에서 `GO1_MISSION_RECV`를 `LOGIC_LOOP`과 동일하게 처리 — pre-exec에서 반환값을 캡처하여 `preexec_flow_outs`에 추가.
+
+---
+
+#### 2. 노드 그래프 연결 오류 (ACTION이 실행되지 않음)
+
+- **현상**: DISPATCH까지 실행되나 `GO1_ACTION`이 호출되지 않음.
+- **원인**: 사용자 그래프(`go1_mission_test.json`)에서 `DISPATCH.out_flow`가 `GO1_ACTION.in_flow`가 아닌 `GO1_DRIVER.in_flow`에 연결되어 있었음. `action_json` 데이터 핀(`out_action_json → in_mission_action`)은 연결되어 있었으나 flow 연결이 없어 ACTION이 실행 큐에 진입하지 못함.
+- **수정**: 그래프 JSON에서 DISPATCH `out_flow` 연결 대상을 `GO1_ACTION in_flow`로 변경.
+
+---
+
+#### 3. Decision URL 타임아웃으로 인한 지연
+
+- **현상**: DECIDE 노드 실행 시 매 미션마다 3초 이상 블로킹.
+- **원인**: `decision_url`(결정 서버)에 접근이 불가한 환경에서 `request_timeout_sec`이 3.0초로 설정되어 있었음.
+- **수정**: `request_timeout_sec`을 0.5초로 축소. 서버 미응답 시에도 로컬에서 결정한 accept/reject 결과로 계속 진행하도록 함.
+
+---
+
+#### 4. 시퀀스(복수 단계) 미션 지원 부재
+
+- **현상**: `post_action.type = "sequence"` 형식의 미션 파일 구성 불가.
+- **원인**: `Go1ActionNode`가 단일 액션(`mode`, `v1`)만 처리하였고, 복수 단계를 순서대로 수행하는 기능이 없었음.
+- **수정**:
+  - `_build_go1_post_action_json()`: `type: sequence` 감지 시 `steps` 배열을 그대로 보존하여 `action_json` 생성.
+  - `Go1ActionNode._run_sequence()`: 백그라운드 스레드로 `steps`를 순서대로 실행. 각 단계의 `duration_sec` 동안 `go1_node_intent`의 속도 값과 `trigger_time`을 20ms 간격으로 갱신.
+
+---
+
+#### 5. 단계 간 전환 시 이전 stop 플래그 잔류
+
+- **현상**: 시퀀스 단계 간 정지 후 다음 단계에서 로봇이 즉시 움직이지 않거나 모션이 불안정함.
+- **원인**: 단계 간 정지 시 `trigger_time`도 함께 갱신하여 드라이버가 stop 처리 후 `is_node_active=True`를 감지해 `stand_only=False`로 되돌리는 상태 충돌 발생.
+- **수정**:
+  - 단계 간 정지 블록에서 `trigger_time` 갱신 제거 → 정지 처리 후 `is_node_active`가 자연히 만료되도록 함.
+  - 모션 단계 시작 직전 `go1_node_intent['stop'] = False` 명시적 해제.
+  - 단계 내 while 루프 sleep을 50ms → 20ms로 축소 (hold_timeout 100ms 대비 여유 확보).
+
+---
+
+#### 6. STOP 후 재실행 시 동일 미션이 수행되지 않음
+
+- **현상**: RUN SCRIPT → STOP → RUN SCRIPT 시 동일 미션 파일이 있어도 미션이 재실행되지 않음.
+- **원인**: `Go1MissionReceiverNode._last_signature`와 `Go1ActionNode._last_mission_action_signature`가 STOP 후에도 유지됨. 재실행 시 RECV가 같은 파일 내용을 보고 "이미 처리한 미션"으로 판단하여 pulse를 발사하지 않음.
+- **수정**: 두 노드에 `_was_running` 필드 추가. `engine_module.is_running`이 `False → True`로 전환될 때 각 노드의 signature를 초기화하여 재실행 시 미션을 새로 인식.
+- **비고**: 이후 `_was_running` 방식의 구조적 결함이 확인되어 `run_generation` 카운터 방식으로 교체됨 (§4-2 참고).
+
+---
+
+#### 7. 로봇이 명령을 받아도 움직이지 않음 (핵심 버그)
+
+- **현상**: 시퀀스 로그는 정상 출력(타이밍 정확)되나 로봇이 전혀 움직이지 않음.
+- **원인**: `UniversalRobotNode.execute()`가 연결되지 않은 입력 핀을 `self.state` 기본값(`0.0`)으로 채워 `execute_command()`에 전달하는 구조였음. `GO1_DRIVER`는 pre-exec 목록에 포함되어 매 프레임 실행되므로, 입력 연결이 없어도 `inputs = {'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0}`으로 `execute_command()`가 호출됨. 그 결과 `Go1RobotDriver.execute_command()`가 매 프레임 `go1_node_intent['vx/vy/wz'] = 0.0`으로 덮어쓰고 `trigger_time`을 갱신 → 시퀀스 스레드가 설정한 속도값이 즉시 무효화됨.
+- **수정**: `UniversalRobotNode.execute()`에서 inputs fallback 제거. 연결이 없는 핀은 `None`을 유지하여 `execute_command()`에 전달. `execute_command()`는 `None` 입력을 건너뜀 → `GO1_DRIVER`가 pre-exec에서 실행되어도 `go1_node_intent`에 간섭 없음.
+
+### [2026-05-22] 미션 조건 기능 추가 및 재시작 버그 트러블슈팅
+
+#### 1. 미션 조건(conditions) 기능 추가
+
+- **요구사항**: 미션 JSON에 `conditions` 필드를 추가하여 Go1/ep01 연결 여부, 배터리 잔량 조건을 만족하지 않으면 미션을 자동 reject하는 기능.
+- **구현 내용**:
+  - `go1.py`에 `_evaluate_mission_conditions(conditions)` 함수 추가.
+  - 지원 조건 키: `go1_connected` (bool), `go1_battery_min` (number, %), `ep01_connected` (bool), `ep01_battery_min` (number, %).
+  - `Go1MissionDecisionNode.execute()` 내부에서 payload의 `conditions` 딕셔너리를 읽어 위 함수를 호출, 실패 시 `decision = 'reject'`로 분기.
+  - `go1_state['battery']` 및 `go1_dashboard['hw_link']`를 참조하여 go1 상태 판단.
+  - ep01 상태는 `_get_ep01_dashboard()` 헬퍼 함수를 통해 sys.modules에서 ep01 모듈을 동적으로 조회.
+- **미션 JSON 양식 주의**: Python `True`/`False`가 아닌 JSON 표준 `true`/`false` 사용 필수 (`json.loads()` 파싱 실패 방지).
+
+---
+
+#### 2. 배터리 Race Condition 수정 (`battery_confirmed` 플래그)
+
+- **문제**: Go1 SDK 초기화 직후 `bms.SOC = 0`을 반환하는 race condition 발생. 배터리 조건 판단 시 `0 < 조건값` → reject → 이후 실제 배터리 값 수신. 최초 실행 시 항상 reject되는 문제.
+- **원인**: keepalive 스레드가 실제 배터리 값을 수신하기 전에 RECV가 미션을 폴링하고 조건을 판단함.
+- **수정**:
+  - `go1_state`에 `'battery_confirmed': False` 필드 추가.
+  - keepalive 스레드에서 `batt > 0`인 값을 수신했을 때만 `battery_confirmed = True` 설정. 연결 끊기거나 예외 시 False로 리셋.
+  - `Go1MissionReceiverNode.execute()` 초입에서 go1이 Online이고 `battery_confirmed = False`이면 `return None` (폴링 대기).
+
+---
+
+#### 3. ep01 연결 조건 False Negative 수정
+
+- **문제 1 (모듈 인스턴스 불일치)**: `from nodes.robots.ep01 import ep_dashboard`로 가져오면 factory.py가 `importlib.import_module`로 로드한 모듈과 다른 인스턴스일 수 있음.
+  - **수정**: `_get_ep01_dashboard()` 내부에서 `sys.modules.get('nodes.robots.ep01')` 및 `sys.modules.get('ep01')` 순으로 모듈을 직접 조회하도록 변경.
+
+- **문제 2 (ep_manager worker 아키텍처)**: EP는 별도 worker 프로세스(`ep_manager`)를 통해 연결됨. 연결 성공 시 worker 프로세스의 `ep01.ep_dashboard`가 업데이트되지만, 메인 프로세스의 `ep01.ep_dashboard`는 여전히 `'Offline'`으로 유지됨. GUI는 `dpg_manager.ep_dashboard`에 worker 상태를 반영(`ep_manager.get_state()` → `ep_dashboard.update()`).
+  - **원인**: `_get_ep01_dashboard()`가 메인 프로세스의 `ep01.ep_dashboard`만 조회하므로 항상 Offline 반환.
+  - **수정**: 검색 후보를 `('nodes.robots.ep01', 'ep01', 'ui.dpg_manager', 'dpg_manager')` 순으로 확장. `hw_link`에 'Online'이 포함된 모듈을 우선 반환. 직접 연결 모드와 worker 모드 모두 대응.
+  - **수정 위치**: `go1.py` `_evaluate_mission_conditions()` 내 `_get_ep01_dashboard()` 중첩 함수.
+
+---
+
+#### 4. STOP → RUN 재시작 시 미션 미실행 버그 수정
+
+##### 4-1. `_seq_running` 미리셋 문제 (1차 시도)
+
+- **증상**: STOP 후 RUN을 누르면 같은 미션이 다시 실행되지 않음. 로그에 "이전 시퀀스 실행 중 - 새 시퀀스 스킵" 출력.
+- **원인 추정**: STOP 시점에 시퀀스가 실행 중이면 `_seq_running = True` 상태가 유지됨. RUN 후 ACTION이 다시 실행되어도 `if not self._seq_running:` 조건이 False → 스킵.
+- **1차 수정 시도**: `_seq_gen` 세대 카운터 도입.
+  - `__init__`에 `self._seq_gen = 0` 추가.
+  - `_go1_mission_run_id` 변경 감지 시 `_seq_gen += 1`, `_seq_running = False` 추가.
+  - `_run_sequence(steps, seq_gen)` 파라미터 추가, 루프 조건에 `self._seq_gen != seq_gen` 추가.
+  - 시퀀스 스레드 시작 시 `gen = self._seq_gen` 캡처 후 전달.
+- **결과**: 여전히 미작동. 추가로 "중복 미션 스킵" 로그 발생.
+
+##### 4-2. `_was_running` 방식의 구조적 결함 확인 (진짜 원인)
+
+- **진짜 원인**: `Go1MissionReceiverNode`는 `execute_graph_once()` 내부의 pre-exec 블록에서 호출됨. `execute_graph_once()`는 `engine_module.is_running = True`일 때만 호출됨 (`dpg_manager.py`의 메인 루프 조건). 따라서 엔진이 STOP되면 RECV 자체가 호출되지 않으므로 `_was_running`이 `True`로 고정됨. RUN을 눌러도 RECV는 `True → True` 전환만 감지하여 재시작을 인식하지 못함.
+- **`_was_running` 방식의 전제 조건 불성립**: 이 방식은 RECV가 정지 상태에서도 주기적으로 호출되어야 작동하는데, 현재 구조에서는 불가능.
+
+##### 4-3. `run_generation` 카운터 방식으로 교체 (최종 수정)
+
+- **수정 내용**:
+  - `core/engine.py`: 모듈 레벨에 `run_generation = 0` 추가.
+  - `ui/dpg_manager.py` `toggle_exec()`: `is_running = True`로 전환할 때 `engine_module.run_generation += 1` 추가.
+  - `go1.py` RECV `__init__`: `self._was_running = False` → `self._last_run_generation = -1` 교체.
+  - `go1.py` RECV `execute()`: `_was_running` 비교 블록 전체를 아래로 교체:
+    ```python
+    cur_gen = engine_module.run_generation
+    if cur_gen != self._last_run_generation:
+        self._last_run_generation = cur_gen
+        _go1_mission_run_id += 1
+        self._last_signature = ''
+        self._last_poll_mono = 0.0
+        write_log("[GO1 MISSION RX] 스크립트 재시작 감지 - 시그니처 초기화")
+    ```
+- **원리**: RUN 버튼을 누를 때마다 `run_generation`이 증가하므로, RECV가 다음 번 호출될 때 무조건 재시작을 감지. 타이밍이나 호출 빈도에 무관하게 동작 보장.
+
+##### 4-4. `_run_sequence` 종료 시 Race Condition 수정
+
+- **문제**: STOP 중에 구세대 시퀀스 스레드가 슬립 중이었다면, 새 시퀀스가 시작된 후 구세대 스레드가 깨어나 `self._seq_running = False`를 실행하여 신규 스레드를 중단시킬 수 있음.
+- **수정**: `_run_sequence` 마지막에 `self._seq_running = False` → `if self._seq_gen == seq_gen: self._seq_running = False`로 교체. 구세대 스레드는 세대 불일치를 확인하고 `_seq_running`을 건드리지 않음.
+
+---
+
+#### 5. 수정 파일 요약
+
+| 파일 | 변경 내용 |
+|---|---|
+| `core/engine.py` | `run_generation = 0` 추가 |
+| `ui/dpg_manager.py` | `toggle_exec()`: RUN 전환 시 `run_generation += 1` |
+| `nodes/robots/go1.py` | RECV 재시작 감지 방식 교체(`run_generation` 기반), `_get_ep01_dashboard()` 검색 범위 확장(`ui.dpg_manager` 포함), `_run_sequence` 종료 guard 추가, `_seq_gen` 카운터 도입 |
+
+---
+
