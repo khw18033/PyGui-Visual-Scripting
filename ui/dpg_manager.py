@@ -1614,6 +1614,7 @@ def __init_ui__():
                         with dpg.group(horizontal=True):
                             dpg.add_button(label="Conn USB", width=90, callback=btn_connect_mt4_usb)
                             dpg.add_button(label="Conn Raspi", width=90, callback=btn_connect_mt4_raspi)
+                        with dpg.group(horizontal=True):
                             dpg.add_button(label="Disconnect", width=90, callback=btn_disconnect_mt4)
                     with dpg.child_window(width=300, height=130, border=True):
                         dpg.add_text("Direct Coord", color=(0,255,255))
