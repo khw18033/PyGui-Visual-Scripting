@@ -1709,8 +1709,14 @@ class EP01MissionDecisionNode(BaseNode):
         self.state['decision_url'] = EP01_MISSION_DECISION_URL
         self.state['request_timeout_sec'] = EP01_MISSION_TIMEOUT_SEC
         self._last_post_signature = ''
+        self._last_run_generation = -1
 
     def execute(self):
+        cur_gen = engine_module.run_generation
+        if cur_gen != self._last_run_generation:
+            self._last_run_generation = cur_gen
+            self._last_post_signature = ''
+
         raw_json = self.fetch_input_data(self.in_raw_json)
         payload, signature = _normalize_mission_container(raw_json)
         if not payload:
@@ -1803,8 +1809,14 @@ class EP01MissionDispatchNode(BaseNode):
         self.out_flow = generate_uuid()
         self.outputs[self.out_flow] = PortType.FLOW
         self._last_dispatch_signature = ''
+        self._last_run_generation = -1
 
     def execute(self):
+        cur_gen = engine_module.run_generation
+        if cur_gen != self._last_run_generation:
+            self._last_run_generation = cur_gen
+            self._last_dispatch_signature = ''
+
         raw_json = self.fetch_input_data(self.in_raw_json)
         decision = self.fetch_input_data(self.in_decision)
         payload, signature = _normalize_mission_container(raw_json)
