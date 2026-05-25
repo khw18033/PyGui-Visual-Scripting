@@ -260,6 +260,40 @@ ui/
 다른 PC에서 이 프로젝트를 쓸 때는 전역 Python에 바로 설치하지 말고, 프로젝트 전용 가상환경을 만든 뒤 사용하는 것을 권장합니다.
 
 ```bash
+python3 --version
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install robomaster netaddr netifaces myqr
+```
+
+만약 `python3 -m venv`에서 `returned non-zero exit status 1`가 나오면, 보통 `venv` 패키지가 빠져 있는 경우입니다. 아래처럼 설치한 뒤 다시 실행하세요.
+
+```bash
+sudo apt update
+sudo apt install python3-venv
+```
+
+Ubuntu 22.04에서 꼭 Python 3.8을 써야 하면 기본 저장소에 없을 수 있으므로, 먼저 아래처럼 설치를 시도하세요.
+
+```bash
+sudo apt update
+sudo apt install python3.8 python3.8-venv python3.8-dev
+```
+
+만약 `Unable to locate package`가 나오면 deadsnakes PPA를 추가한 뒤 다시 설치합니다.
+
+```bash
+sudo apt update
+sudo apt install software-properties-common
+sudo add-apt-repository ppa:deadsnakes/ppa
+sudo apt update
+sudo apt install python3.8 python3.8-venv python3.8-dev
+```
+
+설치가 끝나면 아래처럼 Python 3.8 기준 가상환경을 만듭니다.
+
+```bash
 python3.8 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
