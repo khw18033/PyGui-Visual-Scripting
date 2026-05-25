@@ -255,6 +255,33 @@ ui/
 
 - Python 3.8 이상 권장
 
+### Ubuntu 가상환경 권장 설정
+
+다른 PC에서 이 프로젝트를 쓸 때는 전역 Python에 바로 설치하지 말고, 프로젝트 전용 가상환경을 만든 뒤 사용하는 것을 권장합니다.
+
+```bash
+python3.8 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install robomaster netaddr netifaces myqr
+```
+
+Ubuntu에서는 새 터미널을 열 때마다 자동으로 가상환경을 켜고 싶다면, 프로젝트 폴더 전용 실행 스크립트를 만들어 쓰는 방식이 가장 안전합니다. 예를 들면 아래처럼 `start.sh`를 두고 이 파일로 진입하면 됩니다.
+
+```bash
+#!/usr/bin/env bash
+cd "$(dirname "$0")"
+source .venv/bin/activate
+exec bash
+```
+
+```bash
+chmod +x start.sh
+./start.sh
+```
+
+이 방식은 프로젝트를 다른 위치로 옮겨도 경로만 유지되면 그대로 쓸 수 있고, 시스템 전체 셸 설정을 건드리지 않아 안전합니다.
+
 ## 필수 패키지
 
 - `dearpygui`
