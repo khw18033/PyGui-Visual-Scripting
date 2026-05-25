@@ -300,21 +300,16 @@ python -m pip install --upgrade pip setuptools wheel
 python -m pip install robomaster netaddr netifaces myqr
 ```
 
-Ubuntu에서는 새 터미널을 열 때마다 자동으로 가상환경을 켜고 싶다면, 프로젝트 폴더 전용 실행 스크립트를 만들어 쓰는 방식이 가장 안전합니다. 예를 들면 아래처럼 `start.sh`를 두고 이 파일로 진입하면 됩니다.
+Ubuntu에서는 새 터미널을 열 때마다 자동으로 가상환경을 켜고 싶다면 `~/.bashrc`에 활성화 명령을 추가하면 됩니다.
 
 ```bash
-#!/usr/bin/env bash
-cd "$(dirname "$0")"
-source .venv/bin/activate
-exec bash
+echo 'source ~/Desktop/khw/PyGui-Visual-Scripting/.venv/bin/activate' >> ~/.bashrc
+source ~/.bashrc
 ```
 
-```bash
-chmod +x start.sh
-./start.sh
-```
+프로젝트 폴더가 다른 경로에 있으면 위 경로만 맞게 바꾸면 됩니다. 여러 프로젝트를 쓰거나 특정 터미널에서만 켜고 싶으면 `bashrc` 대신 수동 활성화를 쓰는 편이 더 안전합니다.
 
-이 방식은 프로젝트를 다른 위치로 옮겨도 경로만 유지되면 그대로 쓸 수 있고, 시스템 전체 셸 설정을 건드리지 않아 안전합니다.
+되돌리려면 `~/.bashrc`에서 추가한 줄을 삭제한 뒤 다시 로드하면 됩니다.
 
 ## 필수 패키지
 
