@@ -1888,7 +1888,8 @@ def __init_ui__():
                 dpg.add_button(label="EP01 MISSION DEC", callback=add_node_cb, user_data="EP01_MISSION_DECIDE")
                 dpg.add_button(label="EP01 MISSION DST", callback=add_node_cb, user_data="EP01_MISSION_DISPATCH")
                 dpg.add_button(label="EP01 MISSION ACT", callback=add_node_cb, user_data="EP01_MISSION_ACTION")
-                dpg.add_spacer(width=50)
+
+            with dpg.group(horizontal=True):
                 dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
 
         with dpg.node_editor(tag="node_editor", callback=link_cb, delink_callback=del_link_cb): pass

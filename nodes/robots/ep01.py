@@ -1906,18 +1906,12 @@ class EP01MissionActionNode(BaseNode):
                     time.sleep(0.02)
             elif channel == 'grip':
                 open_val = _coerce_bool(step.get('open', True), True)
-                if ep_robot_inst is not None:
-                    try:
-                        if open_val:
-                            ep_robot_inst.gripper.open(power=EP_GRIPPER_POWER)
-                        else:
-                            ep_robot_inst.gripper.close(power=EP_GRIPPER_POWER)
-                    except Exception as e:
-                        write_log(f"[EP01 ACTION SEQ] 그리퍼 오류: {e}")
-                else:
-                    _ep_set_gripper(open_val)
-                if duration > 0:
-                    time.sleep(duration)
+                grip_wait = _coerce_float(step.get('duration_sec', step.get('duration', 3.0)), 3.0)
+                cmd = "grip_open" if open_val else "grip_close"
+                send_ep_command(cmd)
+                deadline = time.monotonic() + grip_wait
+                while time.monotonic() < deadline and self._seq_running and self._seq_gen == seq_gen:
+                    time.sleep(0.05)
             else:  # stop or unknown
                 ep_node_intent['stop'] = True
                 ep_node_intent['vx'] = 0.0
