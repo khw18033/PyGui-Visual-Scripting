@@ -3661,14 +3661,8 @@ class Go1MissionDecisionNode(BaseNode):
         self.state['request_timeout_sec'] = GO1_MISSION_TIMEOUT_SEC
         self.state['require_destination'] = True
         self._last_post_signature = ''
-        self._last_run_generation = -1
 
     def execute(self):
-        cur_gen = engine_module.run_generation
-        if cur_gen != self._last_run_generation:
-            self._last_run_generation = cur_gen
-            self._last_post_signature = ''
-
         raw_json = self.fetch_input_data(self.in_raw_json)
         payload, signature = _normalize_mission_container(raw_json)
         if not payload:
@@ -3788,14 +3782,8 @@ class Go1MissionDispatchNode(BaseNode):
         self.state['default_post_action_mode'] = str(GO1_MISSION_DEFAULTS.get('post_action_mode', 'Stand'))
         self.state['default_post_action_value'] = float(GO1_MISSION_DEFAULTS.get('post_action_value', 0.2))
         self._last_dispatch_signature = ''
-        self._last_run_generation = -1
 
     def execute(self):
-        cur_gen = engine_module.run_generation
-        if cur_gen != self._last_run_generation:
-            self._last_run_generation = cur_gen
-            self._last_dispatch_signature = ''
-
         raw_json = self.fetch_input_data(self.in_raw_json)
         decision = self.fetch_input_data(self.in_decision)
         payload, signature = _normalize_mission_container(raw_json)
