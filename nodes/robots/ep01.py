@@ -9,9 +9,12 @@ import glob
 import asyncio
 from collections import deque
 from unittest.mock import MagicMock
+import urllib.request
+import urllib.error
 from nodes.base import BaseNode, BaseRobotDriver
 from core.engine import generate_uuid, PortType, write_log, HwStatus
-from core.ep01_config import EP01_NETWORK_CONFIG, EP01_HARDWARE_CONFIG, EP01_CAMERA_CONFIG
+import core.engine as engine_module
+from core.ep01_config import EP01_NETWORK_CONFIG, EP01_HARDWARE_CONFIG, EP01_CAMERA_CONFIG, EP01_MISSION_CONFIG
 
 try:
     import cv2
@@ -1476,5 +1479,497 @@ class EPActionNode(BaseNode):
         if cmd_name:
             send_ep_command(cmd_name)
             write_log(f"EP Action: {action}")
-            
+
+        return self.out_flow
+
+
+# ================= [EP01 Mission System] =================
+from core.mission_utils import (
+    _coerce_bool, _coerce_float,
+    _mission_signature, _normalize_mission_container,
+    _extract_mission_id, _extract_mission_type,
+    _extract_mission_post_action, _post_json_payload,
+)
+
+EP01_MISSION_PENDING_URL  = str(EP01_MISSION_CONFIG.get('pending_url',  'http://localhost:18080/ep01/pending'))
+EP01_MISSION_DECISION_URL = str(EP01_MISSION_CONFIG.get('decision_url', 'http://localhost:18080/ep01/decision'))
+EP01_MISSION_POLL_SEC     = float(EP01_MISSION_CONFIG.get('poll_interval_sec',   1.0))
+EP01_MISSION_TIMEOUT_SEC  = float(EP01_MISSION_CONFIG.get('request_timeout_sec', 0.5))
+EP01_MISSION_DECISION_MODE  = str(EP01_MISSION_CONFIG.get('decision_mode', 'accept_all'))
+EP01_MISSION_ALLOWED_TYPES  = list(EP01_MISSION_CONFIG.get('allowed_mission_types', ['ep01', 'robot_action']))
+
+_ep01_mission_run_id = 0
+
+ep01_mission_state = {
+    'status':          'Idle',
+    'mission_id':      '',
+    'mission_type':    '',
+    'decision':        '',
+    'decision_reason': '',
+    'action_json':     '',
+    'source':          EP01_MISSION_PENDING_URL,
+    'last_error':      '',
+    'updated_ts':      0.0,
+}
+
+
+def _get_ep01_dashboard_live():
+    """Return (ep_dashboard, ep_state) reflecting actual connection (worker-mode aware)."""
+    import sys as _sys
+    for _name in ('ui.dpg_manager', 'dpg_manager', __name__, 'nodes.robots.ep01', 'ep01'):
+        _mod = _sys.modules.get(_name)
+        if _mod is None or not hasattr(_mod, 'ep_dashboard'):
+            continue
+        _dash = getattr(_mod, 'ep_dashboard', {})
+        if 'Online' in _dash.get('hw_link', ''):
+            return _dash, getattr(_mod, 'ep_state', {})
+    return ep_dashboard, ep_state
+
+
+def _evaluate_ep01_mission_conditions(conditions):
+    if not isinstance(conditions, dict):
+        return True, ''
+
+    if _coerce_bool(conditions.get('ep01_connected', False), False):
+        _ep_dash, _ = _get_ep01_dashboard_live()
+        hw = _ep_dash.get('hw_link', 'Offline')
+        write_log(f'[EP01 CONDITION] ep01 hw_link={hw!r}')
+        if 'Online' not in hw:
+            return False, f'ep01 not connected (hw_link={hw})'
+
+    ep01_batt_min = conditions.get('ep01_battery_min')
+    if ep01_batt_min is not None:
+        _ep_dash, _ep_st = _get_ep01_dashboard_live()
+        hw = _ep_dash.get('hw_link', 'Offline')
+        if 'Online' not in hw:
+            return False, 'ep01 not connected (cannot check battery)'
+        min_pct = _coerce_float(ep01_batt_min, 0.0)
+        batt = (_ep_st or {}).get('battery', -1)
+        if batt < 0:
+            return False, 'ep01 battery unknown'
+        if batt < min_pct:
+            return False, f'ep01 battery too low ({batt}% < {min_pct:.0f}%)'
+
+    return True, ''
+
+
+def _build_ep01_post_action_json(payload):
+    action_payload = _extract_mission_post_action(payload)
+    mission_id = _extract_mission_id(payload)
+
+    if isinstance(action_payload, dict) and str(action_payload.get('type', '')).strip().lower() == 'sequence':
+        return json.dumps({
+            'mission_id': mission_id,
+            'type': 'sequence',
+            'steps': action_payload.get('steps', []),
+        }, ensure_ascii=False)
+
+    result = {'mission_id': mission_id}
+    if isinstance(action_payload, dict):
+        result.update({k: v for k, v in action_payload.items() if k != 'mission_id'})
+    return json.dumps(result, ensure_ascii=False)
+
+
+class EP01MissionReceiverNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Mission Receiver (EP01)", "EP01_MISSION_RECV")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_raw_json = generate_uuid()
+        self.outputs[self.out_raw_json] = PortType.DATA
+        self.out_mission_id = generate_uuid()
+        self.outputs[self.out_mission_id] = PortType.DATA
+        self.out_has_mission = generate_uuid()
+        self.outputs[self.out_has_mission] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['mode'] = 'HTTP'
+        self.state['source'] = EP01_MISSION_PENDING_URL
+        self.state['poll_interval_sec'] = EP01_MISSION_POLL_SEC
+        self.state['request_timeout_sec'] = EP01_MISSION_TIMEOUT_SEC
+        self._last_poll_mono = 0.0
+        self._last_signature = ''
+        self._last_raw_json = ''
+        self._last_mission_id = ''
+        self._last_has_mission = False
+        self._new_mission_pulse = False
+        self._last_run_generation = -1
+
+    def _read_source_text(self, mode, source, timeout_sec):
+        source = str(source or '').strip()
+        if not source:
+            raise RuntimeError('source is empty')
+        if mode == 'FILE' or (not source.startswith('http://') and not source.startswith('https://')):
+            if not os.path.exists(source):
+                raise FileNotFoundError(source)
+            with open(source, 'r', encoding='utf-8') as f:
+                return f.read()
+        req = urllib.request.Request(
+            source,
+            headers={'Accept': 'application/json', 'Cache-Control': 'no-cache', 'Pragma': 'no-cache'},
+            method='GET',
+        )
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            charset = resp.headers.get_content_charset() or 'utf-8'
+            return resp.read().decode(charset, errors='replace')
+
+    def execute(self):
+        cur_gen = engine_module.run_generation
+        if cur_gen != self._last_run_generation:
+            self._last_run_generation = cur_gen
+            global _ep01_mission_run_id
+            _ep01_mission_run_id += 1
+            self._last_signature = ''
+            self._last_poll_mono = 0.0
+            write_log("[EP01 MISSION RX] 스크립트 재시작 감지 - 시그니처 초기화")
+
+        mode = str(self.state.get('mode', 'HTTP')).strip().upper()
+        source = str(self.state.get('source', EP01_MISSION_PENDING_URL)).strip()
+        poll_sec = max(0.0, _coerce_float(self.state.get('poll_interval_sec', EP01_MISSION_POLL_SEC), EP01_MISSION_POLL_SEC))
+        timeout_sec = max(0.2, _coerce_float(self.state.get('request_timeout_sec', EP01_MISSION_TIMEOUT_SEC), EP01_MISSION_TIMEOUT_SEC))
+        now_mono = time.monotonic()
+
+        if (now_mono - self._last_poll_mono) < poll_sec and self._last_raw_json:
+            self.output_data[self.out_raw_json] = self._last_raw_json
+            self.output_data[self.out_mission_id] = self._last_mission_id
+            self.output_data[self.out_has_mission] = bool(self._last_has_mission)
+            return self.out_flow if self._new_mission_pulse else None
+
+        self._last_poll_mono = now_mono
+        try:
+            raw_json = self._read_source_text(mode, source, timeout_sec)
+            payload, signature = _normalize_mission_container(raw_json)
+            mission_id = _extract_mission_id(payload)
+            has_mission = bool(mission_id or payload)
+
+            self._last_raw_json = raw_json
+            self._last_mission_id = mission_id
+            self._last_has_mission = has_mission
+            self.output_data[self.out_raw_json] = raw_json
+            self.output_data[self.out_mission_id] = mission_id
+            self.output_data[self.out_has_mission] = has_mission
+
+            ep01_mission_state.update({
+                'status': 'Pending' if has_mission else 'Idle',
+                'mission_id': mission_id,
+                'source': source,
+                'last_error': '',
+                'updated_ts': time.time(),
+            })
+
+            if has_mission and signature and signature != self._last_signature:
+                self._last_signature = signature
+                self._new_mission_pulse = True
+                ep01_mission_state['mission_type'] = _extract_mission_type(payload)
+                write_log(f"[EP01 MISSION RX] pending mission received: {mission_id or 'unknown'}")
+            else:
+                self._new_mission_pulse = False
+        except Exception as e:
+            self._new_mission_pulse = False
+            ep01_mission_state.update({
+                'status': 'Error',
+                'last_error': str(e),
+                'source': source,
+                'updated_ts': time.time(),
+            })
+            write_log(f"[EP01 MISSION RX] error: {e}")
+            self.output_data[self.out_raw_json] = self._last_raw_json
+            self.output_data[self.out_mission_id] = self._last_mission_id
+            self.output_data[self.out_has_mission] = bool(self._last_has_mission)
+
+        if self._new_mission_pulse:
+            self._new_mission_pulse = False
+            return self.out_flow
+        return None
+
+
+class EP01MissionDecisionNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Mission Decision (EP01)", "EP01_MISSION_DECIDE")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.in_raw_json = generate_uuid()
+        self.inputs[self.in_raw_json] = PortType.DATA
+        self.out_raw_json = generate_uuid()
+        self.outputs[self.out_raw_json] = PortType.DATA
+        self.out_mission_id = generate_uuid()
+        self.outputs[self.out_mission_id] = PortType.DATA
+        self.out_decision = generate_uuid()
+        self.outputs[self.out_decision] = PortType.DATA
+        self.out_reason = generate_uuid()
+        self.outputs[self.out_reason] = PortType.DATA
+        self.out_accepted = generate_uuid()
+        self.outputs[self.out_accepted] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['decision_mode'] = EP01_MISSION_DECISION_MODE
+        self.state['allowed_mission_types'] = ', '.join(EP01_MISSION_ALLOWED_TYPES)
+        self.state['decision_url'] = EP01_MISSION_DECISION_URL
+        self.state['request_timeout_sec'] = EP01_MISSION_TIMEOUT_SEC
+        self._last_post_signature = ''
+
+    def execute(self):
+        raw_json = self.fetch_input_data(self.in_raw_json)
+        payload, signature = _normalize_mission_container(raw_json)
+        if not payload:
+            write_log("[EP01 MISSION DECIDE] 입력 payload 없음 - 스킵")
+            return None
+
+        mission_id   = _extract_mission_id(payload)
+        mission_type = _extract_mission_type(payload)
+        mode = str(self.state.get('decision_mode', EP01_MISSION_DECISION_MODE)).strip().lower()
+        allowed_types = [t.strip().lower() for t in str(self.state.get('allowed_mission_types', ', '.join(EP01_MISSION_ALLOWED_TYPES))).split(',') if t.strip()]
+
+        conditions = payload.get('conditions')
+        cond_fail = ''
+        if isinstance(conditions, dict) and conditions:
+            cond_ok, cond_fail = _evaluate_ep01_mission_conditions(conditions)
+            if not cond_ok:
+                cond_fail = f'condition failed: {cond_fail}'
+
+        if cond_fail:
+            decision, reason = 'reject', cond_fail
+        elif not mission_id:
+            decision, reason = 'reject', 'missing mission_id'
+        elif mode == 'accept_all':
+            decision, reason = 'accept', 'accept_all'
+        elif mode == 'accept_if_allowed_type' and allowed_types:
+            decision = 'accept' if mission_type.lower() in allowed_types else 'reject'
+            reason = 'allowed_type' if decision == 'accept' else 'type mismatch'
+        else:
+            decision = 'accept' if (not allowed_types or not mission_type or mission_type.lower() in allowed_types) else 'reject'
+            reason = 'type ok' if decision == 'accept' else 'type blocked'
+
+        accepted = decision == 'accept'
+        decision_url = str(self.state.get('decision_url', EP01_MISSION_DECISION_URL)).strip() or EP01_MISSION_DECISION_URL
+        timeout_sec  = max(0.2, _coerce_float(self.state.get('request_timeout_sec', EP01_MISSION_TIMEOUT_SEC), EP01_MISSION_TIMEOUT_SEC))
+
+        if mission_id and signature and signature != self._last_post_signature:
+            self._last_post_signature = signature
+            write_log(f"[EP01 MISSION DECIDE] 미션={mission_id} type={mission_type} -> {decision} ({reason})")
+            try:
+                status_code, body = _post_json_payload(decision_url, {'mission_id': mission_id, 'decision': decision}, timeout_sec)
+                write_log(f"[EP01 MISSION DECIDE] POST {decision_url} -> rc={status_code}")
+                if body:
+                    write_log(f"[EP01 MISSION DECIDE] response: {body[:200]}")
+                ep01_mission_state.update({
+                    'status': 'Accepted' if accepted else 'Rejected',
+                    'mission_id': mission_id, 'mission_type': mission_type,
+                    'decision': decision, 'decision_reason': reason,
+                    'source': decision_url, 'last_error': '', 'updated_ts': time.time(),
+                })
+            except Exception as e:
+                ep01_mission_state.update({
+                    'status': 'DecisionError',
+                    'mission_id': mission_id, 'mission_type': mission_type,
+                    'decision': decision, 'decision_reason': reason,
+                    'source': decision_url, 'last_error': str(e), 'updated_ts': time.time(),
+                })
+                write_log(f"[EP01 MISSION DECIDE] POST 실패: {e} → {decision}으로 계속 진행")
+        elif mission_id and signature == self._last_post_signature:
+            write_log(f"[EP01 MISSION DECIDE] 중복 미션 스킵: {mission_id}")
+        elif not mission_id:
+            ep01_mission_state.update({
+                'status': 'Rejected', 'mission_id': '', 'mission_type': mission_type,
+                'decision': 'reject', 'decision_reason': reason,
+                'source': decision_url, 'last_error': '', 'updated_ts': time.time(),
+            })
+
+        self.output_data[self.out_raw_json] = raw_json
+        self.output_data[self.out_mission_id] = mission_id
+        self.output_data[self.out_decision] = decision
+        self.output_data[self.out_reason] = reason
+        self.output_data[self.out_accepted] = accepted
+        return self.out_flow
+
+
+class EP01MissionDispatchNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Mission Dispatch (EP01)", "EP01_MISSION_DISPATCH")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.in_raw_json = generate_uuid()
+        self.inputs[self.in_raw_json] = PortType.DATA
+        self.in_decision = generate_uuid()
+        self.inputs[self.in_decision] = PortType.DATA
+        self.out_action_json = generate_uuid()
+        self.outputs[self.out_action_json] = PortType.DATA
+        self.out_mission_id = generate_uuid()
+        self.outputs[self.out_mission_id] = PortType.DATA
+        self.out_accepted = generate_uuid()
+        self.outputs[self.out_accepted] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+        self._last_dispatch_signature = ''
+
+    def execute(self):
+        raw_json = self.fetch_input_data(self.in_raw_json)
+        decision = self.fetch_input_data(self.in_decision)
+        payload, signature = _normalize_mission_container(raw_json)
+        if not payload:
+            write_log("[EP01 MISSION DISPATCH] 입력 payload 없음 - 스킵")
+            return None
+
+        mission_id = _extract_mission_id(payload)
+        if isinstance(decision, bool):
+            accepted = decision
+        else:
+            accepted = str(decision).strip().lower() in ('accept', 'true', '1', 'yes') if decision is not None else False
+
+        if accepted:
+            action_json = _build_ep01_post_action_json(payload)
+            ep01_mission_state.update({
+                'status': 'Dispatched', 'mission_id': mission_id,
+                'mission_type': _extract_mission_type(payload),
+                'decision': 'accept', 'decision_reason': 'mission accepted',
+                'action_json': action_json, 'last_error': '', 'updated_ts': time.time(),
+            })
+            if signature and signature != self._last_dispatch_signature:
+                self._last_dispatch_signature = signature
+                preview = (action_json[:120] + '...') if action_json and len(action_json) > 120 else action_json
+                write_log(f"[EP01 MISSION DISPATCH] 미션 디스패치: {mission_id or 'unknown'}")
+                write_log(f"[EP01 MISSION DISPATCH] action_json: {preview}")
+            elif signature and signature == self._last_dispatch_signature:
+                write_log(f"[EP01 MISSION DISPATCH] 중복 미션 스킵: {mission_id}")
+        else:
+            action_json = ''
+            write_log(f"[EP01 MISSION DISPATCH] 미션 거부됨: {mission_id or 'unknown'} (decision={decision})")
+            ep01_mission_state.update({
+                'status': 'Rejected', 'mission_id': mission_id,
+                'mission_type': _extract_mission_type(payload),
+                'decision': 'reject', 'decision_reason': 'mission rejected',
+                'action_json': '', 'last_error': '', 'updated_ts': time.time(),
+            })
+
+        self.output_data[self.out_action_json] = action_json
+        self.output_data[self.out_mission_id] = mission_id
+        self.output_data[self.out_accepted] = accepted
+        return self.out_flow
+
+
+class EP01MissionActionNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Mission Action (EP01)", "EP01_MISSION_ACTION")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.in_mission_action = generate_uuid()
+        self.inputs[self.in_mission_action] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+        self._last_mission_action_signature = ''
+        self._seq_running = False
+        self._seq_thread = None
+        self._last_run_id = -1
+        self._seq_gen = 0
+
+    def _run_sequence(self, steps, seq_gen):
+        write_log(f"[EP01 ACTION SEQ] 시퀀스 시작: {len(steps)}단계")
+        for i, step in enumerate(steps):
+            if not self._seq_running or self._seq_gen != seq_gen:
+                write_log("[EP01 ACTION SEQ] 시퀀스 중단 (재시작 감지)")
+                break
+            channel  = str(step.get('channel', 'stop')).strip().lower()
+            duration = _coerce_float(step.get('duration_sec', step.get('duration', 0.5)), 0.5)
+            write_log(f"[EP01 ACTION SEQ] 단계 {i+1}/{len(steps)}: channel={channel}")
+
+            if channel == 'drive':
+                vx = _coerce_float(step.get('vx', 0.0), 0.0)
+                vy = _coerce_float(step.get('vy', 0.0), 0.0)
+                wz = _coerce_float(step.get('wz', 0.0), 0.0)
+                ep_node_intent['stop'] = False
+                ep_node_intent['vx'] = vx
+                ep_node_intent['vy'] = vy
+                ep_node_intent['wz'] = wz
+                ep_node_intent['trigger_time'] = time.monotonic()
+                deadline = time.monotonic() + duration
+                while time.monotonic() < deadline and self._seq_running and self._seq_gen == seq_gen:
+                    ep_node_intent['trigger_time'] = time.monotonic()
+                    if callable(ep_drive_wheels_sender):
+                        try:
+                            ep_drive_wheels_sender(vx, vy, wz)
+                        except Exception:
+                            pass
+                    time.sleep(0.02)
+            elif channel == 'grip':
+                open_val = _coerce_bool(step.get('open', True), True)
+                _ep_set_gripper(open_val)
+                if duration > 0:
+                    time.sleep(duration)
+            else:  # stop or unknown
+                ep_node_intent['stop'] = True
+                ep_node_intent['vx'] = 0.0
+                ep_node_intent['vy'] = 0.0
+                ep_node_intent['wz'] = 0.0
+                if duration > 0:
+                    time.sleep(duration)
+
+            if i < len(steps) - 1:
+                ep_node_intent['vx'] = 0.0
+                ep_node_intent['vy'] = 0.0
+                ep_node_intent['wz'] = 0.0
+                ep_node_intent['stop'] = True
+                time.sleep(0.15)
+
+            write_log(f"[EP01 ACTION SEQ] 단계 {i+1}/{len(steps)} 완료")
+
+        if self._seq_gen == seq_gen:
+            self._seq_running = False
+        write_log("[EP01 ACTION SEQ] 시퀀스 완료")
+
+    def execute(self):
+        if _ep01_mission_run_id != self._last_run_id:
+            self._last_run_id = _ep01_mission_run_id
+            self._last_mission_action_signature = ''
+            self._seq_gen += 1
+            self._seq_running = False
+
+        mission_action_raw = self.fetch_input_data(self.in_mission_action)
+        if mission_action_raw is None:
+            return self.out_flow
+
+        sig = _mission_signature(mission_action_raw)
+        if not sig or sig == self._last_mission_action_signature:
+            return self.out_flow
+
+        self._last_mission_action_signature = sig
+        payload, _ = _normalize_mission_container(mission_action_raw)
+        if not isinstance(payload, dict):
+            return self.out_flow
+
+        action_type   = str(payload.get('type', '')).strip().lower()
+        mission_id_log = payload.get('mission_id', 'unknown')
+
+        if action_type == 'sequence':
+            steps = payload.get('steps', [])
+            write_log(f"[EP01 ACTION] 시퀀스 미션 수신: id={mission_id_log} steps={len(steps)}")
+            if not self._seq_running:
+                self._seq_running = True
+                gen = self._seq_gen
+                self._seq_thread = threading.Thread(
+                    target=self._run_sequence, args=(steps, gen), daemon=True)
+                self._seq_thread.start()
+            else:
+                write_log("[EP01 ACTION] 이전 시퀀스 실행 중 - 새 시퀀스 스킵")
+        else:
+            channel = str(payload.get('channel', 'stop')).strip().lower()
+            write_log(f"[EP01 ACTION] 단일 액션 수신: id={mission_id_log} channel={channel}")
+            if channel == 'drive':
+                vx = _coerce_float(payload.get('vx', 0.0), 0.0)
+                vy = _coerce_float(payload.get('vy', 0.0), 0.0)
+                wz = _coerce_float(payload.get('wz', 0.0), 0.0)
+                ep_node_intent['stop'] = False
+                ep_node_intent['vx'] = vx
+                ep_node_intent['vy'] = vy
+                ep_node_intent['wz'] = wz
+                ep_node_intent['trigger_time'] = time.monotonic()
+            elif channel == 'grip':
+                _ep_set_gripper(_coerce_bool(payload.get('open', True), True))
+            else:
+                ep_node_intent['stop'] = True
+                ep_node_intent['vx'] = 0.0
+                ep_node_intent['vy'] = 0.0
+                ep_node_intent['wz'] = 0.0
+
         return self.out_flow

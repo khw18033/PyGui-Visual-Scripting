@@ -610,6 +610,16 @@ class NodeUIRenderer:
                 node.state['json_path'] = dpg.get_value(node.ui_json_path)
             elif t == "EP_ACTION" and hasattr(node, 'combo_act'):
                 node.state['action'] = dpg.get_value(node.combo_act)
+            elif t == "EP01_MISSION_RECV" and hasattr(node, 'combo_mode'):
+                node.state['mode'] = dpg.get_value(node.combo_mode)
+                node.state['source'] = dpg.get_value(node.field_source)
+                node.state['poll_interval_sec'] = dpg.get_value(node.field_poll)
+                node.state['request_timeout_sec'] = dpg.get_value(node.field_timeout)
+            elif t == "EP01_MISSION_DECIDE" and hasattr(node, 'combo_decision_mode'):
+                node.state['decision_mode'] = dpg.get_value(node.combo_decision_mode)
+                node.state['allowed_mission_types'] = dpg.get_value(node.field_allowed_types)
+                node.state['decision_url'] = dpg.get_value(node.field_decision_url)
+                node.state['request_timeout_sec'] = dpg.get_value(node.field_timeout)
             elif t == "VIDEO_SRC" and hasattr(node, 'ui_target_ip'):
                 node.state['target_ip'] = dpg.get_value(node.ui_target_ip)
                 if hasattr(node, 'ui_receiver_folder'):
@@ -796,8 +806,18 @@ class NodeUIRenderer:
             dpg.set_value(node.combo_action, node.state.get('action', 'Start Sender'))
             dpg.set_value(node.field_url, node.state.get('server_url', 'http://210.110.250.33:5002/upload'))
 
-        elif t == "EP_ACTION" and hasattr(node, 'combo_act'): 
+        elif t == "EP_ACTION" and hasattr(node, 'combo_act'):
             dpg.set_value(node.combo_act, node.state.get('action', 'LED Red'))
+        elif t == "EP01_MISSION_RECV" and hasattr(node, 'combo_mode'):
+            dpg.set_value(node.combo_mode, node.state.get('mode', 'HTTP'))
+            dpg.set_value(node.field_source, node.state.get('source', getattr(ep01_module, 'EP01_MISSION_PENDING_URL', 'http://localhost:18080/ep01/pending')))
+            dpg.set_value(node.field_poll, float(node.state.get('poll_interval_sec', getattr(ep01_module, 'EP01_MISSION_POLL_SEC', 1.0))))
+            dpg.set_value(node.field_timeout, float(node.state.get('request_timeout_sec', getattr(ep01_module, 'EP01_MISSION_TIMEOUT_SEC', 0.5))))
+        elif t == "EP01_MISSION_DECIDE" and hasattr(node, 'combo_decision_mode'):
+            dpg.set_value(node.combo_decision_mode, node.state.get('decision_mode', getattr(ep01_module, 'EP01_MISSION_DECISION_MODE', 'accept_all')))
+            dpg.set_value(node.field_allowed_types, node.state.get('allowed_mission_types', ', '.join(getattr(ep01_module, 'EP01_MISSION_ALLOWED_TYPES', ['ep01', 'robot_action']))))
+            dpg.set_value(node.field_decision_url, node.state.get('decision_url', getattr(ep01_module, 'EP01_MISSION_DECISION_URL', 'http://localhost:18080/ep01/decision')))
+            dpg.set_value(node.field_timeout, float(node.state.get('request_timeout_sec', getattr(ep01_module, 'EP01_MISSION_TIMEOUT_SEC', 0.5))))
 
     @staticmethod
     def render(node):
@@ -844,6 +864,10 @@ class NodeUIRenderer:
         elif t == "EP_VIS_SAVE": NodeUIRenderer._render_video_save(node)
         elif t == "EP_SERVER_SENDER": NodeUIRenderer._render_ep_server_sender(node)
         elif t == "EP_SERVER_JSON_RECV": NodeUIRenderer._render_ep_server_json_recv(node)
+        elif t == "EP01_MISSION_RECV": NodeUIRenderer._render_ep01_mission_recv(node)
+        elif t == "EP01_MISSION_DECIDE": NodeUIRenderer._render_ep01_mission_decide(node)
+        elif t == "EP01_MISSION_DISPATCH": NodeUIRenderer._render_ep01_mission_dispatch(node)
+        elif t == "EP01_MISSION_ACTION": NodeUIRenderer._render_ep01_mission_action(node)
 
 
     @staticmethod
@@ -1351,6 +1375,71 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
+    def _render_ep01_mission_recv(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Mission Receiver (EP01)"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_mode = dpg.add_combo(["HTTP", "FILE"], default_value=node.state.get('mode', 'HTTP'), width=90)
+                node.field_source = dpg.add_input_text(width=240, default_value=node.state.get('source', getattr(ep01_module, 'EP01_MISSION_PENDING_URL', 'http://localhost:18080/ep01/pending')))
+                node.field_poll = dpg.add_input_float(label="Poll (sec)", width=100, default_value=float(node.state.get('poll_interval_sec', getattr(ep01_module, 'EP01_MISSION_POLL_SEC', 1.0))), step=0.1)
+                node.field_timeout = dpg.add_input_float(label="Request Timeout", width=120, default_value=float(node.state.get('request_timeout_sec', getattr(ep01_module, 'EP01_MISSION_TIMEOUT_SEC', 0.5))), step=0.1)
+            with dpg.node_attribute(tag=node.out_raw_json, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Raw Mission JSON")
+            with dpg.node_attribute(tag=node.out_mission_id, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Mission ID")
+            with dpg.node_attribute(tag=node.out_has_mission, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Has Mission")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_ep01_mission_decide(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Mission Decision (EP01)"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.in_raw_json, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Mission JSON")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_decision_mode = dpg.add_combo(
+                    ["accept_all", "accept_if_allowed_type"],
+                    default_value=node.state.get('decision_mode', getattr(ep01_module, 'EP01_MISSION_DECISION_MODE', 'accept_all')),
+                    width=200,
+                )
+                node.field_allowed_types = dpg.add_input_text(label="Allowed Types", width=240, default_value=node.state.get('allowed_mission_types', ', '.join(getattr(ep01_module, 'EP01_MISSION_ALLOWED_TYPES', ['ep01', 'robot_action']))))
+                node.field_decision_url = dpg.add_input_text(label="Decision URL", width=240, default_value=node.state.get('decision_url', getattr(ep01_module, 'EP01_MISSION_DECISION_URL', 'http://localhost:18080/ep01/decision')))
+                node.field_timeout = dpg.add_input_float(label="Request Timeout", width=120, default_value=float(node.state.get('request_timeout_sec', getattr(ep01_module, 'EP01_MISSION_TIMEOUT_SEC', 0.5))), step=0.1)
+            with dpg.node_attribute(tag=node.out_raw_json, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Raw Mission JSON")
+            with dpg.node_attribute(tag=node.out_mission_id, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Mission ID")
+            with dpg.node_attribute(tag=node.out_decision, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Decision")
+            with dpg.node_attribute(tag=node.out_reason, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Reason")
+            with dpg.node_attribute(tag=node.out_accepted, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Accepted")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_ep01_mission_dispatch(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Mission Dispatch (EP01)"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.in_raw_json, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Mission JSON")
+            with dpg.node_attribute(tag=node.in_decision, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Decision")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_text("Outputs action JSON for EP01 mission execution.", color=(180, 180, 180))
+            with dpg.node_attribute(tag=node.out_action_json, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Action JSON")
+            with dpg.node_attribute(tag=node.out_mission_id, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Mission ID")
+            with dpg.node_attribute(tag=node.out_accepted, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Accepted")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_ep01_mission_action(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Mission Action (EP01)"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.in_mission_action, attribute_type=dpg.mvNode_Attr_Input):
+                dpg.add_text("Action JSON")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_text("channel: drive / grip / stop\nsequence: {type:sequence, steps:[...]}", color=(180, 180, 180))
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
     def _render_ep_keyboard(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="Keyboard (EP)"):
             with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
@@ -1795,6 +1884,10 @@ def __init_ui__():
                 dpg.add_button(label="EP SAVE", callback=add_node_cb, user_data="EP_VIS_SAVE")
                 dpg.add_button(label="EP SENDER", callback=add_node_cb, user_data="EP_SERVER_SENDER")
                 dpg.add_button(label="EP JSON RX", callback=add_node_cb, user_data="EP_SERVER_JSON_RECV")
+                dpg.add_button(label="EP01 MISSION RX", callback=add_node_cb, user_data="EP01_MISSION_RECV")
+                dpg.add_button(label="EP01 MISSION DEC", callback=add_node_cb, user_data="EP01_MISSION_DECIDE")
+                dpg.add_button(label="EP01 MISSION DST", callback=add_node_cb, user_data="EP01_MISSION_DISPATCH")
+                dpg.add_button(label="EP01 MISSION ACT", callback=add_node_cb, user_data="EP01_MISSION_ACTION")
                 dpg.add_spacer(width=50)
                 dpg.add_button(label="RUN SCRIPT", tag="btn_run", callback=toggle_exec, width=150)
 

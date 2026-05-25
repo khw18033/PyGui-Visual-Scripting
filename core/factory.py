@@ -100,7 +100,7 @@ class NodeFactory:
         elif node_type == "GO1_SERVER_SENDER" and HAS_GO1: node = ServerSenderNode(node_id)
         elif node_type == "GO1_SERVER_JSON_RECV" and HAS_GO1: node = Go1ServerJsonRecvNode(node_id)
         elif node_type == "GO1_AUTO_AVOIDANCE" and HAS_GO1: node = Go1AutoAvoidanceNode(node_id)
-        elif node_type.startswith("EP_"):
+        elif node_type.startswith("EP_") or node_type.startswith("EP01_"):
             try:
                 ep_module = importlib.import_module('nodes.robots.ep01')
                 EPRobotDriver = getattr(ep_module, 'EPRobotDriver')
@@ -111,6 +111,10 @@ class NodeFactory:
                 EPVideoFrameSaveNode = getattr(ep_module, 'EPVideoFrameSaveNode')
                 EPServerSenderNode = getattr(ep_module, 'EPServerSenderNode')
                 EPServerJsonRecvNode = getattr(ep_module, 'EPServerJsonRecvNode')
+                EP01MissionReceiverNode  = getattr(ep_module, 'EP01MissionReceiverNode')
+                EP01MissionDecisionNode  = getattr(ep_module, 'EP01MissionDecisionNode')
+                EP01MissionDispatchNode  = getattr(ep_module, 'EP01MissionDispatchNode')
+                EP01MissionActionNode    = getattr(ep_module, 'EP01MissionActionNode')
             except Exception as e:
                 print(f"⚠️  Failed to load EP nodes: {e}")
                 EPRobotDriver = None
@@ -121,6 +125,10 @@ class NodeFactory:
                 EPVideoFrameSaveNode = None
                 EPServerSenderNode = None
                 EPServerJsonRecvNode = None
+                EP01MissionReceiverNode = None
+                EP01MissionDecisionNode = None
+                EP01MissionDispatchNode = None
+                EP01MissionActionNode   = None
 
             if node_type == "EP_DRIVER" and EPRobotDriver is not None:
                 node = UniversalRobotNode(node_id, EPRobotDriver(), "EP Driver", "EP_DRIVER")
@@ -138,6 +146,14 @@ class NodeFactory:
                 node = EPServerSenderNode(node_id)
             elif node_type == "EP_SERVER_JSON_RECV" and EPServerJsonRecvNode is not None:
                 node = EPServerJsonRecvNode(node_id)
+            elif node_type == "EP01_MISSION_RECV" and EP01MissionReceiverNode is not None:
+                node = EP01MissionReceiverNode(node_id)
+            elif node_type == "EP01_MISSION_DECIDE" and EP01MissionDecisionNode is not None:
+                node = EP01MissionDecisionNode(node_id)
+            elif node_type == "EP01_MISSION_DISPATCH" and EP01MissionDispatchNode is not None:
+                node = EP01MissionDispatchNode(node_id)
+            elif node_type == "EP01_MISSION_ACTION" and EP01MissionActionNode is not None:
+                node = EP01MissionActionNode(node_id)
         
         if node: 
             node_registry[node_id] = node

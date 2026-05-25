@@ -1,0 +1,8 @@
+{
+  "pending_url": "http://localhost:18080/ep01/pending",
+  "decision_url": "http://localhost:18080/ep01/decision",
+  "poll_interval_sec": 1.0,
+  "request_timeout_sec": 0.5,
+  "decision_mode": "accept_all",
+  "allowed_mission_types": ["ep01", "robot_action"]
+}

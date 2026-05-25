@@ -85,6 +85,16 @@ def execute_graph_once():
                 print(f"[{node.label}] Error: {e}")
             continue
 
+        if node.type_str == "EP01_MISSION_RECV":
+            try:
+                res = node.execute()
+                out_id = _parse_flow_out(res)
+                if out_id:
+                    preexec_flow_outs.append(out_id)
+            except Exception as e:
+                print(f"[{node.label}] Error: {e}")
+            continue
+
         if node.type_str in ["COND_KEY", "MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER", "VIDEO_SRC", "VIS_FISHEYE", "VIS_DEPTH_DA2", "VIS_ARUCO", "VIS_FLASK", "MT4_UNITY", "GO1_UNITY", "GO1_UNITY_KEYBOARD", "GO1_UNITY_AUTO", "GO1_SERVER_JSON_RECV", "EP_SERVER_JSON_RECV", "UDP_RECV", "LOGGER", "CONSTANT", "MT4_SAG", "MT4_CALIB", "MT4_TOOLTIP", "MT4_BACKLASH", "MT4_KEYBOARD", "GO1_KEYBOARD", "EP_KEYBOARD", "EP_CAM_SRC", "EP_CAM_STREAM"]:
             try:
                 node.execute()

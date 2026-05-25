@@ -12,7 +12,6 @@ import glob
 import asyncio
 import re
 import urllib.request
-import urllib.error
 from datetime import datetime
 from collections import deque
 
@@ -28,6 +27,14 @@ from core.go1_config import (
     MODEL_CONFIG,
 )
 import core.engine as engine_module
+from core.mission_utils import (
+    _coerce_bool, _coerce_float, _coerce_int,
+    _mission_signature, _normalize_mission_container, _get_mission_value,
+    _post_json_payload,
+    _extract_mission_id as _mu_extract_mission_id,
+    _extract_mission_type as _mu_extract_mission_type,
+    _extract_mission_post_action as _mu_extract_mission_post_action,
+)
 
 try:
     import cv2
@@ -341,65 +348,6 @@ def _calibrate_go1_rel_depth_to_cm(rel_depth):
     return max(0.0, float(distance_cm))
 
 
-def _mission_signature(value):
-    if isinstance(value, (dict, list)):
-        try:
-            return json.dumps(value, ensure_ascii=False, sort_keys=True)
-        except Exception:
-            return str(value)
-    return str(value or '').strip()
-
-
-def _normalize_mission_container(raw_value):
-    if raw_value is None:
-        return {}, ''
-
-    if isinstance(raw_value, str):
-        text = raw_value.strip()
-        if not text:
-            return {}, ''
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            return {}, text
-        return _normalize_mission_container(parsed)
-
-    if isinstance(raw_value, list):
-        signature = _mission_signature(raw_value)
-        for item in raw_value:
-            if isinstance(item, dict):
-                return item, signature
-        return {}, signature
-
-    if isinstance(raw_value, dict):
-        signature = _mission_signature(raw_value)
-        for key in ('mission', 'data', 'payload', 'cmd', 'command'):
-            nested = raw_value.get(key)
-            if isinstance(nested, dict):
-                return nested, signature
-
-        missions = raw_value.get('missions')
-        if isinstance(missions, list):
-            for item in missions:
-                if isinstance(item, dict):
-                    return item, signature
-
-        return raw_value, signature
-
-    return {}, _mission_signature(raw_value)
-
-
-def _get_mission_value(payload, keys, default=None):
-    if not isinstance(payload, dict):
-        return default
-    for key in keys or []:
-        if key in payload:
-            value = payload.get(key)
-            if value not in (None, '', [], {}):
-                return value
-    return default
-
-
 def _normalize_mission_point(point, default_frame=None, default_yaw_deg=0.0):
     if not isinstance(point, dict):
         return None
@@ -416,13 +364,11 @@ def _normalize_mission_point(point, default_frame=None, default_yaw_deg=0.0):
 
 
 def _extract_mission_id(payload):
-    mission_id = _get_mission_value(payload, GO1_MISSION_SCHEMA.get('mission_id_keys', ['mission_id', 'id']), '')
-    return str(mission_id).strip() if mission_id is not None else ''
+    return _mu_extract_mission_id(payload, GO1_MISSION_SCHEMA)
 
 
 def _extract_mission_type(payload):
-    mission_type = _get_mission_value(payload, GO1_MISSION_SCHEMA.get('mission_type_keys', ['mission_type', 'type', 'kind']), '')
-    return str(mission_type).strip() if mission_type is not None else ''
+    return _mu_extract_mission_type(payload, GO1_MISSION_SCHEMA)
 
 
 def _extract_mission_destination(payload):
@@ -461,18 +407,7 @@ def _extract_mission_destination(payload):
 
 
 def _extract_mission_post_action(payload):
-    if not isinstance(payload, dict):
-        return {}
-
-    action_keys = GO1_MISSION_SCHEMA.get('post_action_keys', ['post_action', 'robot_action', 'action'])
-    for key in action_keys:
-        value = payload.get(key)
-        if isinstance(value, dict):
-            return value
-        if isinstance(value, str) and value.strip():
-            return {'type': value.strip()}
-
-    return {}
+    return _mu_extract_mission_post_action(payload, GO1_MISSION_SCHEMA)
 
 
 def _resolve_go1_action_mode(action_payload, default_mode='Stand'):
@@ -574,26 +509,6 @@ def _build_go1_post_action_json(payload):
         result['note'] = action_payload.get('note')
     return json.dumps(result, ensure_ascii=False)
 
-
-def _post_json_payload(url, payload, timeout_sec):
-    data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
-        method='POST',
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-            charset = resp.headers.get_content_charset() or 'utf-8'
-            return resp.status, resp.read().decode(charset, errors='replace').strip()
-    except urllib.error.HTTPError as e:
-        body = ''
-        try:
-            body = e.read().decode(e.headers.get_content_charset() or 'utf-8', errors='replace').strip()
-        except Exception:
-            body = ''
-        raise RuntimeError(f'HTTP {e.code}: {body or e.reason}') from e
 
 go1_dashboard = {
     "status": "Idle",
@@ -835,30 +750,6 @@ def _wrap_pi(a):
     while a < -math.pi:
         a += 2.0 * math.pi
     return a
-
-
-def _coerce_bool(value, default=False):
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, str):
-        return value.strip().lower() in ['1', 'true', 'yes', 'on']
-    return bool(value)
-
-
-def _coerce_float(value, default=0.0):
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _coerce_int(value, default=0):
-    try:
-        return int(float(value))
-    except Exception:
-        return default
 
 
 def _marker_size_cm_to_m(marker_size_cm):

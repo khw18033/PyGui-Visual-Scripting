@@ -94,7 +94,18 @@ def _load_json_compatible_config(filename, default):
     return copy.deepcopy(default)
 
 
+# ================= [EP01 Mission Config] =================
+EP01_MISSION_CONFIG_DEFAULT = {
+    'pending_url': 'http://localhost:18080/ep01/pending',
+    'decision_url': 'http://localhost:18080/ep01/decision',
+    'poll_interval_sec': 1.0,
+    'request_timeout_sec': 0.5,
+    'decision_mode': 'accept_all',
+    'allowed_mission_types': ['ep01', 'robot_action'],
+}
+
 # Load configs from YAML/JSON files
 EP01_NETWORK_CONFIG = _load_json_compatible_config('network_config.yaml', EP01_NETWORK_CONFIG_DEFAULT)
 EP01_HARDWARE_CONFIG = _load_json_compatible_config('hardware_config.yaml', EP01_HARDWARE_CONFIG_DEFAULT)
 EP01_CAMERA_CONFIG = _load_json_compatible_config('camera_config.yaml', EP01_CAMERA_CONFIG_DEFAULT)
+EP01_MISSION_CONFIG = _load_json_compatible_config('mission_config.yaml', EP01_MISSION_CONFIG_DEFAULT)
