@@ -404,6 +404,12 @@ def send_ep_command(cmd_str):
             if cmd_str == "led_blue":
                 ep_robot_inst.led.set_led(comp="all", r=0, g=0, b=255, effect="on")
                 return True
+            if cmd_str == "led_yellow":
+                ep_robot_inst.led.set_led(comp="all", r=255, g=255, b=0, effect="on")
+                return True
+            if cmd_str == "led_green":
+                ep_robot_inst.led.set_led(comp="all", r=0, g=255, b=0, effect="on")
+                return True
             if cmd_str == "blaster_fire":
                 ep_robot_inst.blaster.fire(times=1)
                 return True
@@ -425,8 +431,10 @@ def send_ep_command(cmd_str):
             pass
 
     udp_map = {
-        "led_red": "led control comp all r 255 g 0 b 0 effect solid;",
-        "led_blue": "led control comp all r 0 g 0 b 255 effect solid;",
+        "led_red":    "led control comp all r 255 g 0   b 0   effect solid;",
+        "led_blue":   "led control comp all r 0   g 0   b 255 effect solid;",
+        "led_yellow": "led control comp all r 255 g 255 b 0   effect solid;",
+        "led_green":  "led control comp all r 0   g 255 b 0   effect solid;",
         "blaster_fire": "blaster fire;",
         "arm_center": "robotic_arm moveto x 100 y 100;",
         "grip_open": "gripper open 1;",
@@ -1912,6 +1920,18 @@ class EP01MissionActionNode(BaseNode):
                 deadline = time.monotonic() + grip_wait
                 while time.monotonic() < deadline and self._seq_running and self._seq_gen == seq_gen:
                     time.sleep(0.05)
+            elif channel == 'led':
+                _LED_COLORS = {
+                    'red':    'led_red',
+                    'blue':   'led_blue',
+                    'yellow': 'led_yellow',
+                    'green':  'led_green',
+                }
+                color = str(step.get('color', 'red')).strip().lower()
+                cmd = _LED_COLORS.get(color, 'led_red')
+                send_ep_command(cmd)
+                if duration > 0:
+                    time.sleep(duration)
             else:  # stop or unknown
                 ep_node_intent['stop'] = True
                 ep_node_intent['vx'] = 0.0

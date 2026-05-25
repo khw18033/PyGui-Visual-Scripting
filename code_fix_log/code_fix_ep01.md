@@ -305,3 +305,105 @@
   3. 변경 사항 로그 및 간단 테스트 스크립트(예: 연속 정지/전진/회전 시퀀스) 작성하여 현장 검증 자동화.
 
 ---
+
+### [2026-05-25] EP01 미션 노드 시스템 구현 및 버그 수정
+
+#### 1. 미션 시스템 공통 유틸리티 모듈 분리
+
+- `core/mission_utils.py` 신설:
+  - Go1 미션 노드에 산재하던 헬퍼 함수를 공통 모듈로 추출
+  - `_coerce_bool`, `_coerce_float`, `_coerce_int`: 타입 강제 변환
+  - `_mission_signature(payload)`: 중복 실행 방지용 서명 생성
+  - `_normalize_mission_container(raw)`: JSON 문자열/dict 통일 처리
+  - `_get_mission_value(payload, keys, default)`: 스키마 기반 필드 접근
+  - `_extract_mission_id/type/post_action(payload, schema)`: 스키마 파라미터 주입 방식으로 Go1/EP01 양쪽에서 재사용
+  - `_post_json_payload(url, payload, timeout_sec)`: HTTP POST 공통 처리
+
+- `nodes/robots/go1.py` 리팩토링:
+  - 위 함수들을 `core.mission_utils`에서 import하는 thin wrapper로 교체
+  - 로컬 중복 정의 약 95줄 제거
+
+#### 2. EP01 미션 설정 파일 추가
+
+- `nodes/ep01_config/mission_config.yaml` 신설:
+  - `pending_url`, `decision_url`, `poll_interval_sec(1.0)`, `request_timeout_sec(0.5)`, `decision_mode(accept_all)`, `allowed_mission_types([ep01, robot_action])`
+
+- `core/ep01_config.py` 수정:
+  - `EP01_MISSION_CONFIG_DEFAULT` 및 `EP01_MISSION_CONFIG` 추가 (YAML 로드)
+
+#### 3. EP01 미션 노드 4종 구현 (`nodes/robots/ep01.py`)
+
+- `EP01MissionReceiverNode` (`EP01_MISSION_RECV`):
+  - HTTP 또는 FILE 소스에서 미션 JSON 폴링
+  - `engine_module.run_generation` 감지로 STOP→RUN 재시작 시 `_ep01_mission_run_id` 증가 및 서명 초기화
+  - 새 미션 수신 시 `_new_mission_pulse`로 단발 flow 신호 발생
+
+- `EP01MissionDecisionNode` (`EP01_MISSION_DECIDE`):
+  - `accept_all` / `accept_if_allowed_type` 모드 지원
+  - 조건(`ep01_connected`, `ep01_battery_min`) 평가
+  - `decision_url`로 결과 POST, `_last_post_signature`로 중복 POST 방지
+  - `_last_run_generation` 추적으로 STOP→RUN 시 서명 초기화 (중복 미션 재인식 버그 수정)
+
+- `EP01MissionDispatchNode` (`EP01_MISSION_DISPATCH`):
+  - `post_action` 파싱 → `action_json` 생성 (`channel: drive/grip/stop`, `type: sequence`)
+  - `_last_dispatch_signature` + `_last_run_generation` 추적으로 중복 디스패치 방지
+
+- `EP01MissionActionNode` (`EP01_MISSION_ACTION`):
+  - `_ep01_mission_run_id` 변화 감지로 재시작 시 서명 초기화
+  - 백그라운드 스레드(`_run_sequence`)에서 시퀀스 실행
+  - `_seq_gen` 가드로 이전 시퀀스 스레드 자동 중단
+
+#### 4. 시퀀스 그리퍼 채널 버그 수정 (핵심)
+
+- **문제**: `_run_sequence` 내 `grip` 채널이 `_ep_set_gripper()` (main process 큐) 또는 `ep_robot_inst.gripper.open()` (main process, `ep_robot_inst=None`)을 호출 → 실제 그리퍼 미작동
+- **원인**: EP01은 worker 프로세스 분리 구조 (`ep01_worker.py`). `ep_robot_inst`와 `ep_gripper_action_queue`는 worker 프로세스 메모리에 존재하며, main process에서 직접 접근 불가
+- **해결**: `grip` 채널을 `send_ep_command("grip_open/close")`로 교체
+  - `send_ep_command` → `ep_command_sender` (IPC 콜백) → worker 프로세스 → 올바른 `ep_robot_inst.gripper.open()`
+  - 키보드 제어가 동일 경로를 사용하므로 동작 일관성 확보
+- **대기 시간**: 그리퍼 물리 동작 시간(~2–3초)을 고려해 기본 대기를 3.0초로 설정 (`duration_sec` 미지정 시); 페이로드에서 `duration_sec` 지정 가능
+
+```python
+# 변경 전 (잘못된 접근)
+_ep_set_gripper(open_val)           # main 프로세스 큐 → worker가 읽지 않음
+# or
+ep_robot_inst.gripper.open(power=…) # main 프로세스 ep_robot_inst = None
+
+# 변경 후
+cmd = "grip_open" if open_val else "grip_close"
+send_ep_command(cmd)                # IPC → worker → gripper.open() ✅
+```
+
+#### 5. 엔진 / 팩토리 / UI 연동
+
+- `core/engine.py`: `EP01_MISSION_RECV` pre-exec 블록 추가 (GO1_MISSION_RECV 패턴과 동일)
+- `core/factory.py`: `EP01_` 접두사 노드 타입 분기 추가, 4종 노드 등록
+- `ui/dpg_manager.py`:
+  - `_render_ep01_mission_recv/decide/dispatch/action` 렌더러 4종 추가
+  - 상태 동기화(UI→node.state, node.state→UI) 분기 추가
+  - RUN SCRIPT 버튼을 EP01 Tools 행 아래 별도 행 왼쪽으로 이동
+
+#### 6. 테스트 페이로드
+
+- `test_payloads/test_ep01.json` 신설:
+  - `channel: drive/grip/stop` 및 `type: sequence` 구조 예시 포함
+  - `conditions: ep01_connected, ep01_battery_min` 필드 포함
+
+#### 7. 노드 그래프 배선 구조
+
+```
+[pre-exec 자동 폴링]
+EP01_MISSION_RECV
+  ├─ out_flow ──────────────► EP01_MISSION_DECIDE
+  └─ out_raw_json ──────────► EP01_MISSION_DECIDE.in_raw_json
+
+EP01_MISSION_DECIDE
+  ├─ out_flow ──────────────► EP01_MISSION_DISPATCH
+  ├─ out_raw_json ──────────► EP01_MISSION_DISPATCH.in_raw_json
+  └─ out_decision ──────────► EP01_MISSION_DISPATCH.in_decision
+
+EP01_MISSION_DISPATCH
+  ├─ out_flow ──────────────► EP01_MISSION_ACTION
+  └─ out_action_json ───────► EP01_MISSION_ACTION.in_mission_action
+```
+
+- `EP01_MISSION_RECV`의 `in_flow` 연결은 불필요 (pre-exec에서 자동 실행)
