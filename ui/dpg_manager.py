@@ -1512,6 +1512,9 @@ def toggle_exec(s, a):
     engine_module.is_running = not engine_module.is_running
     if engine_module.is_running:
         engine_module.run_generation += 1
+        if ep01_module is not None:
+            ep01_module.ep_node_intent['stop'] = True
+            ep01_module.ep_node_intent['trigger_time'] = 0.0
     dpg.set_item_label("btn_run", "STOP" if engine_module.is_running else "RUN SCRIPT")
     if HAS_GO1 and engine_module.is_running:
         for node in node_registry.values():
