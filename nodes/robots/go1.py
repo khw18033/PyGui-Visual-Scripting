@@ -2649,6 +2649,33 @@ class Go1ServerJsonRecvNode(BaseNode):
         except Exception as e:
             write_log(f"[GO1 JSON RX] Error creating backup folder: {e}")
 
+    def _prune_json_backups(self, max_files=300):
+        try:
+            max_files = max(1, int(max_files))
+        except Exception:
+            max_files = 300
+
+        try:
+            files = glob.glob(os.path.join(self.backup_folder, '*.json'))
+        except Exception:
+            return 0
+
+        if len(files) <= max_files:
+            return 0
+
+        files.sort(key=lambda path: (os.path.getmtime(path), os.path.basename(path)))
+        removed = 0
+        for old_path in files[:len(files) - max_files]:
+            try:
+                os.remove(old_path)
+                removed += 1
+            except Exception as e:
+                write_log(f"[GO1 JSON RX] Error removing old backup: {old_path} | {e}")
+
+        if removed > 0:
+            write_log(f"[GO1 JSON RX] Pruned {removed} old JSON backups (kept {max_files})")
+        return removed
+
     def _save_json_backup(self, raw_json_str, parsed_data):
         """JSON을 시간대별 파일명으로 백업 저장"""
         try:
@@ -2669,6 +2696,8 @@ class Go1ServerJsonRecvNode(BaseNode):
             # JSON 파일 저장
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(parsed_data, f, ensure_ascii=False, indent=2)
+
+            self._prune_json_backups(300)
             
             return True
         except Exception as e:
