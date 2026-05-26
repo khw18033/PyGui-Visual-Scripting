@@ -524,7 +524,7 @@ class NodeUIRenderer:
                 node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)
                 node.state['Z'] = dpg.is_key_down(dpg.mvKey_Z); node.state['X'] = dpg.is_key_down(dpg.mvKey_X)
                 node.state['C'] = dpg.is_key_down(dpg.mvKey_C); node.state['V'] = dpg.is_key_down(dpg.mvKey_V)
-                node.state['U_pressed'] = dpg.is_key_pressed(dpg.mvKey_U); node.state['J_pressed'] = dpg.is_key_pressed(dpg.mvKey_J)
+                node.state['U'] = dpg.is_key_down(dpg.mvKey_U); node.state['J'] = dpg.is_key_down(dpg.mvKey_J)
                 node.state['SPACE'] = dpg.is_key_down(dpg.mvKey_Spacebar)
             elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER"]:
                 for k, fid in getattr(node, 'ui_fields', {}).items():

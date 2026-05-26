@@ -1053,13 +1053,9 @@ class EPKeyboardNode(BaseNode):
         if self.is_just_pressed('C'): arm_dx = -self.arm_step
         if self.is_just_pressed('V'): arm_dx = self.arm_step
         
-        u_pressed = self.is_just_pressed('U_pressed')
-        u = self.is_just_pressed('U')
-        if u_pressed or u:
+        if self.is_just_pressed('U'):
             grip_open = True
-        j_pressed = self.is_just_pressed('J_pressed')
-        j = self.is_just_pressed('J')
-        if j_pressed or j:
+        if self.is_just_pressed('J'):
             grip_close = True
 
         ep_node_intent['vx'] = vx
