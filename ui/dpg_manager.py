@@ -572,6 +572,8 @@ class NodeUIRenderer:
                 node.state['unity_ip'] = dpg.get_value(node.field_ip)
                 node.state['enable_teleop_rx'] = dpg.get_value(node.chk_enable)
                 node.state['send_aruco'] = dpg.get_value(node.chk_aruco)
+                if hasattr(node, 'field_relay_port'):
+                    node.state['relay_json_port'] = dpg.get_value(node.field_relay_port)
             elif t == "GO1_UNITY_AUTO" and hasattr(node, 'field_ip'):
                 node.state['unity_ip'] = dpg.get_value(node.field_ip)
                 node.state['path_port'] = dpg.get_value(node.field_path_port)
@@ -725,6 +727,8 @@ class NodeUIRenderer:
             dpg.set_value(node.field_ip, node.state.get('unity_ip', getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246')))
             dpg.set_value(node.chk_enable, node.state.get('enable_teleop_rx', True))
             dpg.set_value(node.chk_aruco, node.state.get('send_aruco', False))
+            if hasattr(node, 'field_relay_port'):
+                dpg.set_value(node.field_relay_port, int(node.state.get('relay_json_port', getattr(go1_module, 'GO1_UNITY_JSON_PORT', 5009))))
         elif t == "GO1_UNITY_AUTO" and hasattr(node, 'field_ip'):
             dpg.set_value(node.field_ip, node.state.get('unity_ip', getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246')))
             dpg.set_value(node.field_path_port, int(node.state.get('path_port', 15110)))
@@ -1100,9 +1104,11 @@ class NodeUIRenderer:
     def _render_go1_unity(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="Unity Connection (Go1)"):
             with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.relay_json_in_id, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Relay JSON")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_text("Unity PC IP", color=(100,255,100))
                 node.field_ip = dpg.add_input_text(width=140, default_value=getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246'))
+                node.field_relay_port = dpg.add_input_int(label="Relay Port", width=100, default_value=int(getattr(go1_module, 'GO1_UNITY_JSON_PORT', 5009)))
                 node.chk_enable = dpg.add_checkbox(label="Enable Teleop Rx", default_value=True)
                 node.chk_aruco = dpg.add_checkbox(label="Send ArUco Data (JSON)", default_value=False)
             with dpg.node_attribute(tag=node.data_in_id, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("JSON")

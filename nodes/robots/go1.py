@@ -128,6 +128,7 @@ UNITY_CMD_PORT = int(NETWORK_CONFIG.get('unity_cmd_port', 15102))
 UNITY_RX_PORT = int(NETWORK_CONFIG.get('unity_rx_port', 15100))
 UNITY_WAYPOINT_TX_PORT = int(NETWORK_CONFIG.get('unity_waypoint_tx_port', 15104))
 UNITY_PATH_PORT = int(NETWORK_CONFIG.get('unity_path_port', 15110))
+GO1_UNITY_JSON_PORT = int(NETWORK_CONFIG.get('go1_unity_json_port', 5009))
 
 DT = float(ROBOT_CONTROL_CONFIG.get('dt', 0.02))
 V_MAX = float(ROBOT_CONTROL_CONFIG.get('v_max', 0.4))
@@ -2024,6 +2025,8 @@ class Go1UnityNode(BaseNode):
         self.inputs[self.in_flow] = PortType.FLOW
         self.data_in_id = generate_uuid()
         self.inputs[self.data_in_id] = PortType.DATA
+        self.relay_json_in_id = generate_uuid()
+        self.inputs[self.relay_json_in_id] = PortType.DATA
 
         self.out_active = generate_uuid()
         self.outputs[self.out_active] = PortType.DATA
@@ -2031,9 +2034,33 @@ class Go1UnityNode(BaseNode):
         self.outputs[self.out_flow] = PortType.FLOW
 
         self.state['unity_ip'] = GO1_UNITY_IP
+        self.state['relay_json_port'] = GO1_UNITY_JSON_PORT
         self.state['enable_teleop_rx'] = True
         self.state['send_aruco'] = False
         self.last_processed_json = ""
+        self._last_relay_json = ""
+
+    def _send_relay_json(self, raw_json):
+        text = ''
+        if isinstance(raw_json, str):
+            text = raw_json.strip()
+        elif raw_json is not None:
+            try:
+                text = json.dumps(raw_json, ensure_ascii=False, separators=(',', ':'))
+            except Exception:
+                text = str(raw_json).strip()
+
+        if not text:
+            return False
+
+        unity_ip = str(self.state.get('unity_ip', GO1_UNITY_IP)).strip() or GO1_UNITY_IP
+        relay_port = int(_coerce_int(self.state.get('relay_json_port', GO1_UNITY_JSON_PORT), GO1_UNITY_JSON_PORT))
+        try:
+            go1_sock.sendto(text.encode('utf-8'), (unity_ip, relay_port))
+            return True
+        except Exception as e:
+            write_log(f"Go1 Unity JSON relay error: {e}")
+            return False
 
     def execute(self):
         global GO1_UNITY_IP
@@ -2054,6 +2081,16 @@ class Go1UnityNode(BaseNode):
                 go1_unity_data['estop'] = int(payload.get('estop', go1_unity_data['estop']))
             except Exception as e:
                 write_log(f"Go1 Unity JSON Error: {e}")
+
+        relay_raw_json = self.fetch_input_data(self.relay_json_in_id)
+        if relay_raw_json is not None:
+            if isinstance(relay_raw_json, str):
+                relay_signature = relay_raw_json
+            else:
+                relay_signature = json.dumps(relay_raw_json, ensure_ascii=False, separators=(',', ':'))
+            if relay_signature != self._last_relay_json:
+                self._last_relay_json = relay_signature
+                self._send_relay_json(relay_raw_json)
 
         # Unity Connection no longer exposes target velocity outputs here.
         # Provide only active flag for downstream nodes.
