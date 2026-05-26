@@ -266,7 +266,7 @@ def _normalize_ep_conn_type(conn_mode):
     return conn_mode
 
 def connect_ep_thread_func(conn_mode, sn=None, robot_ip=None):
-    global ep_robot_inst
+    global ep_robot_inst, ep_cmd_sock
     previous_robot_ip = None
 
     if not HAS_ROBOMASTER_SDK:
@@ -277,13 +277,10 @@ def connect_ep_thread_func(conn_mode, sn=None, robot_ip=None):
     ep_dashboard["hw_link"] = f"Connecting ({conn_mode.upper()})..."
     write_log(f"System: Attempting EP Connection via {conn_mode.upper()}...")
 
-    if ep_robot_inst is not None:
-        write_log("EP_DEBUG: Cleaning up previous robot instance...")
-        try:
-            ep_robot_inst.close()
-            write_log("EP_DEBUG: Previous instance closed.")
-        except Exception as e:
-            write_log(f"EP_DEBUG: Error closing previous instance: {e}")
+    if ep_robot_inst is not None or ep_cmd_sock is not None:
+        write_log("EP_DEBUG: Cleaning up previous EP runtime resources...")
+        cleanup_ep_runtime()
+        write_log("EP_DEBUG: Previous EP runtime resources cleared.")
 
     try:
         write_log("EP_DEBUG: Instantiating robot.Robot()...")
@@ -330,8 +327,7 @@ def connect_ep_thread_func(conn_mode, sn=None, robot_ip=None):
             rm_config.ROBOT_IP_STR = previous_robot_ip
 
     except Exception as e:
-        ep_robot_inst = None
-        ep_dashboard["hw_link"] = "Offline"
+        cleanup_ep_runtime()
         if rm_config is not None and robot_ip:
             try:
                 rm_config.ROBOT_IP_STR = previous_robot_ip
@@ -481,6 +477,63 @@ def stop_ep_camera_pipeline():
         _ep_cam_last_frame = None
         ep_camera_state['status'] = 'Stopped'
         ep_camera_state['source'] = 'none'
+
+
+def cleanup_ep_runtime():
+    """Close EP transport resources and reset runtime state."""
+    global ep_cmd_sock, ep_robot_inst, ep_node_intent, ep_target_vel
+
+    try:
+        stop_ep_camera_pipeline()
+    except Exception:
+        pass
+
+    robot_inst = ep_robot_inst
+    ep_robot_inst = None
+
+    try:
+        if robot_inst is not None:
+            for obj, method_names in (
+                (getattr(robot_inst, 'chassis', None), ('unsub_position', 'unsub_velocity', 'unsub_imu')),
+                (getattr(robot_inst, 'battery', None), ('unsub_battery_info', 'unsub_battery')),
+            ):
+                for method_name in method_names:
+                    method = getattr(obj, method_name, None) if obj is not None else None
+                    if callable(method):
+                        try:
+                            method()
+                        except Exception:
+                            pass
+            try:
+                robot_inst.close()
+            except Exception:
+                pass
+    finally:
+        if ep_cmd_sock is not None:
+            try:
+                ep_cmd_sock.close()
+            except Exception:
+                pass
+            ep_cmd_sock = None
+
+        with _ep_arm_lock:
+            ep_arm_action_queue.clear()
+        with _ep_gripper_lock:
+            ep_gripper_action_queue.clear()
+
+        ep_node_intent = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'stop': True, 'trigger_time': time.monotonic()}
+        ep_target_vel = {'vx': 0.0, 'vy': 0.0, 'vz': 0.0}
+
+        ep_dashboard['hw_link'] = 'Offline'
+        ep_dashboard['sn'] = 'Unknown'
+        ep_dashboard['conn_type'] = 'None'
+        ep_state['battery'] = -1
+        ep_state['pos_x'] = 0.0
+        ep_state['pos_y'] = 0.0
+        ep_state['speed'] = 0.0
+        ep_state['accel_x'] = 0.0
+        ep_state['accel_y'] = 0.0
+        ep_state['accel_z'] = 0.0
 
 
 def _ep_extract_front_frame_index(path):

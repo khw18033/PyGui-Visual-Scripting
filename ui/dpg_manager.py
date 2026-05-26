@@ -2091,4 +2091,10 @@ def start_gui():
             
         dpg.render_dearpygui_frame()
 
+    if ep_manager is not None:
+        try:
+            ep_manager.stop_all_workers()
+        except Exception:
+            pass
+
     dpg.destroy_context()

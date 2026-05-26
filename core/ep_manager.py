@@ -54,11 +54,28 @@ def stop_worker(instance_id):
         return False
     p = w.get('proc')
     try:
+        send_cmd(instance_id, 'disconnect', {}, req_id=901, timeout=2.0)
+        time.sleep(0.2)
+    except Exception:
+        pass
+    try:
         p.terminate()
     except Exception:
         pass
+    try:
+        p.wait(timeout=2.0)
+    except Exception:
+        try:
+            p.kill()
+        except Exception:
+            pass
     WORKERS.pop(instance_id, None)
     return True
+
+
+def stop_all_workers():
+    for instance_id in list(WORKERS.keys()):
+        stop_worker(instance_id)
 
 
 def start_workers(configs):

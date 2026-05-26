@@ -121,13 +121,7 @@ class WorkerServer(threading.Thread):
                         return {'type': 'resp', 'req_id': req_id, 'ok': False, 'result': {'error': str(e)}}
                 elif cmd == 'disconnect':
                     try:
-                        if ep01_mod.ep_robot_inst is not None:
-                            try:
-                                ep01_mod.ep_robot_inst.close()
-                            except Exception:
-                                pass
-                            ep01_mod.ep_robot_inst = None
-                        ep01_mod.ep_dashboard['hw_link'] = 'Offline'
+                        ep01_mod.cleanup_ep_runtime()
                         return {'type': 'resp', 'req_id': req_id, 'ok': True, 'result': {'msg': 'disconnected'}}
                     except Exception as e:
                         return {'type': 'resp', 'req_id': req_id, 'ok': False, 'result': {'error': str(e)}}
@@ -197,6 +191,10 @@ def main():
         print('[worker] stopping...')
     finally:
         stop_event.set()
+        try:
+            ep01_mod.cleanup_ep_runtime()
+        except Exception:
+            pass
         server.stop()
 
 
