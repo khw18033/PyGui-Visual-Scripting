@@ -97,6 +97,7 @@ EP_SENDER_TARGET_FPS = EP01_NETWORK_CONFIG['ep_sender_target_fps']
 EP_SENDER_INTERVAL = EP01_CAMERA_CONFIG['sender']['interval']
 _ep_sender_manager_started = False
 _ep_sender_manager_lock = threading.Lock()
+_ep_scan_lock = threading.Lock()
 
 # EP Sender 실시간 폴더 (ref_code와 일치 - /dev/shm 사용 가능할 경우)
 EP_SENDER_WATCH_FOLDER = EP01_NETWORK_CONFIG.get('ep_sender_watch_folder', "/dev/shm/ep01") if os.path.isdir("/dev/shm") else "Captured_Images/ep01_saved"
@@ -358,32 +359,39 @@ def scan_ep_sta_robots(timeout=3.0):
     except Exception:
         return robots
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.bind(("0.0.0.0", rm_conn.config.ROBOT_BROADCAST_PORT))
-        sock.settimeout(1)
-        start = time.time()
-        seen = set()
-        while time.time() - start < timeout:
-            try:
-                data, ip = sock.recvfrom(1024)
-            except socket.timeout:
-                continue
-            except Exception:
-                continue
-            try:
-                sn = rm_conn.get_sn_form_data(data)
-            except Exception:
-                continue
-            if not sn or sn in seen:
-                continue
-            seen.add(sn)
-            robots.append({'sn': sn, 'ip': ip[0]})
-    finally:
+    with _ep_scan_lock:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            sock.close()
-        except Exception:
-            pass
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if hasattr(socket, 'SO_REUSEPORT'):
+                try:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                except Exception:
+                    pass
+            sock.bind(("0.0.0.0", rm_conn.config.ROBOT_BROADCAST_PORT))
+            sock.settimeout(1)
+            start = time.time()
+            seen = set()
+            while time.time() - start < timeout:
+                try:
+                    data, ip = sock.recvfrom(1024)
+                except socket.timeout:
+                    continue
+                except Exception:
+                    continue
+                try:
+                    sn = rm_conn.get_sn_form_data(data)
+                except Exception:
+                    continue
+                if not sn or sn in seen:
+                    continue
+                seen.add(sn)
+                robots.append({'sn': sn, 'ip': ip[0]})
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
     return robots
 
 def send_ep_command(cmd_str):

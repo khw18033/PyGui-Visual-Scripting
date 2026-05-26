@@ -87,6 +87,7 @@ ep_selected_robot_sn = None
 ep_selected_robot_ip = None
 ep_scanned_sta_robots = []
 ep_worker_states = {}
+_ep_scan_sta_lock = threading.Lock()
 
 sys_net_str = "Loading Network..."
 
@@ -175,6 +176,9 @@ def _ep_scan_sta_robots(sender=None, app_data=None, user_data=None):
     worker_id = _ep_pick_selected_worker() or _ensure_default_ep_worker('sta')
     if ep_manager is None or not worker_id:
         return
+    if not _ep_scan_sta_lock.acquire(blocking=False):
+        write_log("[EP] STA scan already running; ignoring duplicate request")
+        return
     try:
         resp = ep_manager.send_cmd(worker_id, 'scan_sta', {'timeout': 3.0}, req_id=201, timeout=4.0)
         robots = ((resp or {}).get('result', {}) or {}).get('robots', []) if isinstance(resp, dict) else []
@@ -197,6 +201,11 @@ def _ep_scan_sta_robots(sender=None, app_data=None, user_data=None):
         _ep_refresh_sta_robot_list_ui()
     except Exception as e:
         write_log(f"[EP] STA scan failed: {e}")
+    finally:
+        try:
+            _ep_scan_sta_lock.release()
+        except Exception:
+            pass
 
 
 def _ep_on_select_sta_robot(sender, app_data, user_data):
