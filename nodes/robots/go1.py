@@ -831,10 +831,7 @@ def _go1_motion_snapshot():
         json_motion_active
         or special_active
         or auto_status.startswith(('MOVE_', 'BACK_', 'STOP_THEN_BACK_'))
-        or mode == 2
         or speed_active
-        or reason in {'UNITY', 'NODE_WALK', 'BRAKE', 'ESTOP_HOLD'}
-        or reason.startswith('SPECIAL_')
     )
 
     return motion_active, {
@@ -4762,7 +4759,9 @@ class ServerSenderNode(BaseNode):
             return self.out_flow
 
         if not was_state_change_enabled:
-            self._last_motion_active = not motion_active
+            self._last_motion_active = motion_active
+            should_send_state_change = True
+            state_change_value = motion_active
 
         motion_transition = motion_active != self._last_motion_active
         if motion_active:
