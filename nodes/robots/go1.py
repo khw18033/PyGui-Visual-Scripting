@@ -2670,6 +2670,19 @@ class Go1ServerJsonRecvNode(BaseNode):
 
         write_log(f"[GO1 JSON RX] json received | timestamp={ts_text}")
 
+    def _log_duplicate_timestamp(self, payload):
+        try:
+            timestamp = payload.get('ts', payload.get('timestamp', time.time())) if isinstance(payload, dict) else time.time()
+        except Exception:
+            timestamp = time.time()
+
+        try:
+            ts_text = f"{float(timestamp):.3f}"
+        except Exception:
+            ts_text = str(timestamp)
+
+        write_log(f"[GO1 JSON RX] duplicate skipped | timestamp={ts_text}")
+
     def _get_payload_timestamp_key(self, payload):
         if not isinstance(payload, dict):
             return ''
@@ -3097,6 +3110,7 @@ class Go1ServerJsonRecvNode(BaseNode):
 
                 timestamp_key = self._get_payload_timestamp_key(parsed)
                 if timestamp_key and timestamp_key == self._last_received_timestamp_key:
+                    self._log_duplicate_timestamp(parsed)
                     return self.out_flow
                 if timestamp_key:
                     self._last_received_timestamp_key = timestamp_key

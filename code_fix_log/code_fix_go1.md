@@ -1441,3 +1441,48 @@ odes/robots/go1.py (함수/클래스 추가)
 
 ---
 
+### [2026-05-28 00:00:00] state_change 전송/수신 기능 추가 및 실시간 확인 도구 정리
+- 목적:
+  - Go1 로봇이 정지 상태가 아닐 때는 주기적으로 `state_change` JSON을 보내고, 정지 상태일 때는 `false`로 유지하는 전송 흐름을 추가함.
+  - 수신 서버에서 실제로 JSON이 들어오는지 즉시 확인할 수 있는 테스트 서버를 별도로 준비함.
+
+- 조치 방안:
+  - `nodes/robots/go1.py`
+    - `Go1ServerJsonRecvNode`에 수신 로그를 추가하고, 같은 timestamp의 JSON은 중복 처리하지 않도록 필터링함.
+    - 수신 로그는 JSON 본문 전체가 아니라 `json received` 메시지와 `timestamp`만 출력하도록 축약함.
+    - `ServerSenderNode`에 `enable_state_change`, `state_change_url`, `state_change_interval_sec` 상태를 추가함.
+    - Go1 현재 상태(`go1_state`, `go1_special_state`, `go1_auto_avoidance_data`, `go1_server_json_data`)를 바탕으로 이동 중 여부를 판정하고, 이동 시 `state_change=true`, 정지 시 `state_change=false`를 전송하도록 연결함.
+    - state_change 전송용 payload에 `reason`, `mode`, `vx_cmd`, `vy_cmd`, `wz_cmd`, `control_latency_ms`, `world_x`, `world_z`, `yaw_unity` 등을 포함함.
+  - `ui/dpg_manager.py`
+    - `GO1_SERVER_SENDER` 노드 UI 아래에 `Send state_change` 체크박스, `State Change URL`, `State Change Interval` 입력칸을 추가함.
+    - 기존 `server_url`과 state_change 전송 URL을 분리해서 설정 가능하도록 함.
+  - `core/go1_config.py` / `nodes/go1_config/network_config.yaml`
+    - `state_change_url`, `state_change_interval_sec` 기본값을 YAML과 Python 설정에 추가함.
+    - 모듈 상수 `STATE_CHANGE_URL_DEFAULT`, `STATE_CHANGE_INTERVAL_SEC_DEFAULT`를 export/import 하도록 정리함.
+  - `ref_code/state_change_receiver_test.py`
+    - `POST /state_change`를 받으면 콘솔에 수신 로그를 출력하는 테스트 서버를 추가함.
+    - `GET /health`, `GET /latest`로 최근 수신 상태를 확인할 수 있게 함.
+  - `ref_code/state_change_payload_sample.json`
+    - 실제 전송 payload 구조를 확인할 수 있는 샘플 JSON을 추가함.
+
+- 동작 정리:
+  - 이동 시작 시: `state_change=true` 즉시 1회 전송
+  - 이동 중: `state_change=true`를 일정 주기마다 전송
+  - 정지 시: 마지막 1회는 `state_change=true`로 보내고 이후 `state_change=false`를 주기 전송
+  - 같은 timestamp의 JSON은 `Go1ServerJsonRecvNode`에서 중복 처리하지 않음
+
+- 기대 효과:
+  1. 로봇이 움직이는 동안 카메라 기준 장애물 변화 여부를 서버에서 지속적으로 추적 가능.
+  2. 수신 서버로 실제 JSON이 들어오는지 로그만으로 즉시 확인 가능.
+  3. 같은 timestamp의 중복 패킷을 걸러 불필요한 반복 처리 방지.
+
+- 수정 파일:
+  - `nodes/robots/go1.py`
+  - `ui/dpg_manager.py`
+  - `core/go1_config.py`
+  - `nodes/go1_config/network_config.yaml`
+  - `ref_code/state_change_receiver_test.py`
+  - `ref_code/state_change_payload_sample.json`
+
+---
+
