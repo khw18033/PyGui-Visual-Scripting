@@ -3110,7 +3110,8 @@ class Go1ServerJsonRecvNode(BaseNode):
 
                 timestamp_key = self._get_payload_timestamp_key(parsed)
                 if timestamp_key and timestamp_key == self._last_received_timestamp_key:
-                    self._log_duplicate_timestamp(parsed)
+                    # 중복 로그는 너무 자주 떠서 보지 않기로 함 (사용자 요청)
+                    # self._log_duplicate_timestamp(parsed)
                     return self.out_flow
                 if timestamp_key:
                     self._last_received_timestamp_key = timestamp_key
