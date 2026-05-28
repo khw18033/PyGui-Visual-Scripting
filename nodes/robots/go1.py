@@ -2658,36 +2658,16 @@ class Go1ServerJsonRecvNode(BaseNode):
 
     def _log_received_payload(self, source, direction, payload, raw_json):
         try:
-            payload_text = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+            timestamp = payload.get('ts', payload.get('timestamp', time.time())) if isinstance(payload, dict) else time.time()
         except Exception:
-            payload_text = str(payload)
+            timestamp = time.time()
 
         try:
-            seq = payload.get('seq', self._last_seq) if isinstance(payload, dict) else self._last_seq
+            ts_text = f"{float(timestamp):.3f}"
         except Exception:
-            seq = self._last_seq
+            ts_text = str(timestamp)
 
-        try:
-            stop = bool(_coerce_bool(payload.get('stop', payload.get('estop', False)), False)) if isinstance(payload, dict) else False
-        except Exception:
-            stop = False
-
-        try:
-            vx = _coerce_float(payload.get('vx', 0.0), 0.0) if isinstance(payload, dict) else 0.0
-            vy = _coerce_float(payload.get('vy', 0.0), 0.0) if isinstance(payload, dict) else 0.0
-            wz = _coerce_float(payload.get('wz', payload.get('yaw', 0.0)), 0.0) if isinstance(payload, dict) else 0.0
-        except Exception:
-            vx = 0.0
-            vy = 0.0
-            wz = 0.0
-
-        write_log(
-            f"[GO1 JSON RX] recv | source={source} | direction={direction or 'none'} | seq={seq} | "
-            f"stop={stop} | vx={vx:.3f} | vy={vy:.3f} | wz={wz:.3f}"
-        )
-        write_log(f"[GO1 JSON RX] payload={payload_text}")
-        if raw_json and raw_json.strip() and raw_json.strip() != payload_text:
-            write_log(f"[GO1 JSON RX] raw={raw_json.strip()}")
+        write_log(f"[GO1 JSON RX] json received | timestamp={ts_text}")
 
     def _read_source_text(self, mode, source, timeout_sec):
         source = str(source or '').strip()
