@@ -2656,6 +2656,39 @@ class Go1ServerJsonRecvNode(BaseNode):
         self._last_backup_timestamp = 0.0
         self._last_detections = []
 
+    def _log_received_payload(self, source, direction, payload, raw_json):
+        try:
+            payload_text = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+        except Exception:
+            payload_text = str(payload)
+
+        try:
+            seq = payload.get('seq', self._last_seq) if isinstance(payload, dict) else self._last_seq
+        except Exception:
+            seq = self._last_seq
+
+        try:
+            stop = bool(_coerce_bool(payload.get('stop', payload.get('estop', False)), False)) if isinstance(payload, dict) else False
+        except Exception:
+            stop = False
+
+        try:
+            vx = _coerce_float(payload.get('vx', 0.0), 0.0) if isinstance(payload, dict) else 0.0
+            vy = _coerce_float(payload.get('vy', 0.0), 0.0) if isinstance(payload, dict) else 0.0
+            wz = _coerce_float(payload.get('wz', payload.get('yaw', 0.0)), 0.0) if isinstance(payload, dict) else 0.0
+        except Exception:
+            vx = 0.0
+            vy = 0.0
+            wz = 0.0
+
+        write_log(
+            f"[GO1 JSON RX] recv | source={source} | direction={direction or 'none'} | seq={seq} | "
+            f"stop={stop} | vx={vx:.3f} | vy={vy:.3f} | wz={wz:.3f}"
+        )
+        write_log(f"[GO1 JSON RX] payload={payload_text}")
+        if raw_json and raw_json.strip() and raw_json.strip() != payload_text:
+            write_log(f"[GO1 JSON RX] raw={raw_json.strip()}")
+
     def _read_source_text(self, mode, source, timeout_sec):
         source = str(source or '').strip()
         if not source:
@@ -3123,6 +3156,7 @@ class Go1ServerJsonRecvNode(BaseNode):
 
                 self._last_error = ''
                 self._publish_state(raw_json, payload, True, True, 'OK', source)
+                self._log_received_payload(source, direction, payload, raw_json)
 
                 raw_for_log = raw_json.strip()
                 if raw_for_log != self._last_logged_raw:
