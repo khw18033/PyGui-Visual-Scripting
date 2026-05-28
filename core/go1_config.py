@@ -269,3 +269,6 @@ SPECIAL_ACTIONS_CONFIG = _load_json_compatible_config('special_actions.yaml', SP
 CAMERA_CONFIG = _load_json_compatible_config('camera_config.yaml', CAMERA_CONFIG_DEFAULT)
 MISSION_CONFIG = _load_json_compatible_config('mission_config.yaml', MISSION_CONFIG_DEFAULT)
 MODEL_CONFIG = _load_json_compatible_config('model_config.yaml', MODEL_CONFIG_DEFAULT)
+
+STATE_CHANGE_URL_DEFAULT = str(NETWORK_CONFIG.get('state_change_url', NETWORK_CONFIG_DEFAULT['state_change_url']))
+STATE_CHANGE_INTERVAL_SEC_DEFAULT = float(NETWORK_CONFIG.get('state_change_interval_sec', NETWORK_CONFIG_DEFAULT['state_change_interval_sec']))

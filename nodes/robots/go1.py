@@ -25,6 +25,8 @@ from core.go1_config import (
     CAMERA_CONFIG as GO1_CAMERA_CONFIG,
     MISSION_CONFIG,
     MODEL_CONFIG,
+    STATE_CHANGE_INTERVAL_SEC_DEFAULT,
+    STATE_CHANGE_URL_DEFAULT,
 )
 import core.engine as engine_module
 from core.mission_utils import (
