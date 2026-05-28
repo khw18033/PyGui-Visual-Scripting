@@ -2644,7 +2644,6 @@ class Go1ServerJsonRecvNode(BaseNode):
         self._last_logged_raw = ''
         self._last_logged_error = ''
         self._last_execute_mono = 0.0
-        self._last_received_timestamp_key = ''
         
         # Deferred back motion (for stop_then_back)
         self._deferred_back_speed = 0.0
@@ -2669,30 +2668,6 @@ class Go1ServerJsonRecvNode(BaseNode):
             ts_text = str(timestamp)
 
         write_log(f"[GO1 JSON RX] json received | timestamp={ts_text}")
-
-    def _log_duplicate_timestamp(self, payload):
-        try:
-            timestamp = payload.get('ts', payload.get('timestamp', time.time())) if isinstance(payload, dict) else time.time()
-        except Exception:
-            timestamp = time.time()
-
-        try:
-            ts_text = f"{float(timestamp):.3f}"
-        except Exception:
-            ts_text = str(timestamp)
-
-        write_log(f"[GO1 JSON RX] duplicate skipped | timestamp={ts_text}")
-
-    def _get_payload_timestamp_key(self, payload):
-        if not isinstance(payload, dict):
-            return ''
-        try:
-            timestamp = payload.get('ts', payload.get('timestamp', ''))
-            if timestamp in (None, ''):
-                return ''
-            return f"{float(timestamp):.6f}"
-        except Exception:
-            return str(payload.get('ts', payload.get('timestamp', ''))).strip()
 
     def _read_source_text(self, mode, source, timeout_sec):
         source = str(source or '').strip()
@@ -3107,13 +3082,6 @@ class Go1ServerJsonRecvNode(BaseNode):
 
                 # ===== JSON 백업 및 detections 처리 =====
                 self._save_json_backup(raw_json, parsed)
-
-                timestamp_key = self._get_payload_timestamp_key(parsed)
-                if timestamp_key and timestamp_key == self._last_received_timestamp_key:
-                    self._log_duplicate_timestamp(parsed)
-                    return self.out_flow
-                if timestamp_key:
-                    self._last_received_timestamp_key = timestamp_key
                 
                 # detections 정보 추출 및 처리
                 detections = parsed.get('detections', [])
