@@ -555,6 +555,12 @@ class NodeUIRenderer:
             elif t == "GO1_SERVER_SENDER" and hasattr(node, 'combo_action'):
                 node.state['action'] = dpg.get_value(node.combo_action)
                 node.state['server_url'] = dpg.get_value(node.field_url)
+                if hasattr(node, 'chk_state_change'):
+                    node.state['enable_state_change'] = dpg.get_value(node.chk_state_change)
+                if hasattr(node, 'field_state_change_url'):
+                    node.state['state_change_url'] = dpg.get_value(node.field_state_change_url)
+                if hasattr(node, 'field_state_change_interval'):
+                    node.state['state_change_interval_sec'] = dpg.get_value(node.field_state_change_interval)
             elif t == "GO1_SERVER_JSON_RECV" and hasattr(node, 'combo_mode'):
                 node.state['mode'] = dpg.get_value(node.combo_mode)
                 node.state['source'] = dpg.get_value(node.field_source)
@@ -711,6 +717,12 @@ class NodeUIRenderer:
         elif t == "GO1_SERVER_SENDER" and hasattr(node, 'combo_action'):
             dpg.set_value(node.combo_action, node.state.get('action', 'Start Sender'))
             dpg.set_value(node.field_url, node.state.get('server_url', "http://192.168.1.100:5001/upload"))
+            if hasattr(node, 'chk_state_change'):
+                dpg.set_value(node.chk_state_change, bool(node.state.get('enable_state_change', False)))
+            if hasattr(node, 'field_state_change_url'):
+                dpg.set_value(node.field_state_change_url, node.state.get('state_change_url', getattr(go1_module, 'STATE_CHANGE_URL_DEFAULT', 'http://192.168.1.100:5001/state_change')))
+            if hasattr(node, 'field_state_change_interval'):
+                dpg.set_value(node.field_state_change_interval, float(node.state.get('state_change_interval_sec', getattr(go1_module, 'STATE_CHANGE_INTERVAL_SEC_DEFAULT', 0.2))))
         elif t == "GO1_SERVER_JSON_RECV" and hasattr(node, 'combo_mode'):
             dpg.set_value(node.combo_mode, node.state.get('mode', 'HTTP'))
             dpg.set_value(node.field_source, node.state.get('source', 'http://127.0.0.1:5001/cmd'))
@@ -1211,6 +1223,19 @@ class NodeUIRenderer:
                 dpg.add_spacer(height=3)
                 dpg.add_text("Server URL:")
                 node.field_url = dpg.add_input_text(width=160, default_value="http://192.168.1.100:5001/upload")
+                dpg.add_spacer(height=3)
+                node.chk_state_change = dpg.add_checkbox(label="Send state_change", default_value=False)
+                node.field_state_change_url = dpg.add_input_text(
+                    label="State Change URL",
+                    width=220,
+                    default_value=getattr(go1_module, 'STATE_CHANGE_URL_DEFAULT', 'http://192.168.1.100:5001/state_change')
+                )
+                node.field_state_change_interval = dpg.add_input_float(
+                    label="State Change Interval (sec)",
+                    width=140,
+                    default_value=float(getattr(go1_module, 'STATE_CHANGE_INTERVAL_SEC_DEFAULT', 0.2)),
+                    step=0.05,
+                )
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod

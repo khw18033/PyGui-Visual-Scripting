@@ -20,6 +20,8 @@ NETWORK_CONFIG_DEFAULT = {
     'go1_ap_ip': '192.168.123.161',
     'aruco_udp_port': 5008,
     'server_upload_url': 'http://192.168.1.100:5001/upload',
+    'state_change_url': 'http://192.168.1.100:5001/state_change',
+    'state_change_interval_sec': 0.2,
     'json_cmd_url': 'http://127.0.0.1:5001/cmd',
 }
 

@@ -814,6 +814,60 @@ def request_go1_special_action(action_name):
     return True, key
 
 
+def _go1_motion_snapshot():
+    reason = str(go1_state.get('reason', '')).strip().upper()
+    mode = _coerce_int(go1_state.get('mode', 1), 1)
+    vx_cmd = _coerce_float(go1_state.get('vx_cmd', 0.0), 0.0)
+    vy_cmd = _coerce_float(go1_state.get('vy_cmd', 0.0), 0.0)
+    wz_cmd = _coerce_float(go1_state.get('wz_cmd', 0.0), 0.0)
+    special_active = bool(go1_special_state.get('active', False))
+    auto_status = str(go1_auto_avoidance_data.get('status', '')).strip().upper()
+    json_motion_active = bool(go1_server_json_data.get('motion_active', False))
+
+    speed_active = any(abs(value) > 1e-4 for value in (vx_cmd, vy_cmd, wz_cmd))
+    motion_active = bool(
+        json_motion_active
+        or special_active
+        or auto_status.startswith(('MOVE_', 'BACK_', 'STOP_THEN_BACK_'))
+        or mode == 2
+        or speed_active
+        or reason in {'UNITY', 'NODE_WALK', 'BRAKE', 'ESTOP_HOLD'}
+        or reason.startswith('SPECIAL_')
+    )
+
+    return motion_active, {
+        'reason': reason,
+        'mode': mode,
+        'vx_cmd': vx_cmd,
+        'vy_cmd': vy_cmd,
+        'wz_cmd': wz_cmd,
+        'special_active': special_active,
+        'auto_status': auto_status,
+        'json_motion_active': json_motion_active,
+    }
+
+
+def _build_go1_state_change_payload(state_change, motion_active, snapshot, source=''):
+    return {
+        'state_change': bool(state_change),
+        'motion_active': bool(motion_active),
+        'source': source,
+        'ts': round(time.time(), 3),
+        'reason': snapshot.get('reason', ''),
+        'mode': snapshot.get('mode', 1),
+        'vx_cmd': snapshot.get('vx_cmd', 0.0),
+        'vy_cmd': snapshot.get('vy_cmd', 0.0),
+        'wz_cmd': snapshot.get('wz_cmd', 0.0),
+        'special_active': bool(snapshot.get('special_active', False)),
+        'auto_status': snapshot.get('auto_status', ''),
+        'json_motion_active': bool(snapshot.get('json_motion_active', False)),
+        'control_latency_ms': float(go1_state.get('control_latency_ms', 0.0)),
+        'world_x': float(go1_state.get('world_x', 0.0)),
+        'world_z': float(go1_state.get('world_z', 0.0)),
+        'yaw_unity': float(go1_state.get('yaw_unity', 0.0)),
+    }
+
+
 def get_go1_rtsp_url():
     return f"rtsp://{GO1_IP}:8554/live"
 
@@ -4639,21 +4693,102 @@ class ServerSenderNode(BaseNode):
         
         self.state['action'] = 'Start Sender'  # "Start Sender" / "Stop Sender"
         self.state['server_url'] = SERVER_UPLOAD_URL_DEFAULT
+        self.state['enable_state_change'] = False
+        self.state['state_change_url'] = STATE_CHANGE_URL_DEFAULT
+        self.state['state_change_interval_sec'] = STATE_CHANGE_INTERVAL_SEC_DEFAULT
         
         self._last_action = None
         self._last_request_ts = 0.0
+        self._last_state_change_send_mono = 0.0
+        self._last_motion_active = False
+        self._last_state_change_value = False
+        self._state_change_inflight = False
+        self._last_state_change_enabled = False
+
+    def _post_state_change_payload(self, url, payload):
+        try:
+            body = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+                method='POST',
+            )
+            with urllib.request.urlopen(req, timeout=1.0) as response:
+                response.read()
+            return True
+        except Exception as e:
+            write_log(f"[Server Sender] state_change upload error ({e.__class__.__name__}): {e!r} | url={url}")
+            return False
+        finally:
+            self._state_change_inflight = False
+
+    def _queue_state_change_payload(self, url, payload):
+        if self._state_change_inflight:
+            return False
+        self._state_change_inflight = True
+        threading.Thread(
+            target=self._post_state_change_payload,
+            args=(url, payload),
+            daemon=True,
+        ).start()
+        return True
 
     def execute(self):
         global sender_state, multi_sender_active
         
         action = self.state.get('action', 'Start Sender')
         url = self.state.get('server_url', SERVER_UPLOAD_URL_DEFAULT)
+        state_change_enabled = bool(self.state.get('enable_state_change', False))
+        state_change_url = str(self.state.get('state_change_url', STATE_CHANGE_URL_DEFAULT)).strip() or STATE_CHANGE_URL_DEFAULT
+        state_change_interval_sec = max(0.05, float(self.state.get('state_change_interval_sec', STATE_CHANGE_INTERVAL_SEC_DEFAULT)))
         now = time.monotonic()
         cooldown_ok = (now - self._last_request_ts) > 0.5
+        motion_active, motion_snapshot = _go1_motion_snapshot()
+        should_send_state_change = False
+        state_change_value = False
+        was_state_change_enabled = self._last_state_change_enabled
+        self._last_state_change_enabled = state_change_enabled
         
         # 액션 변경 기록(디버깅/상태 추적용)
         if action != self._last_action:
             self._last_action = action
+
+        if not state_change_enabled:
+            self._last_motion_active = motion_active
+            self._last_state_change_value = False
+            return self.out_flow
+
+        if not was_state_change_enabled:
+            self._last_motion_active = not motion_active
+
+        motion_transition = motion_active != self._last_motion_active
+        if motion_active:
+            state_change_value = True
+            if motion_transition:
+                should_send_state_change = True
+            elif (now - self._last_state_change_send_mono) >= state_change_interval_sec:
+                should_send_state_change = True
+        else:
+            if motion_transition:
+                state_change_value = True
+                should_send_state_change = True
+            else:
+                state_change_value = False
+                if (now - self._last_state_change_send_mono) >= state_change_interval_sec:
+                    should_send_state_change = True
+
+        if should_send_state_change:
+            payload = _build_go1_state_change_payload(
+                state_change_value,
+                motion_active,
+                motion_snapshot,
+                source='GO1_SERVER_SENDER',
+            )
+            if self._queue_state_change_payload(state_change_url, payload):
+                self._last_state_change_send_mono = now
+                self._last_motion_active = motion_active
+                self._last_state_change_value = state_change_value
 
         # 토글 변경이 없어도 현재 의도 상태를 유지하도록 재요청 가능하게 처리
         if action == "Start Sender":
