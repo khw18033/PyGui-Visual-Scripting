@@ -4776,40 +4776,39 @@ class ServerSenderNode(BaseNode):
         if not state_change_enabled:
             self._last_motion_active = motion_active
             self._last_state_change_value = False
-            return self.out_flow
-
-        if not was_state_change_enabled:
-            self._last_motion_active = motion_active
-            should_send_state_change = True
-            state_change_value = motion_active
-
-        motion_transition = motion_active != self._last_motion_active
-        if motion_active:
-            state_change_value = True
-            if motion_transition:
-                should_send_state_change = True
-            elif (now - self._last_state_change_send_mono) >= state_change_interval_sec:
-                should_send_state_change = True
         else:
-            if motion_transition:
-                state_change_value = True
-                should_send_state_change = True
-            else:
-                state_change_value = False
-                if (now - self._last_state_change_send_mono) >= state_change_interval_sec:
-                    should_send_state_change = True
-
-        if should_send_state_change:
-            payload = _build_go1_state_change_payload(
-                state_change_value,
-                motion_active,
-                motion_snapshot,
-                source='GO1_SERVER_SENDER',
-            )
-            if self._queue_state_change_payload(state_change_url, payload):
-                self._last_state_change_send_mono = now
+            if not was_state_change_enabled:
                 self._last_motion_active = motion_active
-                self._last_state_change_value = state_change_value
+                should_send_state_change = True
+                state_change_value = motion_active
+
+            motion_transition = motion_active != self._last_motion_active
+            if motion_active:
+                state_change_value = True
+                if motion_transition:
+                    should_send_state_change = True
+                elif (now - self._last_state_change_send_mono) >= state_change_interval_sec:
+                    should_send_state_change = True
+            else:
+                if motion_transition:
+                    state_change_value = True
+                    should_send_state_change = True
+                else:
+                    state_change_value = True #False
+                    if (now - self._last_state_change_send_mono) >= state_change_interval_sec:
+                        should_send_state_change = True
+
+            if should_send_state_change:
+                payload = _build_go1_state_change_payload(
+                    state_change_value,
+                    motion_active,
+                    motion_snapshot,
+                    source='GO1_SERVER_SENDER',
+                )
+                if self._queue_state_change_payload(state_change_url, payload):
+                    self._last_state_change_send_mono = now
+                    self._last_motion_active = motion_active
+                    self._last_state_change_value = state_change_value
 
         # 토글 변경이 없어도 현재 의도 상태를 유지하도록 재요청 가능하게 처리
         if action == "Start Sender":
