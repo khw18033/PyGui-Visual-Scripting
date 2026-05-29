@@ -2141,9 +2141,15 @@ class Go1UnityNode(BaseNode):
                 relay_signature = relay_raw_json
             else:
                 relay_signature = json.dumps(relay_raw_json, ensure_ascii=False, separators=(',', ':'))
-            if relay_signature != self._last_relay_json:
-                self._last_relay_json = relay_signature
-                self._send_relay_json(relay_raw_json)
+            # Keep last signature update for observability/debugging,
+            # but always relay to Unity even when payload is identical.
+            self._last_relay_json = relay_signature
+            self._send_relay_json(relay_raw_json)
+
+            # Rollback reference (previous dedupe behavior):
+            # if relay_signature != self._last_relay_json:
+            #     self._last_relay_json = relay_signature
+            #     self._send_relay_json(relay_raw_json)
 
         # Unity Connection no longer exposes target velocity outputs here.
         # Provide only active flag for downstream nodes.
