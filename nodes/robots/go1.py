@@ -235,6 +235,13 @@ go1_unity_data = {
 go1_estop_hold_until = 0.0
 go1_last_yaw0_reset_mono = 0.0
 
+go1_yaw_calib = {
+    'enabled': False,
+    'offset_rad': 0.0,
+    'invert_yaw': False,
+    'legacy180': False,
+}
+
 go1_server_json_data = {
     'raw_json': '',
     'seq': 0,
@@ -1367,6 +1374,8 @@ def go1_keepalive_thread():
 
     yaw0_initialized = False
     yaw0 = 0.0
+    _yaw0_samples = []
+    _yaw0_collect_start = None
     world_x = 0.0
     world_z = 0.0
     last_dr_time = now
@@ -1447,9 +1456,18 @@ def go1_keepalive_thread():
                 go1_state['battery_confirmed'] = False
 
         if not yaw0_initialized:
-            yaw0 = raw_yaw
-            yaw0_initialized = True
-            last_dr_time = time.monotonic()
+            if _yaw0_collect_start is None:
+                _yaw0_collect_start = tnow
+                write_log("[YAW0_AUTO] waiting...")
+            _yaw0_samples.append(raw_yaw)
+            if tnow - _yaw0_collect_start >= 1.5:
+                sin_sum = sum(math.sin(s) for s in _yaw0_samples)
+                cos_sum = sum(math.cos(s) for s in _yaw0_samples)
+                yaw0 = math.atan2(sin_sum, cos_sum)
+                yaw0_initialized = True
+                last_dr_time = tnow
+                write_log(f"[YAW0_AUTO] initialized: yaw0={yaw0:.3f} rad ({math.degrees(yaw0):.2f} deg)")
+                _yaw0_samples.clear()
 
         if go1_node_intent['reset_yaw']:
             # Immediately reset yaw0 to current raw_yaw, mirror C++ behavior and logging.
@@ -1511,9 +1529,26 @@ def go1_keepalive_thread():
         while True:
             try:
                 data, _ = sock_rx_unity.recvfrom(256)
-                parts = data.decode("utf-8", errors="ignore").strip().split()
-                if len(parts) >= 4:
-                    got = (float(parts[0]), float(parts[1]), float(parts[2]), int(parts[3]))
+                text = data.decode("utf-8", errors="ignore").strip()
+                parts = text.split()
+                if parts and parts[0] == 'YAW_CALIB' and len(parts) >= 5:
+                    offset_deg = float(parts[1])
+                    enabled = bool(int(parts[2]))
+                    invert_yaw = bool(int(parts[3]))
+                    legacy180 = bool(int(parts[4]))
+                    go1_yaw_calib['enabled'] = enabled
+                    go1_yaw_calib['offset_rad'] = math.radians(offset_deg)
+                    go1_yaw_calib['invert_yaw'] = invert_yaw
+                    go1_yaw_calib['legacy180'] = legacy180
+                    write_log(
+                        f"[YAW_CALIB] received | enabled={int(enabled)} "
+                        f"offset={offset_deg:.2f}deg invert={int(invert_yaw)} legacy180={int(legacy180)}"
+                    )
+                elif len(parts) >= 4:
+                    try:
+                        got = (float(parts[0]), float(parts[1]), float(parts[2]), int(parts[3]))
+                    except Exception:
+                        pass
             except Exception:
                 break
 
@@ -2385,6 +2420,7 @@ class Go1UnityAutonomyNode(BaseNode):
         return path_id, points
 
     def _local_to_world(self, lx, lz, sx, sz, sy):
+        lx *= -1.0  # PATH_LATERAL_SIGN = -1.0
         ox = sx + math.cos(sy) * lz - math.sin(sy) * lx
         oz = sz + math.sin(sy) * lz + math.cos(sy) * lx
         return ox, oz
@@ -2476,7 +2512,7 @@ class Go1UnityAutonomyNode(BaseNode):
             ty = math.atan2(dz, dx)
             ye = _wrap_pi(ty - yaw_now)
             vx = path_kp_dist * dist
-            wz = path_kp_yaw * ye
+            wz = -path_kp_yaw * ye
             vx = max(0.0, min(vx, path_max_vx))
             wz = max(-path_max_wz, min(wz, path_max_wz))
 
@@ -2574,30 +2610,45 @@ class Go1UnityAutonomyNode(BaseNode):
             path_id, points = self._parse_path_json(latest_raw)
             if path_id >= 0 and len(points) >= 2:
                 # Current unity-relative yaw from shared state; include fine-tune
-                yaw_now = float(go1_state.get('yaw_unity', 0.0))
-                yaw_now = _wrap_pi(yaw_now + YAW_FINE_TUNE_RAD)
+                yaw_msg = float(go1_state.get('yaw_unity', 0.0))
+                yaw_now = _wrap_pi(yaw_msg + YAW_FINE_TUNE_RAD)
+
+                # Apply YAW_CALIB correction to get control yaw
+                yaw_world = yaw_now + go1_yaw_calib['offset_rad']
+                if go1_yaw_calib['invert_yaw']:
+                    yaw_world = -yaw_world
+                if go1_yaw_calib['legacy180']:
+                    yaw_world = _wrap_pi(yaw_world + math.pi)
+                yaw_world = _wrap_pi(yaw_world)
 
                 start_yaw_deg = self._parse_start_yaw_deg(latest_raw)
                 start_yaw_rad = math.radians(start_yaw_deg)
 
-                # Compute correction between current unity yaw and unity's start yaw
-                yaw_correction = _wrap_pi(yaw_now - start_yaw_rad)
-                write_log(
-                    f"[GO1 UNITY PATH] start_yaw={start_yaw_deg:.2f}deg "
-                    f"yaw_unity={math.degrees(yaw_now):.2f}deg yaw_correction={yaw_correction:.3f}rad"
-                )
+                # Compute correction between current world yaw and unity's start yaw
+                yaw_correction = _wrap_pi(yaw_world - start_yaw_rad)
+                write_log(f"[GO1 UNITY PATH] unity_start_yaw={start_yaw_deg:.2f}deg")
+                write_log(f"[GO1 UNITY PATH] yaw_msg={math.degrees(yaw_msg):.2f}deg")
+                write_log(f"[GO1 UNITY PATH] yaw_world={math.degrees(yaw_world):.2f}deg")
+                write_log(f"[GO1 UNITY PATH] yaw_correction={yaw_correction:.3f}rad")
 
                 if points:
                     points[0]['yaw_deg'] = start_yaw_deg
 
-                # Pass the corrected base yaw to activation (mirrors C++: wrap_pi(yaw_unity - yaw_correction))
-                self._activate_path_from_points(path_id, points, _wrap_pi(yaw_now - yaw_correction))
+                # Pass the corrected base yaw to activation (mirrors C++: wrap_pi(yaw_world - yaw_correction))
+                self._activate_path_from_points(path_id, points, _wrap_pi(yaw_world - yaw_correction))
 
-        yaw_now = float(go1_state.get('yaw_unity', 0.0))
+        yaw_msg = float(go1_state.get('yaw_unity', 0.0))
+        yaw_world = yaw_msg + go1_yaw_calib['offset_rad']
+        if go1_yaw_calib['invert_yaw']:
+            yaw_world = -yaw_world
+        if go1_yaw_calib['legacy180']:
+            yaw_world = _wrap_pi(yaw_world + math.pi)
+        yaw_world = _wrap_pi(yaw_world)
+
         vx = vy = wz = 0.0
         path_active = self._path_active
         if path_active:
-            vx, vy, wz, path_active = self._run_path_follower(yaw_now)
+            vx, vy, wz, path_active = self._run_path_follower(yaw_world)
 
         if bool(self.state.get('suppress_unity_teleop_when_active', True)) and self._path_active:
             # Prevent stale Unity teleop packets from overriding autonomy outputs.
