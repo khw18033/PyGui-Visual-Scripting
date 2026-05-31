@@ -2628,24 +2628,28 @@ class Go1UnityAutonomyNode(BaseNode):
             self._last_raw_path = latest_raw
             path_id, points = self._parse_path_json(latest_raw)
             if path_id >= 0 and len(points) >= 2:
-                # yaw_unity already incorporates the YAW_CALIB display offset
-                # so it directly represents the correct world heading
-                yaw_world = float(go1_state.get('yaw_unity', 0.0))
+                # yaw_unity is the display yaw (includes YAW_CALIB and +180deg correction)
+                # For movement/path control we use an inverted yaw (control yaw)
+                yaw_unity = float(go1_state.get('yaw_unity', 0.0))
+                yaw_control = _wrap_pi(-yaw_unity)
 
                 start_yaw_deg = self._parse_start_yaw_deg(latest_raw)
                 start_yaw_rad = math.radians(start_yaw_deg)
 
-                yaw_correction = _wrap_pi(yaw_world - start_yaw_rad)
+                yaw_correction = _wrap_pi(yaw_control - start_yaw_rad)
                 write_log(f"[GO1 UNITY PATH] unity_start_yaw={start_yaw_deg:.2f}deg")
-                write_log(f"[GO1 UNITY PATH] yaw_world={math.degrees(yaw_world):.2f}deg")
+                write_log(f"[GO1 UNITY PATH] yaw_unity_display={math.degrees(yaw_unity):.2f}deg")
+                write_log(f"[GO1 UNITY PATH] yaw_control={math.degrees(yaw_control):.2f}deg")
                 write_log(f"[GO1 UNITY PATH] yaw_correction={yaw_correction:.3f}rad")
 
                 if points:
                     points[0]['yaw_deg'] = start_yaw_deg
 
-                self._activate_path_from_points(path_id, points, _wrap_pi(yaw_world - yaw_correction))
+                self._activate_path_from_points(path_id, points, _wrap_pi(yaw_control - yaw_correction))
 
-        yaw_world = float(go1_state.get('yaw_unity', 0.0))
+        # Use inverted yaw for control while keeping display yaw in go1_state
+        yaw_unity = float(go1_state.get('yaw_unity', 0.0))
+        yaw_world = _wrap_pi(-yaw_unity)
 
         vx = vy = wz = 0.0
         path_active = self._path_active
