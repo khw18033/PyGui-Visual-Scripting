@@ -704,11 +704,11 @@ def _load_da2_hf_pipeline(model_id, prefer_cuda=True):
             return None, str(e)
 
 
-async def _is_file_stable(path, wait_sec=0.02):
+def _is_file_stable(path, wait_sec=0.02):
     """Check whether a file write has settled before upload."""
     try:
         size1 = os.path.getsize(path)
-        await asyncio.sleep(wait_sec)
+        time.sleep(wait_sec)
         size2 = os.path.getsize(path)
         return size1 > 0 and size1 == size2
     except OSError:
@@ -1231,9 +1231,13 @@ async def camera_async_worker(config, server_url):
                                 pass
                         if valid_files:
                             latest_mtime, latest_file = max(valid_files)
+                            try:
+                                file_ready = os.path.getsize(latest_file) > 0
+                            except OSError:
+                                file_ready = False
                             if (latest_mtime >= start_after_epoch
                                     and latest_file != last_processed_file
-                                    and await _is_file_stable(latest_file)):
+                                    and file_ready):
                                 last_processed_file = latest_file
                                 last_processed_mtime = latest_mtime
                                 asyncio.create_task(
@@ -1245,9 +1249,13 @@ async def camera_async_worker(config, server_url):
                             or best_file != last_processed_file
                             or best_mtime > last_processed_mtime
                         )
+                        try:
+                            file_ready = os.path.getsize(best_file) > 0
+                        except OSError:
+                            file_ready = False
                         if (best_mtime >= start_after_epoch
                                 and has_new_frame
-                                and await _is_file_stable(best_file)):
+                                and file_ready):
                             last_processed_idx = best_idx
                             last_processed_file = best_file
                             last_processed_mtime = best_mtime
