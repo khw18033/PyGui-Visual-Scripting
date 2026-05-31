@@ -1485,7 +1485,12 @@ def go1_keepalive_thread():
                 write_log("[YAW0] reset")
 
         yaw_rel = _wrap_pi(raw_yaw - yaw0)
-        yaw_unity = _wrap_pi(yaw_rel + UNITY_YAW_OFFSET_RAD + YAW_FINE_TUNE_RAD)
+        # Unity 표시 공식: -yaw_unity_deg + yawOffsetDeg + 180 = 90
+        # → yaw_unity_deg = yawOffsetDeg + 90
+        # Unity가 YAW_CALIB로 보내온 yawOffsetDeg를 go1_yaw_calib['offset_rad']로 수신하므로
+        # 동적으로 오프셋을 맞춰 Unity가 항상 90도를 표시하도록 한다.
+        _unity_display_offset = go1_yaw_calib['offset_rad'] + math.radians(90.0)
+        yaw_unity = _wrap_pi(yaw_rel + _unity_display_offset + YAW_FINE_TUNE_RAD)
         go1_state['yaw_unity'] = yaw_unity
 
         is_node_active = (tnow - go1_node_intent['trigger_time']) < 0.1
@@ -2609,41 +2614,24 @@ class Go1UnityAutonomyNode(BaseNode):
             self._last_raw_path = latest_raw
             path_id, points = self._parse_path_json(latest_raw)
             if path_id >= 0 and len(points) >= 2:
-                # Current unity-relative yaw from shared state; include fine-tune
-                yaw_msg = float(go1_state.get('yaw_unity', 0.0))
-                yaw_now = _wrap_pi(yaw_msg + YAW_FINE_TUNE_RAD)
-
-                # Apply YAW_CALIB correction to get control yaw
-                yaw_world = yaw_now + go1_yaw_calib['offset_rad']
-                if go1_yaw_calib['invert_yaw']:
-                    yaw_world = -yaw_world
-                if go1_yaw_calib['legacy180']:
-                    yaw_world = _wrap_pi(yaw_world + math.pi)
-                yaw_world = _wrap_pi(yaw_world)
+                # yaw_unity already incorporates the YAW_CALIB display offset
+                # so it directly represents the correct world heading
+                yaw_world = float(go1_state.get('yaw_unity', 0.0))
 
                 start_yaw_deg = self._parse_start_yaw_deg(latest_raw)
                 start_yaw_rad = math.radians(start_yaw_deg)
 
-                # Compute correction between current world yaw and unity's start yaw
                 yaw_correction = _wrap_pi(yaw_world - start_yaw_rad)
                 write_log(f"[GO1 UNITY PATH] unity_start_yaw={start_yaw_deg:.2f}deg")
-                write_log(f"[GO1 UNITY PATH] yaw_msg={math.degrees(yaw_msg):.2f}deg")
                 write_log(f"[GO1 UNITY PATH] yaw_world={math.degrees(yaw_world):.2f}deg")
                 write_log(f"[GO1 UNITY PATH] yaw_correction={yaw_correction:.3f}rad")
 
                 if points:
                     points[0]['yaw_deg'] = start_yaw_deg
 
-                # Pass the corrected base yaw to activation (mirrors C++: wrap_pi(yaw_world - yaw_correction))
                 self._activate_path_from_points(path_id, points, _wrap_pi(yaw_world - yaw_correction))
 
-        yaw_msg = float(go1_state.get('yaw_unity', 0.0))
-        yaw_world = yaw_msg + go1_yaw_calib['offset_rad']
-        if go1_yaw_calib['invert_yaw']:
-            yaw_world = -yaw_world
-        if go1_yaw_calib['legacy180']:
-            yaw_world = _wrap_pi(yaw_world + math.pi)
-        yaw_world = _wrap_pi(yaw_world)
+        yaw_world = float(go1_state.get('yaw_unity', 0.0))
 
         vx = vy = wz = 0.0
         path_active = self._path_active
