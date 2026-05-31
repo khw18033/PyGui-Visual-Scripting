@@ -704,11 +704,11 @@ def _load_da2_hf_pipeline(model_id, prefer_cuda=True):
             return None, str(e)
 
 
-def _is_file_stable(path, wait_sec=0.02):
+async def _is_file_stable(path, wait_sec=0.02):
     """Check whether a file write has settled before upload."""
     try:
         size1 = os.path.getsize(path)
-        time.sleep(wait_sec)
+        await asyncio.sleep(wait_sec)
         size2 = os.path.getsize(path)
         return size1 > 0 and size1 == size2
     except OSError:
@@ -1197,6 +1197,7 @@ async def camera_async_worker(config, server_url):
     
     try:
         async with aiohttp.ClientSession() as session:
+            upload_task = None
             while multi_sender_active:
                 cycle_start = time.time()
                 now_epoch = time.time()
@@ -1205,7 +1206,7 @@ async def camera_async_worker(config, server_url):
                     continue
 
                 files = glob.glob(os.path.join(folder, "*.jpg"))
-                
+
                 if files:
                     best_file = None
                     best_idx = -1
@@ -1231,22 +1232,32 @@ async def camera_async_worker(config, server_url):
                                 pass
                         if valid_files:
                             latest_mtime, latest_file = max(valid_files)
-                            if latest_mtime >= start_after_epoch and latest_file != last_processed_file and _is_file_stable(latest_file):
+                            if (latest_mtime >= start_after_epoch
+                                    and latest_file != last_processed_file
+                                    and await _is_file_stable(latest_file)
+                                    and (upload_task is None or upload_task.done())):
                                 last_processed_file = latest_file
                                 last_processed_mtime = latest_mtime
-                                await send_image_async(session, latest_file, camera_id, server_url)
+                                upload_task = asyncio.create_task(
+                                    send_image_async(session, latest_file, camera_id, server_url)
+                                )
                     else:
                         has_new_frame = (
                             best_idx > last_processed_idx
                             or best_file != last_processed_file
                             or best_mtime > last_processed_mtime
                         )
-                        if best_mtime >= start_after_epoch and has_new_frame and _is_file_stable(best_file):
-                            await send_image_async(session, best_file, camera_id, server_url)
+                        if (best_mtime >= start_after_epoch
+                                and has_new_frame
+                                and await _is_file_stable(best_file)
+                                and (upload_task is None or upload_task.done())):
                             last_processed_idx = best_idx
                             last_processed_file = best_file
                             last_processed_mtime = best_mtime
-                
+                            upload_task = asyncio.create_task(
+                                send_image_async(session, best_file, camera_id, server_url)
+                            )
+
                 await asyncio.sleep(max(0, INTERVAL - (time.time() - cycle_start)))
     except Exception as e:
         write_log(f"[Server Sender] worker error ({camera_id}): {e}")
