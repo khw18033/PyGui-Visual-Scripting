@@ -1197,7 +1197,6 @@ async def camera_async_worker(config, server_url):
     
     try:
         async with aiohttp.ClientSession() as session:
-            upload_task = None
             while multi_sender_active:
                 cycle_start = time.time()
                 now_epoch = time.time()
@@ -1234,11 +1233,10 @@ async def camera_async_worker(config, server_url):
                             latest_mtime, latest_file = max(valid_files)
                             if (latest_mtime >= start_after_epoch
                                     and latest_file != last_processed_file
-                                    and await _is_file_stable(latest_file)
-                                    and (upload_task is None or upload_task.done())):
+                                    and await _is_file_stable(latest_file)):
                                 last_processed_file = latest_file
                                 last_processed_mtime = latest_mtime
-                                upload_task = asyncio.create_task(
+                                asyncio.create_task(
                                     send_image_async(session, latest_file, camera_id, server_url)
                                 )
                     else:
@@ -1249,12 +1247,11 @@ async def camera_async_worker(config, server_url):
                         )
                         if (best_mtime >= start_after_epoch
                                 and has_new_frame
-                                and await _is_file_stable(best_file)
-                                and (upload_task is None or upload_task.done())):
+                                and await _is_file_stable(best_file)):
                             last_processed_idx = best_idx
                             last_processed_file = best_file
                             last_processed_mtime = best_mtime
-                            upload_task = asyncio.create_task(
+                            asyncio.create_task(
                                 send_image_async(session, best_file, camera_id, server_url)
                             )
 
