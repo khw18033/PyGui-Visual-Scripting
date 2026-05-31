@@ -1185,16 +1185,14 @@ async def send_image_async(session, filepath, camera_id, server_url):
 async def camera_async_worker(config, server_url):
     """카메라 폴더 모니터링 및 이미지 송신"""
     global multi_sender_active
-    
+
     folder = config["folder"]
     camera_id = config["id"]
     last_processed_file = None
-    last_processed_idx = -1
-    last_processed_mtime = 0.0
     start_after_epoch = float(config.get('start_after_epoch', 0.0) or 0.0)
-    
+
     os.makedirs(folder, exist_ok=True)
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             while multi_sender_active:
@@ -1207,61 +1205,24 @@ async def camera_async_worker(config, server_url):
                 files = glob.glob(os.path.join(folder, "*.jpg"))
 
                 if files:
-                    best_file = None
-                    best_idx = -1
-                    best_mtime = 0.0
+                    valid_files = []
                     for f in files:
-                        idx = _extract_front_frame_index(f)
                         try:
-                            current_mtime = os.path.getmtime(f)
+                            valid_files.append((os.path.getctime(f), f))
                         except OSError:
-                            current_mtime = 0.0
-                        if (idx > best_idx) or (idx == best_idx and current_mtime >= best_mtime):
-                            best_idx = idx
-                            best_file = f
-                            best_mtime = current_mtime
+                            pass
 
-                    if best_file is None:
-                        valid_files = []
-                        for f in files:
-                            try:
-                                current_mtime = os.path.getmtime(f)
-                                valid_files.append((current_mtime, f))
-                            except OSError:
-                                pass
-                        if valid_files:
-                            latest_mtime, latest_file = max(valid_files)
-                            try:
-                                file_ready = os.path.getsize(latest_file) > 0
-                            except OSError:
-                                file_ready = False
-                            if (latest_mtime >= start_after_epoch
-                                    and latest_file != last_processed_file
-                                    and file_ready):
-                                last_processed_file = latest_file
-                                last_processed_mtime = latest_mtime
-                                asyncio.create_task(
-                                    send_image_async(session, latest_file, camera_id, server_url)
-                                )
-                    else:
-                        has_new_frame = (
-                            best_idx > last_processed_idx
-                            or best_file != last_processed_file
-                            or best_mtime > last_processed_mtime
-                        )
+                    if valid_files:
+                        latest_ctime, latest_file = max(valid_files)
                         try:
-                            file_ready = os.path.getsize(best_file) > 0
+                            file_ready = os.path.getsize(latest_file) > 0
                         except OSError:
                             file_ready = False
-                        if (best_mtime >= start_after_epoch
-                                and has_new_frame
+                        if (latest_ctime >= start_after_epoch
+                                and latest_file != last_processed_file
                                 and file_ready):
-                            last_processed_idx = best_idx
-                            last_processed_file = best_file
-                            last_processed_mtime = best_mtime
-                            asyncio.create_task(
-                                send_image_async(session, best_file, camera_id, server_url)
-                            )
+                            last_processed_file = latest_file
+                            await send_image_async(session, latest_file, camera_id, server_url)
 
                 await asyncio.sleep(max(0, INTERVAL - (time.time() - cycle_start)))
     except Exception as e:
