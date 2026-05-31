@@ -2418,7 +2418,7 @@ class Go1UnityAutonomyNode(BaseNode):
         self._guidance_logged = False
 
     def _handle_path_cancel_from_unity(self):
-        global go1_estop_hold_until
+        global go1_estop_hold_until, seq
 
         self._cancel_path()
         go1_node_intent['vx'] = 0.0
@@ -2430,6 +2430,22 @@ class Go1UnityAutonomyNode(BaseNode):
         go1_state['reason'] = 'PATH_CANCEL'
         write_log('[PATH] PATH_CANCEL received from Unity')
         write_log('[PATH] canceled and stop requested. Waiting for new path.')
+
+        try:
+            world_x = float(go1_state.get('world_x', 0.0))
+            world_z = float(go1_state.get('world_z', 0.0))
+            yaw_unity = float(go1_state.get('yaw_unity', 0.0))
+            seq += 1
+            msg_state = (
+                f"{seq} {time.time() * 1000.0:.1f} {world_x:.6f} {world_z:.6f} {yaw_unity:.6f} "
+                f"0.000 0.000 0.000 1 98"
+            )
+            go1_sock.sendto(msg_state.encode('utf-8'), (GO1_UNITY_IP, UNITY_STATE_PORT))
+            write_log(
+                f"[PATH] cancel ack sent (mode=98) pos=({world_x:.3f}, {world_z:.3f}) yaw={math.degrees(yaw_unity):.2f}deg"
+            )
+        except Exception as e:
+            write_log(f"[PATH] cancel ack send error: {e}")
 
     def _send_waypoints_to_unity(self):
         if self._tx_sock is None or not _coerce_bool(self.state.get('send_waypoints', True), True):
