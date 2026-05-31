@@ -1778,8 +1778,10 @@ def go1_keepalive_thread():
 
         dts = tnow - last_dr_time
         last_dr_time = tnow
-        cy = math.cos(yaw_unity)
-        sy = math.sin(yaw_unity)
+        # Keep odometry aligned with the same yaw convention used by the path follower.
+        yaw_odom = _wrap_pi(-yaw_unity)
+        cy = math.cos(yaw_odom)
+        sy = math.sin(yaw_odom)
         world_x += (out_vx * cy - out_vy * sy) * dts
         world_z += (out_vx * sy + out_vy * cy) * dts
 
