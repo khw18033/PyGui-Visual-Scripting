@@ -1780,9 +1780,8 @@ def go1_keepalive_thread():
         last_dr_time = tnow
         cy = math.cos(yaw_unity)
         sy = math.sin(yaw_unity)
-        # Mirror the internal odometry accumulation so waypoint distance shrinks in the same frame as SDK motion.
-        world_x -= (out_vx * cy - out_vy * sy) * dts
-        world_z -= (out_vx * sy + out_vy * cy) * dts
+        world_x += (out_vx * cy - out_vy * sy) * dts
+        world_z += (out_vx * sy + out_vy * cy) * dts
 
         go1_state['world_x'] = world_x
         go1_state['world_z'] = world_z
