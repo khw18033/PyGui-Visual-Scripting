@@ -2417,6 +2417,20 @@ class Go1UnityAutonomyNode(BaseNode):
         self._current_path_id = -1
         self._guidance_logged = False
 
+    def _handle_path_cancel_from_unity(self):
+        global go1_estop_hold_until
+
+        self._cancel_path()
+        go1_node_intent['vx'] = 0.0
+        go1_node_intent['vy'] = 0.0
+        go1_node_intent['wz'] = 0.0
+        go1_node_intent['stop'] = True
+        go1_node_intent['trigger_time'] = time.monotonic()
+        go1_estop_hold_until = time.monotonic() + ESTOP_HOLD_SEC
+        go1_state['reason'] = 'PATH_CANCEL'
+        write_log('[PATH] PATH_CANCEL received from Unity')
+        write_log('[PATH] canceled and stop requested. Waiting for new path.')
+
     def _send_waypoints_to_unity(self):
         if self._tx_sock is None or not _coerce_bool(self.state.get('send_waypoints', True), True):
             return
@@ -2586,6 +2600,12 @@ class Go1UnityAutonomyNode(BaseNode):
                     break
                 latest_raw = packet
 
+        if isinstance(latest_raw, str):
+            packet_text = latest_raw.strip()
+            if packet_text == 'PATH_CANCEL' or packet_text.startswith('PATH_CANCEL '):
+                self._handle_path_cancel_from_unity()
+                latest_raw = None
+
         if latest_raw and latest_raw != self._last_raw_path:
             self._last_raw_path = latest_raw
             path_id, points = self._parse_path_json(latest_raw)
@@ -2688,7 +2708,7 @@ class Go1ServerJsonRecvNode(BaseNode):
         except Exception:
             ts_text = str(timestamp)
 
-        write_log(f"[GO1 JSON RX] json received | timestamp={ts_text}")
+        # write_log(f"[GO1 JSON RX] json received | timestamp={ts_text}")
 
     def _read_source_text(self, mode, source, timeout_sec):
         source = str(source or '').strip()
@@ -2760,7 +2780,7 @@ class Go1ServerJsonRecvNode(BaseNode):
                 write_log(f"[GO1 JSON RX] Error removing old backup: {old_path} | {e}")
 
         if removed > 0:
-            write_log(f"[GO1 JSON RX] Pruned {removed} old JSON backups (kept {max_files})")
+            # write_log(f"[GO1 JSON RX] Pruned {removed} old JSON backups (kept {max_files})")
         return removed
 
     def _save_json_backup(self, raw_json_str, parsed_data):
