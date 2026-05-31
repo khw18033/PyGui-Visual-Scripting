@@ -1467,7 +1467,8 @@ def go1_keepalive_thread():
         # Unity가 YAW_CALIB로 보내온 yawOffsetDeg를 go1_yaw_calib['offset_rad']로 수신하므로
         # 동적으로 오프셋을 맞춰 Unity가 항상 90도를 표시하도록 한다.
         _unity_display_offset = go1_yaw_calib['offset_rad'] + math.radians(90.0)
-        yaw_unity = _wrap_pi(yaw_rel + _unity_display_offset + YAW_FINE_TUNE_RAD)
+        # Invert yaw for Unity display (negate the computed yaw)
+        yaw_unity = _wrap_pi(-(yaw_rel + _unity_display_offset + YAW_FINE_TUNE_RAD))
         go1_state['yaw_unity'] = yaw_unity
 
         is_node_active = (tnow - go1_node_intent['trigger_time']) < 0.1
