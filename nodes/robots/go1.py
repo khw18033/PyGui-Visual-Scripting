@@ -2425,7 +2425,6 @@ class Go1UnityAutonomyNode(BaseNode):
         return path_id, points
 
     def _local_to_world(self, lx, lz, sx, sz, sy):
-        lx *= -1.0  # PATH_LATERAL_SIGN = -1.0
         ox = sx + math.cos(sy) * lz - math.sin(sy) * lx
         oz = sz + math.sin(sy) * lz + math.cos(sy) * lx
         return ox, oz
