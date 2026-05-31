@@ -46,7 +46,7 @@ ROBOT_CONTROL_CONFIG_DEFAULT = {
         'unity_timeout_sec': 0.15,
     },
     'yaw_control': {
-        'unity_yaw_offset_deg': 90.0,
+        'unity_yaw_offset_deg': -90.0,
         'yaw_fine_tune_deg': 1.0,
         'yaw_align_kp': 2.0,
         'yaw_align_tol_deg': 2.0,
