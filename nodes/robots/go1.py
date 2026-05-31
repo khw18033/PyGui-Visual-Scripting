@@ -2781,6 +2781,7 @@ class Go1ServerJsonRecvNode(BaseNode):
 
         if removed > 0:
             # write_log(f"[GO1 JSON RX] Pruned {removed} old JSON backups (kept {max_files})")
+            pass
         return removed
 
     def _save_json_backup(self, raw_json_str, parsed_data):
