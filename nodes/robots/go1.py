@@ -4034,6 +4034,7 @@ class VideoSourceNode(BaseNode):
         self.outputs[self.out_frame] = PortType.DATA
         self.state['target_ip'] = get_local_ip()
         self.state['receiver_folder'] = 'Captured_Images/go1_front'
+        self.state['max_frames'] = 300
         self._started = False
         self._last_frame = None
         self._auto_stopped_by_timer = False
@@ -4081,9 +4082,21 @@ class VideoSourceNode(BaseNode):
         got_fresh_frame = False
         try:
             source_folder = str(self.state.get('receiver_folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
+            try:
+                max_frames = max(10, int(float(self.state.get('max_frames', 300))))
+            except Exception:
+                max_frames = 300
+
             files = glob.glob(os.path.join(source_folder, "front_*.jpg"))
             if len(files) >= 2:
                 files.sort(key=os.path.getctime)
+                if len(files) > max_frames:
+                    for old_file in files[:len(files) - max_frames]:
+                        try:
+                            os.remove(old_file)
+                        except Exception:
+                            pass
+                    files = files[len(files) - max_frames:]
                 # 최신 파일은 쓰기 중일 수 있으므로 직전 파일부터 역순 탐색
                 candidates = files[:-1][-5:]
                 for target_file in reversed(candidates):
