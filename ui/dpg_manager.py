@@ -641,6 +641,8 @@ class NodeUIRenderer:
                 node.state['target_ip'] = dpg.get_value(node.ui_target_ip)
                 if hasattr(node, 'ui_receiver_folder'):
                     node.state['receiver_folder'] = dpg.get_value(node.ui_receiver_folder)
+                if hasattr(node, 'ui_max_frames'):
+                    node.state['max_frames'] = dpg.get_value(node.ui_max_frames)
             elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
                 node.state['port'] = dpg.get_value(node.ui_port)
                 node.state['is_running'] = dpg.get_value(node.ui_run)
@@ -784,6 +786,8 @@ class NodeUIRenderer:
             dpg.set_value(node.ui_target_ip, node.state.get('target_ip', default_target_ip))
             if hasattr(node, 'ui_receiver_folder'):
                 dpg.set_value(node.ui_receiver_folder, node.state.get('receiver_folder', 'Captured_Images/go1_front'))
+            if hasattr(node, 'ui_max_frames'):
+                dpg.set_value(node.ui_max_frames, int(node.state.get('max_frames', 300)))
         elif t == "VIS_FLASK" and hasattr(node, 'ui_port'):
             dpg.set_value(node.ui_port, node.state.get('port', 5000))
             dpg.set_value(node.ui_run, node.state.get('is_running', False))
@@ -1307,6 +1311,12 @@ class NodeUIRenderer:
                     label="Receiver Folder",
                     width=220,
                     default_value=node.state.get('receiver_folder', 'Captured_Images/go1_front')
+                )
+                node.ui_max_frames = dpg.add_input_int(
+                    label="Max Frames",
+                    width=100,
+                    default_value=int(node.state.get('max_frames', 300)),
+                    min_value=10, max_value=10000
                 )
             with dpg.node_attribute(tag=node.out_frame, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Frame Data", color=(255,255,0))
 
