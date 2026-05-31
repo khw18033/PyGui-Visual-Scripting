@@ -2015,7 +2015,7 @@ class Go1UnityAutonomyNode(BaseNode):
             ty = math.atan2(dz, dx)
             ye = _wrap_pi(ty - yaw_now)
             vx = path_kp_dist * dist
-            wz = path_kp_yaw * ye
+            wz = -path_kp_yaw * ye
             vx = max(0.0, min(vx, path_max_vx))
             wz = max(-path_max_wz, min(wz, path_max_wz))
 

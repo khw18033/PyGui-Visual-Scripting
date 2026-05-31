@@ -2219,6 +2219,7 @@ class Go1UnityAutonomyNode(BaseNode):
         self._chunk_parts = {}
         self._last_raw_path = ''
         self._last_pf_print_mono = 0.0
+        self._last_seq = 0
         self._path_active = False
         self._path_done_pulse = False
         self._raw_path_points = []
@@ -2420,7 +2421,7 @@ class Go1UnityAutonomyNode(BaseNode):
         self._guidance_logged = False
 
     def _handle_path_cancel_from_unity(self):
-        global go1_estop_hold_until, seq
+        global go1_estop_hold_until
 
         self._cancel_path()
         go1_node_intent['vx'] = 0.0
@@ -2437,7 +2438,8 @@ class Go1UnityAutonomyNode(BaseNode):
             world_x = float(go1_state.get('world_x', 0.0))
             world_z = float(go1_state.get('world_z', 0.0))
             yaw_unity = float(go1_state.get('yaw_unity', 0.0))
-            seq += 1
+            seq = self._last_seq + 1
+            self._last_seq = seq
             msg_state = (
                 f"{seq} {time.time() * 1000.0:.1f} {world_x:.6f} {world_z:.6f} {yaw_unity:.6f} "
                 f"0.000 0.000 0.000 1 98"
@@ -2525,7 +2527,7 @@ class Go1UnityAutonomyNode(BaseNode):
             ty = math.atan2(dz, dx)
             ye = _wrap_pi(ty - yaw_now)
             vx = path_kp_dist * dist
-            wz = path_kp_yaw * ye
+            wz = -path_kp_yaw * ye
             vx = max(0.0, min(vx, path_max_vx))
             wz = max(-path_max_wz, min(wz, path_max_wz))
 
