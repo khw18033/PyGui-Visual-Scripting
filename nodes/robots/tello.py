@@ -1,5 +1,6 @@
 import threading
 import time
+from typing import Optional
 
 from djitellopy import Tello
 
@@ -52,7 +53,7 @@ tello_node_intent = {
     "trigger_time": time.monotonic(),
 }
 
-_tello: Tello | None = None
+_tello: Optional[Tello] = None
 _tello_online = False
 _tello_keepalive_thread_started = False
 _tello_stop_event = threading.Event()
