@@ -24,9 +24,15 @@ import nodes.robots.mt4 as mt4_module
 
 try:
     tello_module = importlib.import_module('nodes.robots.tello')
+    tello_dashboard = getattr(tello_module, 'tello_dashboard')
+    tello_state = getattr(tello_module, 'tello_state')
+    tello_node_intent = getattr(tello_module, 'tello_node_intent')
     HAS_TELLO = True
 except (ImportError, AttributeError):
     tello_module = None
+    tello_dashboard = None
+    tello_state = None
+    tello_node_intent = None
     HAS_TELLO = False
 
 # --- [추가] Go1 연동 (Dynamic Import) ---
@@ -320,6 +326,13 @@ def btn_connect_ep_ap(sender=None, app_data=None, user_data=None):
         ep_manager.send_cmd(worker_id, 'connect', {'conn_type': 'ap'})
 
 
+def btn_connect_tello(sender=None, app_data=None, user_data=None):
+    if tello_module is None:
+        return
+    ok = tello_module.init_tello_connection()
+    write_log('Tello: connected' if ok else 'Tello: connect failed')
+
+
 def btn_connect_mt4_usb(sender=None, app_data=None, user_data=None):
     try:
         import nodes.robots.mt4 as mt4_module
@@ -533,7 +546,17 @@ class NodeUIRenderer:
                 node.state['C'] = dpg.is_key_down(dpg.mvKey_C); node.state['V'] = dpg.is_key_down(dpg.mvKey_V)
                 node.state['U'] = dpg.is_key_down(dpg.mvKey_U); node.state['J'] = dpg.is_key_down(dpg.mvKey_J)
                 node.state['SPACE'] = dpg.is_key_down(dpg.mvKey_Spacebar)
-            elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER"]:
+            elif t == "TELLO_KEYBOARD" and hasattr(node, 'combo_keys'):
+                node.state['is_focused'] = is_focused
+                node.state['keys'] = dpg.get_value(node.combo_keys)
+                node.state['W'] = dpg.is_key_down(dpg.mvKey_W); node.state['S'] = dpg.is_key_down(dpg.mvKey_S)
+                node.state['A'] = dpg.is_key_down(dpg.mvKey_A); node.state['D'] = dpg.is_key_down(dpg.mvKey_D)
+                node.state['UP'] = dpg.is_key_down(dpg.mvKey_Up); node.state['DOWN'] = dpg.is_key_down(dpg.mvKey_Down)
+                node.state['LEFT'] = dpg.is_key_down(dpg.mvKey_Left); node.state['RIGHT'] = dpg.is_key_down(dpg.mvKey_Right)
+                node.state['Q'] = dpg.is_key_down(dpg.mvKey_Q); node.state['E'] = dpg.is_key_down(dpg.mvKey_E)
+                node.state['R'] = dpg.is_key_down(dpg.mvKey_R); node.state['F'] = dpg.is_key_down(dpg.mvKey_F)
+                node.state['T'] = dpg.is_key_down(dpg.mvKey_T); node.state['L'] = dpg.is_key_down(dpg.mvKey_L)
+            elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER", "TELLO_DRIVER"]:
                 for k, fid in getattr(node, 'ui_fields', {}).items():
                     pin_id = node.in_pins[k]
                     is_connected = any(l['target'] == pin_id for l in link_registry.values())
@@ -1914,6 +1937,31 @@ def __init_ui__():
                             dpg.add_button(label="Conn STA", callback=btn_connect_ep_sta, width=80)
                             dpg.add_button(label="Conn AP", callback=btn_connect_ep_ap, width=80)
 
+            # ================= [Tello Dashboard Tab] =================
+            with dpg.tab(label="Tello Dashboard"):
+                with dpg.group(horizontal=True):
+                    with dpg.child_window(width=220, height=170, border=True):
+                        dpg.add_text("Tello Status", color=(150,150,150))
+                        dpg.add_text("HW: Offline", tag="tello_dash_link", color=(255,0,0))
+                        dpg.add_text("Battery: -%", tag="tello_dash_battery", color=(100,255,100))
+                        dpg.add_text("State: landed", tag="tello_dash_flight", color=(200,200,200))
+                        dpg.add_text("", tag="tello_dash_error", color=(255,100,100), wrap=200)
+                        dpg.add_button(label="Connect", width=-1, callback=btn_connect_tello)
+                    with dpg.child_window(width=220, height=170, border=True):
+                        dpg.add_text("Sensors", color=(0,255,255))
+                        dpg.add_text("Height: 0.0 cm", tag="tello_dash_height")
+                        dpg.add_text("ToF:    0.0 cm", tag="tello_dash_tof")
+                        dpg.add_text("Pitch:  0.0 deg", tag="tello_dash_pitch")
+                        dpg.add_text("Roll:   0.0 deg", tag="tello_dash_roll")
+                        dpg.add_text("Yaw:    0.0 deg", tag="tello_dash_yaw")
+                    with dpg.child_window(width=220, height=170, border=True):
+                        dpg.add_text("Commands", color=(255,200,0))
+                        dpg.add_text("Vx Cmd: 0.00 m/s", tag="tello_dash_vx")
+                        dpg.add_text("Vy Cmd: 0.00 m/s", tag="tello_dash_vy")
+                        dpg.add_text("Vz Cmd: 0.00 m/s", tag="tello_dash_vz")
+                        dpg.add_text("Yaw Cmd: 0.0 d/s", tag="tello_dash_vyaw")
+                        dpg.add_text("Last: -", tag="tello_dash_last_cmd", color=(180,180,180), wrap=200)
+
             # ================= [Files & System Tab] =================
             with dpg.tab(label="Files & System"):
                 with dpg.group(horizontal=True):
@@ -2174,6 +2222,31 @@ def start_gui():
                 except Exception:
                     pass
             _ep_refresh_sta_robot_list_ui()
+
+        # --- Tello UI Update ---
+        if HAS_TELLO and dpg.does_item_exist("tello_dash_link"):
+            hw = tello_dashboard.get('hw_link', 'Offline')
+            dpg.set_value("tello_dash_link", f"HW: {hw}")
+            dpg.configure_item("tello_dash_link", color=(0,255,0) if hw == "Online" else (255,0,0))
+
+            bat = tello_dashboard.get('battery', -1)
+            dpg.set_value("tello_dash_battery", f"Battery: {bat}%" if bat >= 0 else "Battery: -%")
+
+            dpg.set_value("tello_dash_flight", f"State: {tello_dashboard.get('flight_state', 'landed')}")
+            err = tello_dashboard.get('last_error', '')
+            dpg.set_value("tello_dash_error", err[:60] if err else "")
+
+            dpg.set_value("tello_dash_height", f"Height: {tello_state.get('height', 0.0):.1f} cm")
+            dpg.set_value("tello_dash_tof",    f"ToF:    {tello_state.get('tof', 0.0):.1f} cm")
+            dpg.set_value("tello_dash_pitch",  f"Pitch:  {tello_state.get('pitch', 0.0):.1f} deg")
+            dpg.set_value("tello_dash_roll",   f"Roll:   {tello_state.get('roll', 0.0):.1f} deg")
+            dpg.set_value("tello_dash_yaw",    f"Yaw:    {tello_state.get('yaw', 0.0):.1f} deg")
+
+            dpg.set_value("tello_dash_vx",   f"Vx Cmd: {tello_state.get('vx_cmd', 0.0):.2f} m/s")
+            dpg.set_value("tello_dash_vy",   f"Vy Cmd: {tello_state.get('vy_cmd', 0.0):.2f} m/s")
+            dpg.set_value("tello_dash_vz",   f"Vz Cmd: {tello_state.get('vz_cmd', 0.0):.2f} m/s")
+            dpg.set_value("tello_dash_vyaw", f"Yaw Cmd: {tello_state.get('vyaw_cmd', 0.0):.1f} d/s")
+            dpg.set_value("tello_dash_last_cmd", f"Last: {tello_state.get('last_command', '-')}")
 
         # --- Node Engine Tick ---
         if engine_module.is_running and (time.time() - last_logic_time > LOGIC_RATE):
