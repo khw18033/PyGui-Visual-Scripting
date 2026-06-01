@@ -22,6 +22,13 @@ from nodes.robots.mt4 import (
 import core.engine as engine_module
 import nodes.robots.mt4 as mt4_module
 
+try:
+    tello_module = importlib.import_module('nodes.robots.tello')
+    HAS_TELLO = True
+except (ImportError, AttributeError):
+    tello_module = None
+    HAS_TELLO = False
+
 # --- [추가] Go1 연동 (Dynamic Import) ---
 try:
     go1_module = importlib.import_module(f'nodes.robots.{GO1_MODULE_NAME}')
@@ -702,7 +709,7 @@ class NodeUIRenderer:
         elif t == "UDP_RECV" and hasattr(node, 'port'):
             dpg.set_value(node.port, node.state.get('port', 6000)); dpg.set_value(node.ip, node.state.get('ip', '192.168.50.63'))
         elif t == "MT4_KEYBOARD" and hasattr(node, 'combo_keys'): dpg.set_value(node.combo_keys, node.state.get('keys', 'WASD'))
-        elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER"]:
+        elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER", "TELLO_DRIVER"]:
             for k, fid in getattr(node, 'ui_fields', {}).items(): dpg.set_value(fid, node.state.get(k, 0.0))
             for k, fid in getattr(node, 'setting_fields', {}).items(): dpg.set_value(fid, node.state.get(k, 1.0))
             
@@ -716,6 +723,10 @@ class NodeUIRenderer:
         elif t == "GO1_ACTION" and hasattr(node, 'combo_id'):
             dpg.set_value(node.combo_id, node.state.get('mode', 'Stand'))
             dpg.set_value(node.field_v1, node.state.get('v1', 0.2))
+        elif t == "TELLO_KEYBOARD" and hasattr(node, 'combo_keys'):
+            dpg.set_value(node.combo_keys, node.state.get('keys', 'WASD'))
+        elif t == "TELLO_ACTION" and hasattr(node, 'combo_act'):
+            dpg.set_value(node.combo_act, node.state.get('action', 'Takeoff'))
         elif t == "GO1_SERVER_SENDER" and hasattr(node, 'combo_action'):
             dpg.set_value(node.combo_action, node.state.get('action', 'Start Sender'))
             dpg.set_value(node.field_url, node.state.get('server_url', "http://192.168.1.100:5001/upload"))
@@ -859,7 +870,7 @@ class NodeUIRenderer:
         elif t == "CONSTANT": NodeUIRenderer._render_constant(node)
         elif t == "PRINT": NodeUIRenderer._render_print(node)
         elif t == "LOGGER": NodeUIRenderer._render_logger(node)
-        elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER"]: NodeUIRenderer._render_universal(node)
+        elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER", "TELLO_DRIVER"]: NodeUIRenderer._render_universal(node)
         elif t == "MT4_KEYBOARD": NodeUIRenderer._render_mt4_keyboard(node)
         elif t == "MT4_UNITY": NodeUIRenderer._render_mt4_unity(node)
         elif t == "UDP_RECV": NodeUIRenderer._render_udp(node)
@@ -869,11 +880,13 @@ class NodeUIRenderer:
         elif t == "MT4_BACKLASH": NodeUIRenderer._render_backlash(node)
         # --- Go1 & Vision ---
         elif t == "GO1_KEYBOARD": NodeUIRenderer._render_go1_keyboard(node)
+        elif t == "TELLO_KEYBOARD": NodeUIRenderer._render_tello_keyboard(node)
         elif t == "EP_KEYBOARD": NodeUIRenderer._render_ep_keyboard(node)
         elif t == "GO1_UNITY": NodeUIRenderer._render_go1_unity(node)
         elif t == "GO1_UNITY_KEYBOARD": NodeUIRenderer._render_go1_unity_keyboard(node)
         elif t == "GO1_UNITY_AUTO": NodeUIRenderer._render_go1_unity_auto(node)
         elif t == "GO1_ACTION": NodeUIRenderer._render_go1_action(node)
+        elif t == "TELLO_ACTION": NodeUIRenderer._render_tello_action(node)
         elif t == "GO1_MISSION_RECV": NodeUIRenderer._render_go1_mission_recv(node)
         elif t == "GO1_MISSION_DECIDE": NodeUIRenderer._render_go1_mission_decide(node)
         elif t == "GO1_MISSION_DISPATCH": NodeUIRenderer._render_go1_mission_dispatch(node)
@@ -963,7 +976,7 @@ class NodeUIRenderer:
     @staticmethod
     def _render_universal(node):
         driver_name = getattr(node.driver.__class__, '__name__', 'MT4')
-        label_str = "Go1 Core Driver" if "Go1" in driver_name else "EP Core Driver" if "EP" in driver_name else "MT4 Core Driver"
+        label_str = "Go1 Core Driver" if "Go1" in driver_name else "Tello Core Driver" if "Tello" in driver_name else "EP Core Driver" if "EP" in driver_name else "MT4 Core Driver"
         with dpg.node(tag=node.node_id, parent="node_editor", label=label_str):
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
             _f_in = generate_uuid(); node.inputs[_f_in] = PortType.FLOW
@@ -1149,6 +1162,35 @@ class NodeUIRenderer:
             with dpg.node_attribute(tag=node.in_val1, attribute_type=dpg.mvNode_Attr_Input):
                 dpg.add_text("Speed/Val")
                 node.field_v1 = dpg.add_input_float(width=60, default_value=0.2)
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_tello_keyboard(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Tello Keyboard"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_keys = dpg.add_combo(["WASD", "Arrow Keys"], default_value="WASD", width=120)
+                dpg.add_text("WASD / Arrows: move\nQ/E: yaw\nR/F: up/down\nT: takeoff\nL: land", color=(255, 180, 120))
+            with dpg.node_attribute(tag=node.out_vx, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vx")
+            with dpg.node_attribute(tag=node.out_vy, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vy")
+            with dpg.node_attribute(tag=node.out_vz, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Vz")
+            with dpg.node_attribute(tag=node.out_vyaw, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Target Yaw")
+            with dpg.node_attribute(tag=node.out_takeoff, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Takeoff")
+            with dpg.node_attribute(tag=node.out_land, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Land")
+            with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
+
+    @staticmethod
+    def _render_tello_action(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="Tello Action"):
+            with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
+            with dpg.node_attribute(tag=node.in_action, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Action In")
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                node.combo_act = dpg.add_combo(
+                    ["Takeoff", "Land", "Flip Left", "Flip Right", "Flip Forward", "Flip Back", "Emergency Stop"],
+                    default_value="Takeoff",
+                    width=160,
+                )
+                dpg.add_text("Emergency Stop cuts motors immediately.", color=(255, 120, 120))
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
@@ -1926,6 +1968,12 @@ def __init_ui__():
                 dpg.add_button(label="ARUCO", callback=add_node_cb, user_data="VIS_ARUCO")
                 dpg.add_button(label="FLASK", callback=add_node_cb, user_data="VIS_FLASK")
                 dpg.add_button(label="SAVE", callback=add_node_cb, user_data="VIS_SAVE")
+
+            with dpg.group(horizontal=True):
+                dpg.add_text("Tello:", color=(255,180,120))
+                dpg.add_button(label="TELLO DRIVER", callback=add_node_cb, user_data="TELLO_DRIVER")
+                dpg.add_button(label="TELLO KEY", callback=add_node_cb, user_data="TELLO_KEYBOARD")
+                dpg.add_button(label="TELLO ACTION", callback=add_node_cb, user_data="TELLO_ACTION")
             
             with dpg.group(horizontal=True):
                 dpg.add_text("EP01 Tools:", color=(100,200,255))

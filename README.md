@@ -37,11 +37,6 @@ core/
 nodes/
 	common.py         # START, IF, LOOP, CONSTANT, PRINT, LOGGER
 	robots/
-		mt4.py          # MT4 드라이버/액션/키보드/유니티/보정 노드
-		go1.py          # Go1 드라이버/액션/키보드/유니티/비전 노드
-		ep01.py         # EP 드라이버/액션/키보드/카메라/저장/업로드 노드
-ui/
-	dpg_manager.py    # DearPyGui 화면, 노드 렌더링, 실행 루프
 ```
 
 ## 실행 흐름
@@ -251,65 +246,29 @@ ui/
 
 ## 환경 및 의존성
 
+> 참고: 이 문서에 수록된 모든 설치 가이드는 Ubuntu 22.04 환경을 기준으로 작성되었습니다.
+
 ## Python
 
-- Python 3.8 이상 권장
+- Python 3.8 권장
 
-### Ubuntu 가상환경 권장 설정
-
-다른 PC에서 이 프로젝트를 쓸 때는 전역 Python에 바로 설치하지 말고, 프로젝트 전용 가상환경을 만든 뒤 사용하는 것을 권장합니다.
+프로젝트는 전역 Python에 직접 설치하지 말고, Python 3.8 가상환경을 만든 뒤 그 안에 의존성을 설치하는 방식으로 사용합니다.
 
 ```bash
-python3 --version
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install robomaster netaddr netifaces myqr
-```
-
-만약 `python3 -m venv`에서 `returned non-zero exit status 1`가 나오면, 보통 `venv` 패키지가 빠져 있는 경우입니다. 아래처럼 설치한 뒤 다시 실행하세요.
-
-```bash
-sudo apt update
-sudo apt install python3-venv
-```
-
-Ubuntu 22.04에서 꼭 Python 3.8을 써야 하면 기본 저장소에 없을 수 있으므로, 먼저 아래처럼 설치를 시도하세요.
-
-```bash
-sudo apt update
-sudo apt install python3.8 python3.8-venv python3.8-dev
-```
-
-만약 `Unable to locate package`가 나오면 deadsnakes PPA를 추가한 뒤 다시 설치합니다.
-
-```bash
-sudo apt update
-sudo apt install software-properties-common
-sudo add-apt-repository ppa:deadsnakes/ppa
-sudo apt update
-sudo apt install python3.8 python3.8-venv python3.8-dev
-```
-
-설치가 끝나면 아래처럼 Python 3.8 기준 가상환경을 만듭니다.
-
-```bash
+python3.8 --version
 python3.8 -m venv .venv
+
+# Ubuntu 22.04: 가상환경 활성화
 source .venv/bin/activate
+
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install robomaster netaddr netifaces myqr
+python -m pip install dearpygui pyserial numpy opencv-contrib-python flask aiohttp
+
+# 선택 패키지
+python -m pip install torch transformers pillow
 ```
 
-Ubuntu에서는 새 터미널을 열 때마다 자동으로 가상환경을 켜고 싶다면 `~/.bashrc`에 활성화 명령을 추가하면 됩니다.
-
-```bash
-echo 'source ~/Desktop/khw/PyGui-Visual-Scripting/.venv/bin/activate' >> ~/.bashrc
-source ~/.bashrc
-```
-
-프로젝트 폴더가 다른 경로에 있으면 위 경로만 맞게 바꾸면 됩니다. 여러 프로젝트를 쓰거나 특정 터미널에서만 켜고 싶으면 `bashrc` 대신 수동 활성화를 쓰는 편이 더 안전합니다.
-
-되돌리려면 `~/.bashrc`에서 추가한 줄을 삭제한 뒤 다시 로드하면 됩니다.
+만약 `python3.8`가 없으면 먼저 Python 3.8과 `venv` 지원이 설치되어 있어야 합니다.
 
 ## 필수 패키지
 
@@ -339,9 +298,57 @@ source ~/.bashrc
 git clone https://github.com/khw18033/PyGui-Visual-Scripting.git
 cd PyGui-Visual-Scripting
 
-pip install dearpygui pyserial numpy opencv-contrib-python flask aiohttp
+python3.8 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install dearpygui pyserial numpy opencv-contrib-python flask aiohttp
+
 # Depth DA2 사용 시(선택)
-pip install torch transformers pillow
+python -m pip install torch transformers pillow
+
+# 하드웨어 SDK (선택)
+# RoboMaster SDK (EP) - pip으로 설치 가능
+python -m pip install robomaster netaddr netifaces myqr
+
+# Unitree Go1 SDK (선택)
+# Unitree SDK는 공식 GitHub 리포지토리에서 받아 프로젝트에 추가합니다.
+git clone https://github.com/unitreerobotics/unitree_legged_sdk unitree_legged_sdk
+
+# Unitree SDK 빌드 및 파이썬 바인딩 사용 예시 (Ubuntu 22.04 기준)
+cd unitree_legged_sdk
+
+# 1) 의존성 설치
+sudo apt update
+sudo apt install -y build-essential cmake libboost-all-dev g++ libmsgpack-dev
+
+# 2) 파이썬 바인딩 포함 빌드
+mkdir -p build && cd build
+cmake -DPYTHON_BUILD=TRUE ..
+make -j$(nproc)
+
+# 3) 빌드 결과 확인
+ls -la ../lib/python/amd64
+
+# 4) 가상환경에서 임시로 참조하고 import 확인
+source ../../.venv/bin/activate
+export PYTHONPATH="$PWD/../lib/python/amd64:$PYTHONPATH"
+python -c "import sys; sys.path.insert(0, 'unitree_legged_sdk/lib/python/amd64'); import robot_interface as sdk; print('robot_interface import ok:', sdk.__file__)"
+
+# 5) 가상환경에 바인딩을 복사해 영구적으로 사용하기
+# 가상환경의 site-packages 경로를 확인하고 복사합니다.
+PY_VENV_SITE=$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+echo "venv site-packages: $PY_VENV_SITE"
+# python_wrapper가 생성한 모듈 파일(robot_interface*.so)을 site-packages로 복사합니다.
+cp unitree_legged_sdk/lib/python/amd64/robot_interface*.so "$PY_VENV_SITE/"
+
+# 6) 또는 wheel이 있으면 wheel로 설치
+# python -m pip install unitree_legged_sdk/dist/<wheel-file>.whl
+
+# 참고: 빌드 중 pybind11 헤더를 찾지 못하면 python_wrapper/CMakeLists.txt에
+# include_directories(<path-to-pybind11-include>)를 추가하거나 시스템에 pybind11을 설치하세요.
+
+cd ../..  # 프로젝트 루트로 돌아오기
+
 python main.py
 ```
 
@@ -373,7 +380,7 @@ python main.py
 
 - MT4 기본 시리얼 포트는 코드상 `/dev/ttyUSB0` 기준입니다.
 - Go1 초기화 시 콘솔에서 AP 모드 여부와 Go1 IP 입력을 받습니다.
-- 네트워크 정보 패널은 Linux `ip` 명령 출력 기반입니다. Windows 환경에서는 해당 정보가 비어 보일 수 있습니다.
+- 네트워크 정보 패널은 Linux `ip` 명령 출력 기반입니다.
 - 하드웨어/SDK가 없어도 GUI와 기본 노드 로직은 실행됩니다.
 
 ## 라이선스

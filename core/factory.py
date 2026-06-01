@@ -55,6 +55,20 @@ except (ImportError, AttributeError) as e:
     Go1ServerJsonRecvNode = None
     Go1AutoAvoidanceNode = None
 
+try:
+    tello_module = importlib.import_module('nodes.robots.tello')
+    TelloRobotDriver = getattr(tello_module, 'TelloRobotDriver')
+    TelloKeyboardNode = getattr(tello_module, 'TelloKeyboardNode')
+    TelloActionNode = getattr(tello_module, 'TelloActionNode')
+    HAS_TELLO = True
+except (ImportError, AttributeError) as e:
+    print(f"⚠️  Failed to load Tello nodes: {e}")
+    tello_module = None
+    TelloRobotDriver = None
+    TelloKeyboardNode = None
+    TelloActionNode = None
+    HAS_TELLO = False
+
 class NodeFactory:
     @staticmethod
     def create_node(node_type, node_id=None):
@@ -100,6 +114,9 @@ class NodeFactory:
         elif node_type == "GO1_SERVER_SENDER" and HAS_GO1: node = ServerSenderNode(node_id)
         elif node_type == "GO1_SERVER_JSON_RECV" and HAS_GO1: node = Go1ServerJsonRecvNode(node_id)
         elif node_type == "GO1_AUTO_AVOIDANCE" and HAS_GO1: node = Go1AutoAvoidanceNode(node_id)
+        elif node_type == "TELLO_DRIVER" and HAS_TELLO: node = UniversalRobotNode(node_id, TelloRobotDriver(), "Tello Driver", "TELLO_DRIVER")
+        elif node_type == "TELLO_KEYBOARD" and HAS_TELLO: node = TelloKeyboardNode(node_id)
+        elif node_type == "TELLO_ACTION" and HAS_TELLO: node = TelloActionNode(node_id)
         elif node_type.startswith("EP_") or node_type.startswith("EP01_"):
             try:
                 ep_module = importlib.import_module('nodes.robots.ep01')
