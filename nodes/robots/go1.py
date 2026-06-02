@@ -2778,6 +2778,7 @@ class Go1ServerJsonRecvNode(BaseNode):
         self._ensure_backup_folder()
         self._last_backup_timestamp = 0.0
         self._last_detections = []
+        self._last_json_timestamp = None  # dedup: skip if same timestamp as last packet
 
     def _log_received_payload(self, source, direction, payload, raw_json):
         try:
@@ -3205,8 +3206,16 @@ class Go1ServerJsonRecvNode(BaseNode):
                     payload = {}
 
                 # ===== JSON 백업 및 detections 처리 =====
+                # 같은 timestamp면 이미 처리한 패킷이므로 스킵
+                incoming_ts = parsed.get('timestamp')
+                if incoming_ts is not None and str(incoming_ts) == str(self._last_json_timestamp):
+                    self._publish_state(raw_json, payload, True, True, 'OK', source)
+                    return self.out_flow
+                if incoming_ts is not None:
+                    self._last_json_timestamp = incoming_ts
+
                 self._save_json_backup(raw_json, parsed)
-                
+
                 # detections 정보 추출 및 처리
                 detections = parsed.get('detections', [])
                 if detections and detections != self._last_detections:
