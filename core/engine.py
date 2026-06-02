@@ -21,6 +21,17 @@ if not os.path.exists(SAVE_DIR):
     os.makedirs(SAVE_DIR)
 system_log_buffer = deque(maxlen=50)
 
+_log_file_handle = None
+
+def _get_log_file():
+    global _log_file_handle
+    if _log_file_handle is None or _log_file_handle.closed:
+        log_name = f"system_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        log_path = os.path.join(SAVE_DIR, log_name)
+        _log_file_handle = open(log_path, 'a', encoding='utf-8', buffering=1)
+        print(f"[LOG] 로그 파일: {os.path.abspath(log_path)}")
+    return _log_file_handle
+
 _id_counter = 1000000
 
 def generate_uuid():
@@ -33,8 +44,13 @@ def generate_uuid():
 
 def write_log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
-    print(f"[{timestamp}] {msg}")
-    system_log_buffer.append(f"[{timestamp}] {msg}")
+    line = f"[{timestamp}] {msg}"
+    print(line)
+    system_log_buffer.append(line)
+    try:
+        _get_log_file().write(line + '\n')
+    except Exception:
+        pass
 
 def execute_graph_once():
     start_node = next((n for n in node_registry.values() if n.type_str == "START"), None)
