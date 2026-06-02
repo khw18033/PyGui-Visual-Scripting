@@ -139,6 +139,9 @@ W_MAX = float(ROBOT_CONTROL_CONFIG.get('w_max', 2.0))
 VX_CMD = float(ROBOT_CONTROL_CONFIG.get('vx_cmd', 0.20))
 VY_CMD = float(ROBOT_CONTROL_CONFIG.get('vy_cmd', 0.20))
 WZ_CMD = float(ROBOT_CONTROL_CONFIG.get('wz_cmd', 1.00))
+# Minimum actual velocity (m/s or rad/s) from SDK feedback to confirm robot is moving.
+# Below this threshold the reading is treated as noise/standstill.
+ACTUAL_SPEED_THRESHOLD = float(ROBOT_CONTROL_CONFIG.get('actual_speed_threshold', 0.03))
 
 _BODY_HEIGHT_CONFIG = dict(ROBOT_CONTROL_CONFIG.get('body_height', {}))
 BODY_HEIGHT_MIN = float(_BODY_HEIGHT_CONFIG.get('min', -0.12))
@@ -222,6 +225,10 @@ go1_state = {
     'battery': -1,
     'battery_confirmed': False,  # True: 실제 배터리 값 수신 완료
     'control_latency_ms': 0.0,
+    'vx_actual': 0.0,   # SDK-measured actual velocity (m/s)
+    'vy_actual': 0.0,
+    'wz_actual': 0.0,   # SDK-measured actual yaw rate (rad/s)
+    'sdk_confirmed': False,  # True when SDK is actively receiving robot state
 }
 
 go1_unity_data = {
@@ -834,7 +841,15 @@ def _go1_motion_snapshot():
     auto_status = str(go1_auto_avoidance_data.get('status', '')).strip().upper()
     json_motion_active = bool(go1_server_json_data.get('motion_active', False))
 
-    speed_active = any(abs(value) > 1e-4 for value in (vx_cmd, vy_cmd, wz_cmd))
+    sdk_confirmed = bool(go1_state.get('sdk_confirmed', False))
+    if sdk_confirmed:
+        vx_actual = _coerce_float(go1_state.get('vx_actual', 0.0), 0.0)
+        vy_actual = _coerce_float(go1_state.get('vy_actual', 0.0), 0.0)
+        wz_actual = _coerce_float(go1_state.get('wz_actual', 0.0), 0.0)
+        speed_active = any(abs(v) > ACTUAL_SPEED_THRESHOLD for v in (vx_actual, vy_actual, wz_actual))
+    else:
+        # Simulation or SDK offline: fall back to command-based detection
+        speed_active = any(abs(value) > 1e-4 for value in (vx_cmd, vy_cmd, wz_cmd))
     motion_active = bool(
         json_motion_active
         or special_active
@@ -1430,14 +1445,29 @@ def go1_keepalive_thread():
                                 go1_state['battery_confirmed'] = True
                     except Exception:
                         pass
+                    try:
+                        go1_state['vx_actual'] = float(state.velocity[0])
+                        go1_state['vy_actual'] = float(state.velocity[1])
+                        go1_state['wz_actual'] = float(state.yawSpeed)
+                        go1_state['sdk_confirmed'] = True
+                    except Exception:
+                        pass
                 else:
                     go1_dashboard["hw_link"] = "Offline"
                     go1_state['battery'] = -1
                     go1_state['battery_confirmed'] = False
+                    go1_state['vx_actual'] = 0.0
+                    go1_state['vy_actual'] = 0.0
+                    go1_state['wz_actual'] = 0.0
+                    go1_state['sdk_confirmed'] = False
             except Exception:
                 go1_dashboard["hw_link"] = "Offline"
                 go1_state['battery'] = -1
                 go1_state['battery_confirmed'] = False
+                go1_state['vx_actual'] = 0.0
+                go1_state['vy_actual'] = 0.0
+                go1_state['wz_actual'] = 0.0
+                go1_state['sdk_confirmed'] = False
 
         if not yaw0_initialized:
             if _yaw0_collect_start is None:
@@ -2115,6 +2145,8 @@ class Go1UnityNode(BaseNode):
         self.inputs[self.data_in_id] = PortType.DATA
         self.relay_json_in_id = generate_uuid()
         self.inputs[self.relay_json_in_id] = PortType.DATA
+        self.state_change_relay_in_id = generate_uuid()
+        self.inputs[self.state_change_relay_in_id] = PortType.DATA
 
         self.out_active = generate_uuid()
         self.outputs[self.out_active] = PortType.DATA
@@ -2185,6 +2217,10 @@ class Go1UnityNode(BaseNode):
             # if relay_signature != self._last_relay_json:
             #     self._last_relay_json = relay_signature
             #     self._send_relay_json(relay_raw_json)
+
+        state_change_json = self.fetch_input_data(self.state_change_relay_in_id)
+        if state_change_json is not None:
+            self._send_relay_json(state_change_json)
 
         # Unity Connection no longer exposes target velocity outputs here.
         # Provide only active flag for downstream nodes.
@@ -4799,7 +4835,9 @@ class ServerSenderNode(BaseNode):
         self.inputs[self.in_flow] = PortType.FLOW
         self.out_flow = generate_uuid()
         self.outputs[self.out_flow] = PortType.FLOW
-        
+        self.out_state_change_json = generate_uuid()
+        self.outputs[self.out_state_change_json] = PortType.DATA
+
         self.state['action'] = 'Start Sender'  # "Start Sender" / "Stop Sender"
         self.state['server_url'] = SERVER_UPLOAD_URL_DEFAULT
         self.state['enable_state_change'] = False
@@ -4854,6 +4892,7 @@ class ServerSenderNode(BaseNode):
         now = time.monotonic()
         cooldown_ok = (now - self._last_request_ts) > 0.5
         motion_active, motion_snapshot = _go1_motion_snapshot()
+        self.output_data[self.out_state_change_json] = None
         should_send_state_change = False
         state_change_value = False
         was_state_change_enabled = self._last_state_change_enabled
@@ -4884,7 +4923,7 @@ class ServerSenderNode(BaseNode):
                     state_change_value = True
                     should_send_state_change = True
                 else:
-                    state_change_value = True #False
+                    state_change_value = False
                     if (now - self._last_state_change_send_mono) >= state_change_interval_sec:
                         should_send_state_change = True
 
@@ -4899,6 +4938,7 @@ class ServerSenderNode(BaseNode):
                     self._last_state_change_send_mono = now
                     self._last_motion_active = motion_active
                     self._last_state_change_value = state_change_value
+                self.output_data[self.out_state_change_json] = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
 
         # 토글 변경이 없어도 현재 의도 상태를 유지하도록 재요청 가능하게 처리
         if action == "Start Sender":
