@@ -1157,6 +1157,7 @@ class NodeUIRenderer:
         with dpg.node(tag=node.node_id, parent="node_editor", label="Unity Connection (Go1)"):
             with dpg.node_attribute(tag=node.in_flow, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Flow In")
             with dpg.node_attribute(tag=node.relay_json_in_id, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("Relay JSON")
+            with dpg.node_attribute(tag=node.state_change_relay_in_id, attribute_type=dpg.mvNode_Attr_Input): dpg.add_text("State Change JSON")
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_text("Unity PC IP", color=(100,255,100))
                 node.field_ip = dpg.add_input_text(width=140, default_value=getattr(go1_module, 'GO1_UNITY_IP', '192.168.50.246'))
@@ -1305,6 +1306,7 @@ class NodeUIRenderer:
                     default_value=float(getattr(go1_module, 'STATE_CHANGE_INTERVAL_SEC_DEFAULT', 0.2)),
                     step=0.05,
                 )
+            with dpg.node_attribute(tag=node.out_state_change_json, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("State Change JSON")
             with dpg.node_attribute(tag=node.out_flow, attribute_type=dpg.mvNode_Attr_Output): dpg.add_text("Flow Out")
 
     @staticmethod
