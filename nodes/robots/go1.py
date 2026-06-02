@@ -4851,6 +4851,8 @@ class ServerSenderNode(BaseNode):
         self._last_state_change_value = False
         self._state_change_inflight = False
         self._last_state_change_enabled = False
+        self._motion_active_stable = False   # debounced motion state
+        self._motion_off_hold_until = 0.0    # hold "active" for N sec after speed drops to 0
 
     def _post_state_change_payload(self, url, payload):
         try:
@@ -4891,7 +4893,11 @@ class ServerSenderNode(BaseNode):
         state_change_interval_sec = max(0.05, float(self.state.get('state_change_interval_sec', STATE_CHANGE_INTERVAL_SEC_DEFAULT)))
         now = time.monotonic()
         cooldown_ok = (now - self._last_request_ts) > 0.5
-        motion_active, motion_snapshot = _go1_motion_snapshot()
+        motion_active_raw, motion_snapshot = _go1_motion_snapshot()
+        # Debounce: once active, hold for 0.4s after raw signal drops to avoid noise oscillation
+        if motion_active_raw:
+            self._motion_off_hold_until = now + 0.4
+        motion_active = motion_active_raw or (now < self._motion_off_hold_until)
         self.output_data[self.out_state_change_json] = None
         should_send_state_change = False
         state_change_value = False
@@ -4935,11 +4941,13 @@ class ServerSenderNode(BaseNode):
                 ts_str = datetime.now().strftime("%H:%M:%S")
                 sc_val = bool(payload.get('state_change', False))
                 reason = str(payload.get('reason', '')).strip() or '-'
+                # Always update _last_motion_active so transition detection
+                # doesn't re-fire every cycle while HTTP is inflight.
+                self._last_motion_active = motion_active
+                self._last_state_change_value = state_change_value
                 http_ok = self._queue_state_change_payload(state_change_url, payload)
                 if http_ok:
                     self._last_state_change_send_mono = now
-                    self._last_motion_active = motion_active
-                    self._last_state_change_value = state_change_value
                     state_change_log_buffer.append(
                         f"[{ts_str}] HTTP  sc={sc_val} motion={motion_active} reason={reason}"
                     )
