@@ -3210,6 +3210,7 @@ class Go1ServerJsonRecvNode(BaseNode):
                 incoming_ts = parsed.get('timestamp')
                 if incoming_ts is not None and str(incoming_ts) == str(self._last_json_timestamp):
                     self._publish_state(raw_json, payload, True, True, 'OK', source)
+                    self.output_data[self.out_raw_json] = None  # Unity relay 차단
                     return self.out_flow
                 if incoming_ts is not None:
                     self._last_json_timestamp = incoming_ts
