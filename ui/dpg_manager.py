@@ -1803,9 +1803,9 @@ def delete_selection(sender, app_data):
 
 def __init_ui__():
     threading.Thread(target=network_monitor_thread, daemon=True).start()
-    
+
     dpg.create_context()
-    with dpg.handler_registry(): 
+    with dpg.handler_registry():
         dpg.add_key_press_handler(dpg.mvKey_Delete, callback=delete_selection)
 
     with dpg.window(tag="PrimaryWindow"):
@@ -1987,6 +1987,7 @@ def __init_ui__():
                 dpg.add_button(label="LOOP", callback=add_node_cb, user_data="LOGIC_LOOP")
                 dpg.add_button(label="CONST", callback=add_node_cb, user_data="CONSTANT")
                 dpg.add_button(label="PRINT", callback=add_node_cb, user_data="PRINT")
+                dpg.add_button(label="LOGGER", callback=add_node_cb, user_data="LOGGER")
                 dpg.add_spacer(width=20)
                 
                 dpg.add_text("MT4 Tools:", color=(255,200,0))
