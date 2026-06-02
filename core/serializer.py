@@ -116,18 +116,18 @@ def load_graph(filename):
     from ui.dpg_manager import clear_editor, NodeUIRenderer, set_item_pos_safe, add_dpg_link
 
     if not isinstance(filename, str):
-        write_log("Load Err: 선택된 파일이 없습니다.")
+        write_log("Load Err: no file selected.")
         return
     filename = filename.strip()
     if not filename:
-        write_log("Load Err: 선택된 파일이 없습니다.")
+        write_log("Load Err: no file selected.")
         return
 
     if not filename.endswith(".json"):
         filename += ".json"
     filepath = os.path.join(SAVE_DIR, filename)
     if not os.path.exists(filepath):
-        write_log(f"Load Err: 파일을 찾을 수 없습니다. ({filename})")
+        write_log(f"Load Err: file not found. ({filename})")
         return
     
     clear_editor()
@@ -142,7 +142,7 @@ def load_graph(filename):
                 continue
             node_type = n_data.get("type")
             if not node_type:
-                write_log("Load Warn: type 정보가 없는 노드를 건너뜁니다.")
+                write_log("Load Warn: skipping node with no type info.")
                 continue
             settings = n_data.get("settings", {})
 
@@ -152,14 +152,14 @@ def load_graph(filename):
 
             old_id = n_data.get("id")
             if old_id is None:
-                write_log("Load Warn: id 정보가 없는 노드를 건너뜁니다.")
+                write_log("Load Warn: skipping node with no id info.")
                 continue
 
             # 저장 파일의 node id를 그대로 재사용하면 DPG tag 충돌이 발생할 수 있어,
             # 로드시에는 항상 새 id를 발급한다.
             node = NodeFactory.create_node(node_type)
             if not node:
-                write_log(f"Load Warn: 알 수 없는 노드 타입을 건너뜁니다. ({node_type})")
+                write_log(f"Load Warn: skipping unknown node type. ({node_type})")
                 continue
 
             try:
@@ -177,7 +177,7 @@ def load_graph(filename):
                 except Exception:
                     pass
                 node_registry.pop(node.node_id, None)
-                write_log(f"Load Warn: 노드 복원 실패(type={node_type}, id={old_id}) - {node_err}")
+                write_log(f"Load Warn: failed to restore node (type={node_type}, id={old_id}) - {node_err}")
                 
         for l_data in data.get("links", []):
             if not isinstance(l_data, dict):

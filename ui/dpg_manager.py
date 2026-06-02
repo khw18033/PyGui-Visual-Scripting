@@ -1714,7 +1714,7 @@ def add_node_cb(s, a, u):
         node.node_id = new_id
         node_registry.pop(old_id, None)
         node_registry[new_id] = node
-        engine_module.write_log(f"[UI] duplicate node tag 감지: {old_id} -> {new_id}")
+        engine_module.write_log(f"[UI] duplicate node tag detected: {old_id} -> {new_id}")
 
     try:
         NodeUIRenderer.render(node)
@@ -1722,14 +1722,14 @@ def add_node_cb(s, a, u):
         # 렌더 실패 시 레지스트리 오염 방지
         if node_registry.get(node.node_id) is node:
             node_registry.pop(node.node_id, None)
-        engine_module.write_log(f"[UI] 노드 렌더 실패: type={u}, id={node.node_id}, err={e}")
+        engine_module.write_log(f"[UI] node render failed: type={u}, id={node.node_id}, err={e}")
         raise
 
 def save_cb(s, a): save_graph(dpg.get_value("file_name_input"))
 def load_cb(s, a):
     selected = dpg.get_value("file_list_combo")
     if not selected:
-        engine_module.write_log("Load Err: 파일 목록에서 먼저 선택하세요.")
+        engine_module.write_log("Load Err: please select a file from the list first.")
         return
     load_graph(selected)
 def update_file_list_ui(): update_ui_file_list()
@@ -1763,7 +1763,7 @@ def clear_editor():
             try:
                 dpg.delete_item(lid)
             except Exception as e:
-                engine_module.write_log(f"Link 삭제 중 오류: {e}")
+                engine_module.write_log(f"Error deleting link: {e}")
     
     # 2. 모든 노드 삭제 (선 삭제 후)
     for nid in list(node_registry.keys()): 
@@ -1771,7 +1771,7 @@ def clear_editor():
             try:
                 dpg.delete_item(nid)
             except Exception as e:
-                engine_module.write_log(f"Node 삭제 중 오류: {e}")
+                engine_module.write_log(f"Error deleting node: {e}")
     
     # 3. 레지스트리 초기화
     link_registry.clear()

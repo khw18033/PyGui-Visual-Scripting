@@ -1090,7 +1090,7 @@ def camera_worker_thread():
 
             elif cmd == 'STOP':
                 if camera_state['status'] == 'Running' and float(camera_state.get('duration', 0.0)) > 0.0:
-                    write_log("[Cam Timer] 카메라 타이머 종료")
+                    write_log("[Cam Timer] camera timer stopped")
                 camera_state['status'] = 'Stopping...'
                 camera_state['duration'] = 0.0
                 camera_state['first_frame_ready'] = False
@@ -1121,16 +1121,16 @@ def camera_worker_thread():
                 continue
             elapsed = time.time() - start_time
             if not camera_state.get('timer_started_logged', False):
-                write_log("[Cam Timer] 카메라 타이머 시작")
+                write_log("[Cam Timer] camera timer started")
                 camera_state['timer_started_logged'] = True
 
             interval_count = int(elapsed // 10)
             if interval_count > camera_state.get('last_interval_count', 0) and interval_count > 0:
-                write_log(f"[Cam Timer] {interval_count * 10}초 경과")
+                write_log(f"[Cam Timer] {interval_count * 10}s elapsed")
                 camera_state['last_interval_count'] = interval_count
 
             if elapsed >= float(camera_state.get('duration', 0.0)):
-                write_log("[Cam Timer] 카메라 타이머 종료")
+                write_log("[Cam Timer] camera timer stopped")
                 camera_state['status'] = 'Stopping...'
                 camera_state['duration'] = 0.0
                 for node in node_registry.values():
@@ -1151,7 +1151,7 @@ def camera_worker_thread():
             elapsed = time.time() - start_time
             interval_count = int(elapsed // 10)
             if interval_count > camera_state.get('last_interval_count', 0) and interval_count > 0:
-                write_log(f"[Cam Running] {interval_count * 10}초 경과")
+                write_log(f"[Cam Running] {interval_count * 10}s elapsed")
                 camera_state['last_interval_count'] = interval_count
 
         time.sleep(0.1)
@@ -1294,9 +1294,9 @@ def sender_manager_thread():
                 multi_sender_active = True
                 sender_state['status'] = 'Running'
                 if _is_under_dev_shm(upload_folder):
-                    write_log(f"[Server Sender] 연결: {url} | folder={upload_folder} | warmup={CAM_UPLOAD_WARMUP_SEC:.1f}s (/dev/shm)")
+                    write_log(f"[Server Sender] connected: {url} | folder={upload_folder} | warmup={CAM_UPLOAD_WARMUP_SEC:.1f}s (/dev/shm)")
                 else:
-                    write_log(f"[Server Sender] 연결: {url} | folder={upload_folder}")
+                    write_log(f"[Server Sender] connected: {url} | folder={upload_folder}")
                 
                 for config in CAMERA_CONFIG:
                     s_thread = threading.Thread(
@@ -1310,7 +1310,7 @@ def sender_manager_thread():
             elif cmd == 'STOP' and multi_sender_active:
                 multi_sender_active = False
                 sender_state['status'] = 'Stopped'
-                write_log("[Server Sender] 연결 해제")
+                write_log("[Server Sender] disconnected")
                 sender_threads.clear()
         
         time.sleep(0.1)
@@ -1881,15 +1881,15 @@ class Go1ActionNode(BaseNode):
         self._seq_gen = 0
 
     def _run_sequence(self, steps, seq_gen):
-        write_log(f"[GO1 ACTION SEQ] 시퀀스 시작: {len(steps)}단계")
+        write_log(f"[GO1 ACTION SEQ] sequence started: {len(steps)} steps")
         for i, step in enumerate(steps):
             if not self._seq_running or self._seq_gen != seq_gen:
-                write_log("[GO1 ACTION SEQ] 시퀀스 중단 (재시작 감지)")
+                write_log("[GO1 ACTION SEQ] sequence aborted (restart detected)")
                 break
             mode = _resolve_go1_action_mode(step, default_mode='Stand')
             v1 = _coerce_float(step.get('v1', step.get('value', 0.2)), 0.2)
             duration = _coerce_float(step.get('duration_sec', step.get('duration', 0.5)), 0.5)
-            write_log(f"[GO1 ACTION SEQ] 단계 {i+1}/{len(steps)} 시작: mode={mode} v1={v1} duration={duration}s")
+            write_log(f"[GO1 ACTION SEQ] step {i+1}/{len(steps)} start: mode={mode} v1={v1} duration={duration}s")
 
             if mode == "Stand":
                 go1_node_intent['stop'] = True
@@ -1911,7 +1911,7 @@ class Go1ActionNode(BaseNode):
                     go1_node_intent['trigger_time'] = time.monotonic()
                     time.sleep(0.02)  # 20ms: hold_timeout(100ms) 대비 5배 여유
 
-            write_log(f"[GO1 ACTION SEQ] 단계 {i+1}/{len(steps)} 완료")
+            write_log(f"[GO1 ACTION SEQ] step {i+1}/{len(steps)} done")
 
             if i < len(steps) - 1:
                 # 단계 간 정지: trigger_time 갱신 없이 stop만 설정 → driver가 소비 후 자연 만료
@@ -1923,7 +1923,7 @@ class Go1ActionNode(BaseNode):
 
         if self._seq_gen == seq_gen:
             self._seq_running = False
-        write_log("[GO1 ACTION SEQ] 시퀀스 완료")
+        write_log("[GO1 ACTION SEQ] sequence complete")
 
     def execute(self):
         if _go1_mission_run_id != self._last_run_id:
@@ -1947,7 +1947,7 @@ class Go1ActionNode(BaseNode):
                     mission_id_log = mission_action_payload.get('mission_id', 'unknown')
                     if action_type == 'sequence':
                         steps = mission_action_payload.get('steps', [])
-                        write_log(f"[GO1 ACTION] 시퀀스 미션 수신: id={mission_id_log} steps={len(steps)}")
+                        write_log(f"[GO1 ACTION] sequence mission received: id={mission_id_log} steps={len(steps)}")
                         if not self._seq_running:
                             self._seq_running = True
                             gen = self._seq_gen
@@ -1958,11 +1958,11 @@ class Go1ActionNode(BaseNode):
                             )
                             self._seq_thread.start()
                         else:
-                            write_log("[GO1 ACTION] 이전 시퀀스 실행 중 - 새 시퀀스 스킵")
+                            write_log("[GO1 ACTION] previous sequence running - skipping new sequence")
                         return self.out_flow
                     mode = _resolve_go1_action_mode(mission_action_payload, default_mode=mode)
                     v1 = _coerce_float(mission_action_payload.get('v1', mission_action_payload.get('value', v1)), v1)
-                    write_log(f"[GO1 ACTION] 단일 액션 수신: id={mission_id_log} mode={mode} v1={v1}")
+                    write_log(f"[GO1 ACTION] single action received: id={mission_id_log} mode={mode} v1={v1}")
 
         if mode == "Stand":
             go1_node_intent['stop'] = True
@@ -2585,13 +2585,13 @@ class Go1UnityAutonomyNode(BaseNode):
         # so users can perform R/Z calibration BEFORE pressing M in Unity.
         if not getattr(self, '_guidance_logged', False):
             write_log("\n" + "="*70)
-            write_log("[GO1 UNITY AUTONOMY] 자율주행 명령 대기 중")
-            write_log("R / Z 버튼을 눌러 현실과 가상 로봇의 각도를 맞추세요.")
+            write_log("[GO1 UNITY AUTONOMY] waiting for autonomy command")
+            write_log("Press R / Z to align the real and virtual robot angles.")
             write_log("")
-            write_log("  R : Unity 각도를 90도로 맞추고 그것에 맞춰 현실 로봇의 각도 이동")
-            write_log("  Z : Unity 각도만 90도로 조정")
+            write_log("  R : Set Unity angle to 90 degrees and align real robot accordingly")
+            write_log("  Z : Adjust Unity angle to 90 degrees only")
             write_log("")
-            write_log("각도 조정이 끝났다면 Unity에서 M 버튼을 눌러 자율 주행을 시작하세요.")
+            write_log("Once angle is aligned, press M in Unity to start autonomous driving.")
             write_log("="*70)
             self._guidance_logged = True
 
@@ -3595,10 +3595,10 @@ class Go1AutoAvoidanceNode(BaseNode):
                         f"speed={move_speed:.2f} | duration={move_duration:.1f}s"
                     )
                 except Exception:
-                    write_log('[GO1 AUTO AVOID] 움직임 주입 실패 — 정지 명령 대체 실행')
+                    write_log('[GO1 AUTO AVOID] motion injection failed — fallback stop command sent')
                     self._trigger_robot_stop(hold_sec=4.0, status='HARD_OBSTACLE_MOVE_FAIL_STOP')
             else:
-                write_log('[GO1 AUTO AVOID] JSON RX 노드의 움직임 주입 메서드를 찾을 수 없음 — 정지 명령 전송')
+                write_log('[GO1 AUTO AVOID] motion inject method not found on JSON RX node — stop command sent')
                 self._trigger_robot_stop(hold_sec=4.0, status='HARD_OBSTACLE_NO_INJECTOR_STOP')
 
             return self.out_flow
@@ -3631,10 +3631,10 @@ class Go1AutoAvoidanceNode(BaseNode):
                         f"speed={move_speed:.2f}"
                     )
                 except Exception:
-                    write_log('[GO1 AUTO AVOID] 백업 동작 주입 실패 — 대체 이동 불가')
+                    write_log('[GO1 AUTO AVOID] backup motion injection failed — no alternative move available')
                     self._trigger_robot_stop(hold_sec=4.0, status='STOP_THEN_BACK_MOVE_FAIL')
             else:
-                write_log('[GO1 AUTO AVOID] JSON RX 노드의 백업 메서드를 찾을 수 없음 — 대체 이동 불가')
+                write_log('[GO1 AUTO AVOID] backup method not found on JSON RX node — no alternative move available')
                 self._trigger_robot_stop(hold_sec=4.0, status='STOP_THEN_BACK_NO_INJECTOR')
 
             return self.out_flow
@@ -3709,7 +3709,7 @@ class Go1MissionReceiverNode(BaseNode):
             _go1_mission_run_id += 1
             self._last_signature = ''
             self._last_poll_mono = 0.0
-            write_log("[GO1 MISSION RX] 스크립트 재시작 감지 - 시그니처 초기화")
+            write_log("[GO1 MISSION RX] restart detected - resetting signature")
 
         # go1가 연결된 상태에서 배터리 값이 아직 수신되지 않은 경우 폴링 대기
         # (SDK 초기화 직후 battery=0으로 나오는 race condition 방지)
@@ -3826,7 +3826,7 @@ def _evaluate_mission_conditions(conditions):
     if _coerce_bool(conditions.get('ep01_connected', False), False):
         _ep_dash, _ = _get_ep01_dashboard()
         if _ep_dash is None:
-            write_log('[CONDITION] ep01 모듈을 찾을 수 없음 (nodes.robots.ep01 / ep01 모두 미로드)')
+            write_log('[CONDITION] ep01 module not found (nodes.robots.ep01 / ep01 both not loaded)')
             return False, 'ep01 module not loaded'
         hw = _ep_dash.get('hw_link', 'Offline')
         write_log(f'[CONDITION] ep01 hw_link={hw!r}')
@@ -3882,7 +3882,7 @@ class Go1MissionDecisionNode(BaseNode):
         raw_json = self.fetch_input_data(self.in_raw_json)
         payload, signature = _normalize_mission_container(raw_json)
         if not payload:
-            write_log("[GO1 MISSION DECIDE] 입력 payload 없음 - 스킵")
+            write_log("[GO1 MISSION DECIDE] no input payload - skipping")
             return None
 
         mission_id = _extract_mission_id(payload)
@@ -3923,7 +3923,7 @@ class Go1MissionDecisionNode(BaseNode):
 
         if mission_id and signature and signature != self._last_post_signature:
             self._last_post_signature = signature
-            write_log(f"[GO1 MISSION DECIDE] 미션={mission_id} type={mission_type} mode={mode} -> {decision} (이유: {reason})")
+            write_log(f"[GO1 MISSION DECIDE] mission={mission_id} type={mission_type} mode={mode} -> {decision} (reason: {reason})")
             try:
                 status_code, body = _post_json_payload(decision_url, post_payload, timeout_sec)
                 write_log(f"[GO1 MISSION DECIDE] POST {decision_url} -> rc={status_code}")
@@ -3950,9 +3950,9 @@ class Go1MissionDecisionNode(BaseNode):
                     'last_error': str(e),
                     'updated_ts': time.time(),
                 })
-                write_log(f"[GO1 MISSION DECIDE] POST 실패 (서버 없음 등): {e} → 결정은 {decision}으로 계속 진행")
+                write_log(f"[GO1 MISSION DECIDE] POST failed (server unavailable etc.): {e} -> continuing with decision={decision}")
         elif mission_id and signature and signature == self._last_post_signature:
-            write_log(f"[GO1 MISSION DECIDE] 중복 미션 스킵: {mission_id}")
+            write_log(f"[GO1 MISSION DECIDE] duplicate mission skipped: {mission_id}")
         elif not mission_id:
             go1_mission_state.update({
                 'status': 'Rejected',
@@ -4004,7 +4004,7 @@ class Go1MissionDispatchNode(BaseNode):
         decision = self.fetch_input_data(self.in_decision)
         payload, signature = _normalize_mission_container(raw_json)
         if not payload:
-            write_log("[GO1 MISSION DISPATCH] 입력 payload 없음 - 스킵")
+            write_log("[GO1 MISSION DISPATCH] no input payload - skipping")
             return None
 
         mission_id = _extract_mission_id(payload)
@@ -4033,14 +4033,14 @@ class Go1MissionDispatchNode(BaseNode):
             if signature and signature != self._last_dispatch_signature:
                 self._last_dispatch_signature = signature
                 action_preview = (action_json[:120] + '...') if action_json and len(action_json) > 120 else action_json
-                write_log(f"[GO1 MISSION DISPATCH] 미션 디스패치: {mission_id or 'unknown'}")
+                write_log(f"[GO1 MISSION DISPATCH] mission dispatched: {mission_id or 'unknown'}")
                 write_log(f"[GO1 MISSION DISPATCH] action_json: {action_preview}")
             elif signature and signature == self._last_dispatch_signature:
-                write_log(f"[GO1 MISSION DISPATCH] 중복 미션 스킵: {mission_id}")
+                write_log(f"[GO1 MISSION DISPATCH] duplicate mission skipped: {mission_id}")
         else:
             path_json = ''
             action_json = ''
-            write_log(f"[GO1 MISSION DISPATCH] 미션 거부됨: {mission_id or 'unknown'} (decision={decision})")
+            write_log(f"[GO1 MISSION DISPATCH] mission rejected: {mission_id or 'unknown'} (decision={decision})")
             go1_mission_state.update({
                 'status': 'Rejected',
                 'mission_id': mission_id,
@@ -4178,7 +4178,7 @@ class VideoSourceNode(BaseNode):
             camera_state['start_time'] = time.time()
             camera_state['timer_started_logged'] = False
             camera_state['last_interval_count'] = 0
-            write_log("[Cam Timer] 첫 프레임 수신 - 타이머 시작")
+            write_log("[Cam Timer] first frame received - timer started")
 
         self.output_data[self.out_frame] = frame
         return None
@@ -4410,7 +4410,7 @@ class DepthAnythingV2Node(BaseNode):
                 if _coerce_bool(self.state.get('save_json', False), False):
                     json_path = str(self.state.get('json_path', 'depth_da2_data.json')).strip() or 'depth_da2_data.json'
                     if not _safe_json_dump(json_path, payload):
-                        write_log(f"[VIS_DEPTH_DA2] JSON 저장 실패: path={json_path}")
+                        write_log(f"[VIS_DEPTH_DA2] JSON save failed: path={json_path}")
 
                 self._last_depth = depth_map
                 self._last_vis = vis_color
@@ -4428,7 +4428,7 @@ class DepthAnythingV2Node(BaseNode):
                 if _coerce_bool(self.state.get('save_json', False), False):
                     json_path = str(self.state.get('json_path', 'depth_da2_data.json')).strip() or 'depth_da2_data.json'
                     if not _safe_json_dump(json_path, payload):
-                        write_log(f"[VIS_DEPTH_DA2] JSON 저장 실패: path={json_path}")
+                        write_log(f"[VIS_DEPTH_DA2] JSON save failed: path={json_path}")
                 self._last_json = payload_json
                 self._risk_hit_count = 0
                 depth_map = self._last_depth
@@ -4550,7 +4550,7 @@ class ArUcoDetectNode(BaseNode):
                 try:
                     go1_sock.sendto(payload_json.encode('utf-8'), (GO1_UNITY_IP, ARUCO_UDP_PORT))
                 except Exception as e:
-                    write_log(f"[VIS_ARUCO] UDP 전송 실패: {e}")
+                    write_log(f"[VIS_ARUCO] UDP send failed: {e}")
 
             json_path = str(self.state.get('json_path', 'aruco_data.json')).strip() or 'aruco_data.json'
             try:
@@ -4560,7 +4560,7 @@ class ArUcoDetectNode(BaseNode):
                 with open(json_path, 'w', encoding='utf-8') as f:
                     f.write(payload_json)
             except Exception as e:
-                write_log(f"[VIS_ARUCO] JSON 저장 실패: {e} | path={json_path}")
+                write_log(f"[VIS_ARUCO] JSON save failed: {e} | path={json_path}")
 
         self.output_data[self.out_frame] = draw
         self.output_data[self.out_data] = detected
@@ -4691,7 +4691,7 @@ class VideoFrameSaveNode(BaseNode):
             except Exception as e:
                 delete_fail_count += 1
                 if delete_fail_count == 1:
-                    write_log(f"[VIS_SAVE] MaxFrames 삭제 실패(예시): {os.path.basename(old_file)} ({e})")
+                    write_log(f"[VIS_SAVE] MaxFrames delete failed: {os.path.basename(old_file)} ({e})")
 
     def execute(self):
         global camera_save_state
@@ -4720,7 +4720,7 @@ class VideoFrameSaveNode(BaseNode):
 
         if not is_saving:
             if self._save_start_time is not None:
-                write_log("[VIS_SAVE] 저장 중단")
+                write_log("[VIS_SAVE] saving stopped")
                 self._save_start_time = None
                 self._save_armed = False
                 camera_save_state['status'] = 'Stopped'
@@ -4737,16 +4737,16 @@ class VideoFrameSaveNode(BaseNode):
                 os.makedirs(folder, exist_ok=True)
                 self._sync_frame_index_from_folder(folder)
                 self._save_armed = True
-                write_log(f"[VIS_SAVE] 저장 준비: {folder} (첫 프레임 수신 후 타이머 시작)")
+                write_log(f"[VIS_SAVE] ready to save: {folder} (timer starts on first frame)")
             except Exception as e:
-                write_log(f"[VIS_SAVE] 폴더 생성 실패: {e}")
+                write_log(f"[VIS_SAVE] failed to create folder: {e}")
                 return self.out_flow
 
         # 타이머 체크
         if self._save_start_time and use_timer and duration > 0:
             elapsed = time.time() - self._save_start_time
             if elapsed > duration:
-                write_log(f"[VIS_SAVE] 타이머 종료: {duration:.1f}s 경과")
+                write_log(f"[VIS_SAVE] timer expired: {duration:.1f}s elapsed")
                 self._save_start_time = None
                 self._timer_completed_this_run = True
                 camera_save_state['status'] = 'Stopped'
@@ -4767,7 +4767,7 @@ class VideoFrameSaveNode(BaseNode):
                     self._save_start_time = time.time()
                     camera_save_state['status'] = 'Running'
                     camera_save_state['start_time'] = self._save_start_time
-                    write_log("[VIS_SAVE] 첫 프레임 수신 - 타이머 시작")
+                    write_log("[VIS_SAVE] first frame received - timer started")
 
                 self._frame_index += 1
                 filename = os.path.join(folder, f"front_{self._frame_index:06d}.jpg")
@@ -4777,7 +4777,7 @@ class VideoFrameSaveNode(BaseNode):
                     self._frame_count += 1
                     camera_save_state['frame_count'] = self._frame_count
             except Exception as e:
-                write_log(f"[VIS_SAVE] 프레임 저장 실패: {e}")
+                write_log(f"[VIS_SAVE] frame save failed: {e}")
 
         # Max Frames 정리 (타이머 OFF 상태에서만)
         if self._save_start_time is not None and not use_timer:

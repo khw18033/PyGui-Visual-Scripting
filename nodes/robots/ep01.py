@@ -731,7 +731,7 @@ def ep_comm_thread():
             elapsed = time.monotonic() - _ep_pending_action_start_time
             # 액션 타임아웃으로 간주하고 다음 액션 처리
             if elapsed > EP_ARM_ACTION_TIMEOUT:
-                write_log(f"EP Arm: 액션 타임아웃 ({elapsed:.2f}s), 다음 액션으로 넘어감")
+                write_log(f"EP Arm: action timeout ({elapsed:.2f}s), moving to next action")
                 _ep_pending_arm_action = None
 
         # 진행 중인 액션이 없으면, 큐에서 새로운 액션 꺼냄
@@ -746,7 +746,7 @@ def ep_comm_thread():
                     if action['type'] == 'move':
                         x = float(action['target_x'])
                         y = float(action['target_y'])
-                        write_log(f"EP: 팔 이동 ({x:.1f}, {y:.1f})")
+                        write_log(f"EP: arm move ({x:.1f}, {y:.1f})")
                         ep_robot_inst.robotic_arm.moveto(x=x, y=y)
                         _ep_pending_arm_action = action
                         _ep_pending_action_start_time = time.monotonic()
@@ -756,7 +756,7 @@ def ep_comm_thread():
                         
                     elif action['type'] == 'grip':
                         opening = bool(action['open'])
-                        write_log(f"EP: 그리퍼 {'열기' if opening else '닫기'}")
+                        write_log(f"EP: gripper {'open' if opening else 'close'}")
                         if opening:
                             ep_robot_inst.gripper.open(power=EP_GRIPPER_POWER)
                         else:
@@ -766,7 +766,7 @@ def ep_comm_thread():
                         
                 except Exception as e:
                     msg = str(e)
-                    write_log(f"EP 팔 액션 오류: {msg}")
+                    write_log(f"EP arm action error: {msg}")
                     if "already performing" in msg.lower():
                         # 재시도 처리
                         retry = int(action.get('retry', 0)) + 1
@@ -775,9 +775,9 @@ def ep_comm_thread():
                             time.sleep(EP_ARM_RETRY_DELAY)
                             with _ep_arm_lock:
                                 ep_arm_action_queue.insert(0, action)
-                            write_log(f"EP 팔 액션: 재시도 {retry}/{EP_ARM_MAX_RETRY}")
+                            write_log(f"EP arm action: retry {retry}/{EP_ARM_MAX_RETRY}")
                         else:
-                            write_log("EP 팔 액션: 최대 재시도 횟수 초과, 삭제됨")
+                            write_log("EP arm action: max retries exceeded, dropped")
                             _ep_pending_arm_action = None
                     else:
                         # 다른 오류는 액션 취소
@@ -789,7 +789,7 @@ def ep_comm_thread():
         if _ep_pending_gripper_action is not None:
             elapsed_g = time.monotonic() - _ep_pending_gripper_start_time
             if elapsed_g > EP_ARM_ACTION_TIMEOUT:
-                write_log(f"EP Gripper: 액션 타임아웃 ({elapsed_g:.2f}s), 다음 액션으로 넘어감")
+                write_log(f"EP Gripper: action timeout ({elapsed_g:.2f}s), moving to next action")
                 _ep_pending_gripper_action = None
 
         if _ep_pending_gripper_action is None:
@@ -801,7 +801,7 @@ def ep_comm_thread():
             if gaction is not None:
                 try:
                     opening = bool(gaction['open'])
-                    write_log(f"EP: 그리퍼 {'열기' if opening else '닫기'} (gripper queue)")
+                    write_log(f"EP: gripper {'open' if opening else 'close'} (gripper queue)")
                     if opening:
                         ep_robot_inst.gripper.open(power=EP_GRIPPER_POWER)
                     else:
@@ -826,7 +826,7 @@ def ep_comm_thread():
 
                 except Exception as e:
                     msg = str(e)
-                    write_log(f"EP 그리퍼 액션 오류: {msg}")
+                    write_log(f"EP gripper action error: {msg}")
                     if "already performing" in msg.lower():
                         retry = int(gaction.get('retry', 0)) + 1
                         if retry <= EP_ARM_MAX_RETRY:
@@ -834,9 +834,9 @@ def ep_comm_thread():
                             time.sleep(EP_ARM_RETRY_DELAY)
                             with _ep_gripper_lock:
                                 ep_gripper_action_queue.insert(0, gaction)
-                            write_log(f"EP 그리퍼 액션: 재시도 {retry}/{EP_ARM_MAX_RETRY}")
+                            write_log(f"EP gripper action: retry {retry}/{EP_ARM_MAX_RETRY}")
                         else:
-                            write_log("EP 그리퍼 액션: 최대 재시도 횟수 초과, 삭제됨") 
+                            write_log("EP gripper action: max retries exceeded, dropped")
                             _ep_pending_gripper_action = None
                     else:
                         _ep_pending_gripper_action = None
@@ -847,12 +847,12 @@ def ep_comm_thread():
 
         if ep_node_intent['stop'] or not active:
             if is_moving:
-                write_log("EP: 정지 신호 (Clean Brake)")
+                write_log("EP: stop signal (Clean Brake)")
                 try:
                     # 정지 명령을 한 번만 전송
                     ep_robot_inst.chassis.drive_wheels(w1=0, w2=0, w3=0, w4=0, timeout=0.1)
                 except Exception as e:
-                    write_log(f"EP 정지 오류: {e}")
+                    write_log(f"EP stop error: {e}")
                 
                 is_moving = False
                 last_send_time = 0.0
@@ -1317,15 +1317,15 @@ class EPVideoFrameSaveNode(BaseNode):
             try:
                 os.makedirs(folder, exist_ok=True)
                 self._sync_frame_index_from_folder(folder)
-                write_log(f"[EP_VIS_SAVE] 저장 시작: {folder}")
+                write_log(f"[EP_VIS_SAVE] saving started: {folder}")
             except Exception as e:
-                write_log(f"[EP_VIS_SAVE] 폴더 생성 실패: {e}")
+                write_log(f"[EP_VIS_SAVE] failed to create folder: {e}")
                 return self.out_flow
 
         if self._save_start_time and use_timer and duration > 0:
             elapsed = time.time() - self._save_start_time
             if elapsed > duration:
-                write_log(f"[EP_VIS_SAVE] 타이머 종료: {duration:.1f}s 경과")
+                write_log(f"[EP_VIS_SAVE] timer expired: {duration:.1f}s elapsed")
                 self._save_start_time = None
                 self._timer_completed_this_run = True
                 ep_camera_save_state['status'] = 'Stopped'
@@ -1343,7 +1343,7 @@ class EPVideoFrameSaveNode(BaseNode):
                     self._frame_count += 1
                     ep_camera_save_state['frame_count'] = self._frame_count
             except Exception as e:
-                write_log(f"[EP_VIS_SAVE] 프레임 저장 실패: {e}")
+                write_log(f"[EP_VIS_SAVE] frame save failed: {e}")
 
         if self._save_start_time is not None and not use_timer:
             self._prune_saved_frames(folder, max_frames)
@@ -1687,7 +1687,7 @@ class EP01MissionReceiverNode(BaseNode):
             _ep01_mission_run_id += 1
             self._last_signature = ''
             self._last_poll_mono = 0.0
-            write_log("[EP01 MISSION RX] 스크립트 재시작 감지 - 시그니처 초기화")
+            write_log("[EP01 MISSION RX] restart detected - resetting signature")
 
         mode = str(self.state.get('mode', 'HTTP')).strip().upper()
         source = str(self.state.get('source', EP01_MISSION_PENDING_URL)).strip()
@@ -1785,7 +1785,7 @@ class EP01MissionDecisionNode(BaseNode):
         raw_json = self.fetch_input_data(self.in_raw_json)
         payload, signature = _normalize_mission_container(raw_json)
         if not payload:
-            write_log("[EP01 MISSION DECIDE] 입력 payload 없음 - 스킵")
+            write_log("[EP01 MISSION DECIDE] no input payload - skipping")
             return None
 
         mission_id   = _extract_mission_id(payload)
@@ -1819,7 +1819,7 @@ class EP01MissionDecisionNode(BaseNode):
 
         if mission_id and signature and signature != self._last_post_signature:
             self._last_post_signature = signature
-            write_log(f"[EP01 MISSION DECIDE] 미션={mission_id} type={mission_type} -> {decision} ({reason})")
+            write_log(f"[EP01 MISSION DECIDE] mission={mission_id} type={mission_type} -> {decision} ({reason})")
             try:
                 status_code, body = _post_json_payload(decision_url, {'mission_id': mission_id, 'decision': decision}, timeout_sec)
                 write_log(f"[EP01 MISSION DECIDE] POST {decision_url} -> rc={status_code}")
@@ -1838,9 +1838,9 @@ class EP01MissionDecisionNode(BaseNode):
                     'decision': decision, 'decision_reason': reason,
                     'source': decision_url, 'last_error': str(e), 'updated_ts': time.time(),
                 })
-                write_log(f"[EP01 MISSION DECIDE] POST 실패: {e} → {decision}으로 계속 진행")
+                write_log(f"[EP01 MISSION DECIDE] POST failed: {e} -> continuing with decision={decision}")
         elif mission_id and signature == self._last_post_signature:
-            write_log(f"[EP01 MISSION DECIDE] 중복 미션 스킵: {mission_id}")
+            write_log(f"[EP01 MISSION DECIDE] duplicate mission skipped: {mission_id}")
         elif not mission_id:
             ep01_mission_state.update({
                 'status': 'Rejected', 'mission_id': '', 'mission_type': mission_type,
@@ -1886,7 +1886,7 @@ class EP01MissionDispatchNode(BaseNode):
         decision = self.fetch_input_data(self.in_decision)
         payload, signature = _normalize_mission_container(raw_json)
         if not payload:
-            write_log("[EP01 MISSION DISPATCH] 입력 payload 없음 - 스킵")
+            write_log("[EP01 MISSION DISPATCH] no input payload - skipping")
             return None
 
         mission_id = _extract_mission_id(payload)
@@ -1906,13 +1906,13 @@ class EP01MissionDispatchNode(BaseNode):
             if signature and signature != self._last_dispatch_signature:
                 self._last_dispatch_signature = signature
                 preview = (action_json[:120] + '...') if action_json and len(action_json) > 120 else action_json
-                write_log(f"[EP01 MISSION DISPATCH] 미션 디스패치: {mission_id or 'unknown'}")
+                write_log(f"[EP01 MISSION DISPATCH] mission dispatched: {mission_id or 'unknown'}")
                 write_log(f"[EP01 MISSION DISPATCH] action_json: {preview}")
             elif signature and signature == self._last_dispatch_signature:
-                write_log(f"[EP01 MISSION DISPATCH] 중복 미션 스킵: {mission_id}")
+                write_log(f"[EP01 MISSION DISPATCH] duplicate mission skipped: {mission_id}")
         else:
             action_json = ''
-            write_log(f"[EP01 MISSION DISPATCH] 미션 거부됨: {mission_id or 'unknown'} (decision={decision})")
+            write_log(f"[EP01 MISSION DISPATCH] mission rejected: {mission_id or 'unknown'} (decision={decision})")
             ep01_mission_state.update({
                 'status': 'Rejected', 'mission_id': mission_id,
                 'mission_type': _extract_mission_type(payload),
@@ -1942,14 +1942,14 @@ class EP01MissionActionNode(BaseNode):
         self._seq_gen = 0
 
     def _run_sequence(self, steps, seq_gen):
-        write_log(f"[EP01 ACTION SEQ] 시퀀스 시작: {len(steps)}단계")
+        write_log(f"[EP01 ACTION SEQ] sequence started: {len(steps)} steps")
         for i, step in enumerate(steps):
             if not self._seq_running or self._seq_gen != seq_gen:
-                write_log("[EP01 ACTION SEQ] 시퀀스 중단 (재시작 감지)")
+                write_log("[EP01 ACTION SEQ] sequence aborted (restart detected)")
                 break
             channel  = str(step.get('channel', 'stop')).strip().lower()
             duration = _coerce_float(step.get('duration_sec', step.get('duration', 0.5)), 0.5)
-            write_log(f"[EP01 ACTION SEQ] 단계 {i+1}/{len(steps)}: channel={channel}")
+            write_log(f"[EP01 ACTION SEQ] step {i+1}/{len(steps)}: channel={channel}")
 
             if channel == 'drive':
                 vx = _coerce_float(step.get('vx', 0.0), 0.0)
@@ -2004,11 +2004,11 @@ class EP01MissionActionNode(BaseNode):
                 ep_node_intent['stop'] = True
                 time.sleep(0.15)
 
-            write_log(f"[EP01 ACTION SEQ] 단계 {i+1}/{len(steps)} 완료")
+            write_log(f"[EP01 ACTION SEQ] step {i+1}/{len(steps)} done")
 
         if self._seq_gen == seq_gen:
             self._seq_running = False
-        write_log("[EP01 ACTION SEQ] 시퀀스 완료")
+        write_log("[EP01 ACTION SEQ] sequence complete")
 
     def execute(self):
         if _ep01_mission_run_id != self._last_run_id:
@@ -2035,7 +2035,7 @@ class EP01MissionActionNode(BaseNode):
 
         if action_type == 'sequence':
             steps = payload.get('steps', [])
-            write_log(f"[EP01 ACTION] 시퀀스 미션 수신: id={mission_id_log} steps={len(steps)}")
+            write_log(f"[EP01 ACTION] sequence mission received: id={mission_id_log} steps={len(steps)}")
             if not self._seq_running:
                 self._seq_running = True
                 gen = self._seq_gen
@@ -2043,10 +2043,10 @@ class EP01MissionActionNode(BaseNode):
                     target=self._run_sequence, args=(steps, gen), daemon=True)
                 self._seq_thread.start()
             else:
-                write_log("[EP01 ACTION] 이전 시퀀스 실행 중 - 새 시퀀스 스킵")
+                write_log("[EP01 ACTION] previous sequence running - skipping new sequence")
         else:
             channel = str(payload.get('channel', 'stop')).strip().lower()
-            write_log(f"[EP01 ACTION] 단일 액션 수신: id={mission_id_log} channel={channel}")
+            write_log(f"[EP01 ACTION] single action received: id={mission_id_log} channel={channel}")
             if channel == 'drive':
                 vx = _coerce_float(payload.get('vx', 0.0), 0.0)
                 vy = _coerce_float(payload.get('vy', 0.0), 0.0)
