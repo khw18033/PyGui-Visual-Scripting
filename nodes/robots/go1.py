@@ -841,15 +841,20 @@ def _go1_motion_snapshot():
     auto_status = str(go1_auto_avoidance_data.get('status', '')).strip().upper()
     json_motion_active = bool(go1_server_json_data.get('motion_active', False))
 
+    # If commanded velocity is effectively zero, skip actual-velocity check entirely.
+    # This prevents SDK noise (stance oscillation, mode 1↔2 transitions) from being
+    # misread as motion when Unity teleop or other sources command vx=vy=wz=0.
+    cmd_nonzero = any(abs(value) > 1e-4 for value in (vx_cmd, vy_cmd, wz_cmd))
     sdk_confirmed = bool(go1_state.get('sdk_confirmed', False))
-    if sdk_confirmed:
+    if not cmd_nonzero:
+        speed_active = False
+    elif sdk_confirmed:
         vx_actual = _coerce_float(go1_state.get('vx_actual', 0.0), 0.0)
         vy_actual = _coerce_float(go1_state.get('vy_actual', 0.0), 0.0)
         wz_actual = _coerce_float(go1_state.get('wz_actual', 0.0), 0.0)
         speed_active = any(abs(v) > ACTUAL_SPEED_THRESHOLD for v in (vx_actual, vy_actual, wz_actual))
     else:
-        # Simulation or SDK offline: fall back to command-based detection
-        speed_active = any(abs(value) > 1e-4 for value in (vx_cmd, vy_cmd, wz_cmd))
+        speed_active = True  # cmd_nonzero and no SDK feedback → trust the command
     motion_active = bool(
         json_motion_active
         or special_active
