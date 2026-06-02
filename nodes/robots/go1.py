@@ -230,6 +230,7 @@ go1_unity_data = {
     'wz': 0.0,
     'estop': 0,
     'active': False,
+    '_recv_mono': 0.0,
 }
 
 go1_estop_hold_until = 0.0
@@ -1162,16 +1163,22 @@ async def send_image_async(session, filepath, camera_id, server_url):
     try:
         if not os.path.exists(filepath):
             return
+        t_file_mtime = os.path.getmtime(filepath)
         with open(filepath, 'rb') as f:
             file_data = f.read()
         source_name = os.path.basename(filepath)
         upload_name = f"{camera_id}_{int(time.time() * 1000)}_{source_name}"
-        
+
         form = aiohttp.FormData()
         form.add_field('camera_id', camera_id)
         form.add_field('file', file_data, filename=upload_name, content_type='image/jpeg')
-        
+
+        t_send_start = time.time()
         async with session.post(server_url, data=form, timeout=aiohttp.ClientTimeout(total=3.5)) as response:
+            t_done = time.time()
+            response_ms = (t_done - t_file_mtime) * 1000
+            transfer_ms = (t_done - t_send_start) * 1000
+            write_log(f"[PERF] ResponseTime={response_ms:.1f}ms TransferTime={transfer_ms:.1f}ms file={source_name}")
             if response.status != 200:
                 response_text = (await response.text()).strip()
                 if response_text:
@@ -1540,6 +1547,7 @@ def go1_keepalive_thread():
             last_unity_cmd_time = tnow
             go1_dashboard['unity_link'] = "Active"
             go1_unity_data['vx'], go1_unity_data['vy'], go1_unity_data['wz'], go1_unity_data['estop'] = got
+            go1_unity_data['_recv_mono'] = tnow
 
         # Unity teleop is only considered when GO1_UNITY node is present and enabled.
         unity_teleop_enabled = _has_go1_unity_node() and bool(go1_node_intent.get('use_unity_cmd', False))
@@ -1753,6 +1761,12 @@ def go1_keepalive_thread():
                 try:
                     udp.SetSend(cmd)
                     udp.Send()
+                    _recv_t = go1_unity_data.get('_recv_mono', 0.0)
+                    if _recv_t > 0.0 and (abs(out_vx) > 1e-4 or abs(out_vy) > 1e-4 or abs(out_wz) > 1e-4):
+                        e2e_ms = (time.monotonic() - _recv_t) * 1000.0
+                        if 0.0 < e2e_ms < 2000.0:
+                            write_log(f"[PERF] E2ELatency={e2e_ms:.1f}ms reason={go1_state.get('reason', '')}")
+                        go1_unity_data['_recv_mono'] = 0.0
                 except Exception:
                     pass
 
