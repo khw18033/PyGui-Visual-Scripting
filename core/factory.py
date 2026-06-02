@@ -2,8 +2,8 @@ import importlib
 from core.engine import generate_uuid, node_registry
 from core.config import GO1_MODULE_NAME
 from nodes.common import (
-    StartNode, ConditionKeyNode, LogicIfNode, LogicLoopNode, 
-    ConstantNode, PrintNode, LoggerNode
+    StartNode, ConditionKeyNode, LogicIfNode, LogicLoopNode,
+    ConstantNode, PrintNode, LoggerNode, Go1StateChangeLoggerNode
 )
 from nodes.robots.mt4 import (
     MT4CommandActionNode, UniversalRobotNode, MT4RobotDriver, 
@@ -88,6 +88,7 @@ class NodeFactory:
         elif node_type == "CONSTANT": node = ConstantNode(node_id)
         elif node_type == "PRINT": node = PrintNode(node_id)
         elif node_type == "LOGGER": node = LoggerNode(node_id)
+        elif node_type == "GO1_SC_LOGGER": node = Go1StateChangeLoggerNode(node_id)
         elif node_type == "MT4_DRIVER": node = UniversalRobotNode(node_id, MT4RobotDriver(), "MT4 Driver", "MT4_DRIVER")
         elif node_type == "MT4_KEYBOARD": node = MT4KeyboardNode(node_id)
         elif node_type == "MT4_UNITY": node = MT4UnityNode(node_id)

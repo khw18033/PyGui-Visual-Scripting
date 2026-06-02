@@ -16,7 +16,7 @@ from datetime import datetime
 from collections import deque
 
 from nodes.base import BaseNode, BaseRobotDriver
-from core.engine import generate_uuid, PortType, write_log, node_registry
+from core.engine import generate_uuid, PortType, write_log, node_registry, state_change_log_buffer
 from core.go1_config import (
     NETWORK_CONFIG,
     ROBOT_CONTROL_CONFIG,
@@ -4919,13 +4919,11 @@ class ServerSenderNode(BaseNode):
                 elif (now - self._last_state_change_send_mono) >= state_change_interval_sec:
                     should_send_state_change = True
             else:
+                state_change_value = False
                 if motion_transition:
-                    state_change_value = True
                     should_send_state_change = True
-                else:
-                    state_change_value = False
-                    if (now - self._last_state_change_send_mono) >= state_change_interval_sec:
-                        should_send_state_change = True
+                elif (now - self._last_state_change_send_mono) >= state_change_interval_sec:
+                    should_send_state_change = True
 
             if should_send_state_change:
                 payload = _build_go1_state_change_payload(
@@ -4934,11 +4932,22 @@ class ServerSenderNode(BaseNode):
                     motion_snapshot,
                     source='GO1_SERVER_SENDER',
                 )
-                if self._queue_state_change_payload(state_change_url, payload):
+                ts_str = datetime.now().strftime("%H:%M:%S")
+                sc_val = bool(payload.get('state_change', False))
+                reason = str(payload.get('reason', '')).strip() or '-'
+                http_ok = self._queue_state_change_payload(state_change_url, payload)
+                if http_ok:
                     self._last_state_change_send_mono = now
                     self._last_motion_active = motion_active
                     self._last_state_change_value = state_change_value
-                self.output_data[self.out_state_change_json] = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+                    state_change_log_buffer.append(
+                        f"[{ts_str}] HTTP  sc={sc_val} motion={motion_active} reason={reason}"
+                    )
+                payload_json_str = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+                self.output_data[self.out_state_change_json] = payload_json_str
+                state_change_log_buffer.append(
+                    f"[{ts_str}] Unity sc={sc_val} motion={motion_active} reason={reason}"
+                )
 
         # 토글 변경이 없어도 현재 의도 상태를 유지하도록 재요청 가능하게 처리
         if action == "Start Sender":

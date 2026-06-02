@@ -20,6 +20,7 @@ SAVE_DIR = "Node_Files"
 if not os.path.exists(SAVE_DIR): 
     os.makedirs(SAVE_DIR)
 system_log_buffer = deque(maxlen=50)
+state_change_log_buffer = deque(maxlen=80)
 
 _log_file_handle = None
 

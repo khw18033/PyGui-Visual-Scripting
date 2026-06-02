@@ -111,9 +111,17 @@ class PrintNode(BaseNode):
         return self.out_flow
 
 class LoggerNode(BaseNode):
-    def __init__(self, node_id): 
+    def __init__(self, node_id):
         super().__init__(node_id, "System Log", "LOGGER")
         self.llen = 0
-    def execute(self): 
-        return None 
+    def execute(self):
+        return None
+
+
+class Go1StateChangeLoggerNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "State Change Log", "GO1_SC_LOGGER")
+        self.llen = 0
+    def execute(self):
+        return None
 

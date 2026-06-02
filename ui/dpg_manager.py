@@ -9,7 +9,7 @@ import subprocess
 import importlib
 from core.engine import write_log
 
-from core.engine import node_registry, link_registry, system_log_buffer, generate_uuid, PortType, HwStatus
+from core.engine import node_registry, link_registry, system_log_buffer, state_change_log_buffer, generate_uuid, PortType, HwStatus
 from core.input_manager import input_manager
 from core.config import GO1_MODULE_NAME
 from core.factory import NodeFactory
@@ -507,9 +507,14 @@ class NodeUIRenderer:
             elif t == "CONSTANT" and hasattr(node, 'field_val'):
                 node.state['val'] = dpg.get_value(node.field_val)
             elif t == "LOGGER" and hasattr(node, 'txt'):
-                if len(system_log_buffer) != node.llen:
-                    dpg.set_value(node.txt, "\n".join(list(system_log_buffer)[-8:]))
-                    node.llen = len(system_log_buffer)
+                filtered = [l for l in system_log_buffer if '[PERF]' not in l]
+                if len(filtered) != node.llen:
+                    dpg.set_value(node.txt, "\n".join(filtered[-8:]))
+                    node.llen = len(filtered)
+            elif t == "GO1_SC_LOGGER" and hasattr(node, 'txt'):
+                if len(state_change_log_buffer) != node.llen:
+                    dpg.set_value(node.txt, "\n".join(list(state_change_log_buffer)[-10:]))
+                    node.llen = len(state_change_log_buffer)
             elif t == "UDP_RECV" and hasattr(node, 'port'):
                 node.state['port'] = dpg.get_value(node.port); node.state['ip'] = dpg.get_value(node.ip)
             elif t == "MT4_KEYBOARD" and hasattr(node, 'combo_keys'):
@@ -893,6 +898,7 @@ class NodeUIRenderer:
         elif t == "CONSTANT": NodeUIRenderer._render_constant(node)
         elif t == "PRINT": NodeUIRenderer._render_print(node)
         elif t == "LOGGER": NodeUIRenderer._render_logger(node)
+        elif t == "GO1_SC_LOGGER": NodeUIRenderer._render_go1_sc_logger(node)
         elif t in ["MT4_DRIVER", "GO1_DRIVER", "EP_DRIVER", "TELLO_DRIVER"]: NodeUIRenderer._render_universal(node)
         elif t == "MT4_KEYBOARD": NodeUIRenderer._render_mt4_keyboard(node)
         elif t == "MT4_UNITY": NodeUIRenderer._render_mt4_unity(node)
@@ -994,7 +1000,13 @@ class NodeUIRenderer:
     def _render_logger(node):
         with dpg.node(tag=node.node_id, parent="node_editor", label="System Log (Flowless)"):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                with dpg.child_window(width=200, height=100): node.txt=dpg.add_text("", wrap=190)
+                with dpg.child_window(width=200, height=100): node.txt = dpg.add_text("", wrap=190)
+
+    @staticmethod
+    def _render_go1_sc_logger(node):
+        with dpg.node(tag=node.node_id, parent="node_editor", label="State Change Log"):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                with dpg.child_window(width=380, height=160): node.txt = dpg.add_text("", wrap=370)
 
     @staticmethod
     def _render_universal(node):
@@ -1990,6 +2002,7 @@ def __init_ui__():
                 dpg.add_button(label="CONST", callback=add_node_cb, user_data="CONSTANT")
                 dpg.add_button(label="PRINT", callback=add_node_cb, user_data="PRINT")
                 dpg.add_button(label="LOGGER", callback=add_node_cb, user_data="LOGGER")
+                dpg.add_button(label="SC LOG", callback=add_node_cb, user_data="GO1_SC_LOGGER")
                 dpg.add_spacer(width=20)
                 
                 dpg.add_text("MT4 Tools:", color=(255,200,0))
