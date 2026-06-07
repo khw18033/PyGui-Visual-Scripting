@@ -15,6 +15,12 @@ import urllib.request
 from datetime import datetime
 from collections import deque
 
+try:
+    from asyncinotify import Inotify, Mask
+    _HAS_INOTIFY = True
+except ImportError:
+    _HAS_INOTIFY = False
+
 from nodes.base import BaseNode, BaseRobotDriver
 from core.engine import generate_uuid, PortType, write_log, node_registry, state_change_log_buffer
 from core.go1_config import (
@@ -1209,51 +1215,103 @@ async def send_image_async(session, filepath, camera_id, server_url):
         write_log(f"[Server Sender] upload error ({e.__class__.__name__}): {e!r} | file={os.path.basename(filepath)} | url={server_url}")
 
 
+async def _inotify_watcher(folder, start_after_epoch, latest_ref, new_file_event, stop_event):
+    """inotify로 폴더 감시 — 새 jpg 저장 시 latest_ref 갱신 후 new_file_event 신호"""
+    with Inotify() as inotify:
+        inotify.add_watch(folder, Mask.CLOSE_WRITE | Mask.MOVED_TO)
+        async for event in inotify:
+            if stop_event.is_set():
+                break
+            path = event.path
+            if path is None:
+                continue
+            if not str(path).endswith('.jpg'):
+                continue
+            if start_after_epoch > 0.0 and time.time() < start_after_epoch:
+                continue
+            latest_ref['path'] = str(path)
+            new_file_event.set()
+
+
+async def _upload_loop(session, camera_id, server_url, latest_ref, new_file_event, stop_event):
+    """new_file_event 신호 대기 → latest_ref의 최신 파일 업로드 반복"""
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(new_file_event.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            continue
+        new_file_event.clear()
+        filepath = latest_ref.get('path')
+        if filepath:
+            await send_image_async(session, filepath, camera_id, server_url)
+
+
 async def camera_async_worker(config, server_url):
     """카메라 폴더 모니터링 및 이미지 송신"""
     global multi_sender_active
 
     folder = config["folder"]
     camera_id = config["id"]
-    last_processed_file = None
     start_after_epoch = float(config.get('start_after_epoch', 0.0) or 0.0)
 
     os.makedirs(folder, exist_ok=True)
 
-    try:
-        async with aiohttp.ClientSession() as session:
+    if _HAS_INOTIFY:
+        # inotify 기반: 파일 저장 즉시 감지 → 폴링 대기 없음
+        latest_ref = {'path': None}
+        new_file_event = asyncio.Event()
+        stop_event = asyncio.Event()
+
+        async def _stop_monitor():
             while multi_sender_active:
-                cycle_start = time.time()
-                now_epoch = time.time()
-                if start_after_epoch > 0.0 and now_epoch < start_after_epoch:
-                    await asyncio.sleep(max(0, min(0.2, start_after_epoch - now_epoch)))
-                    continue
+                await asyncio.sleep(0.2)
+            stop_event.set()
 
-                files = glob.glob(os.path.join(folder, "*.jpg"))
+        try:
+            async with aiohttp.ClientSession() as session:
+                await asyncio.gather(
+                    _stop_monitor(),
+                    _inotify_watcher(folder, start_after_epoch, latest_ref, new_file_event, stop_event),
+                    _upload_loop(session, camera_id, server_url, latest_ref, new_file_event, stop_event),
+                    return_exceptions=True,
+                )
+        except Exception as e:
+            write_log(f"[Server Sender] inotify worker error ({camera_id}): {e}")
+    else:
+        # fallback: 기존 폴링 방식
+        last_processed_file = None
+        try:
+            async with aiohttp.ClientSession() as session:
+                while multi_sender_active:
+                    cycle_start = time.time()
+                    now_epoch = time.time()
+                    if start_after_epoch > 0.0 and now_epoch < start_after_epoch:
+                        await asyncio.sleep(max(0, min(0.2, start_after_epoch - now_epoch)))
+                        continue
 
-                if files:
-                    valid_files = []
-                    for f in files:
-                        try:
-                            valid_files.append((os.path.getctime(f), f))
-                        except OSError:
-                            pass
+                    files = glob.glob(os.path.join(folder, "*.jpg"))
+                    if files:
+                        valid_files = []
+                        for f in files:
+                            try:
+                                valid_files.append((os.path.getctime(f), f))
+                            except OSError:
+                                pass
+                        if valid_files:
+                            latest_ctime, latest_file = max(valid_files)
+                            try:
+                                file_ready = os.path.getsize(latest_file) > 0
+                            except OSError:
+                                file_ready = False
+                            if (latest_ctime >= start_after_epoch
+                                    and latest_file != last_processed_file
+                                    and file_ready):
+                                last_processed_file = latest_file
+                                await send_image_async(session, latest_file, camera_id, server_url)
 
-                    if valid_files:
-                        latest_ctime, latest_file = max(valid_files)
-                        try:
-                            file_ready = os.path.getsize(latest_file) > 0
-                        except OSError:
-                            file_ready = False
-                        if (latest_ctime >= start_after_epoch
-                                and latest_file != last_processed_file
-                                and file_ready):
-                            last_processed_file = latest_file
-                            await send_image_async(session, latest_file, camera_id, server_url)
-
-                await asyncio.sleep(max(0, INTERVAL - (time.time() - cycle_start)))
-    except Exception as e:
-        write_log(f"[Server Sender] worker error ({camera_id}): {e}")
+                    await asyncio.sleep(max(0, INTERVAL - (time.time() - cycle_start)))
+        except Exception as e:
+            write_log(f"[Server Sender] worker error ({camera_id}): {e}")
 
 
 def start_async_loop(config, server_url):
