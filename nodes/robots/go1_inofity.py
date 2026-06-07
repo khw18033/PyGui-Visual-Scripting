@@ -1,0 +1,5047 @@
+import os
+import sys
+import time
+import json
+import math
+import socket
+import threading
+import platform
+import subprocess
+import shutil
+import glob
+import asyncio
+import re
+import urllib.request
+from datetime import datetime
+from collections import deque
+
+try:
+    from asyncinotify import Inotify, Mask
+    _HAS_INOTIFY = True
+except ImportError:
+    _HAS_INOTIFY = False
+
+from nodes.base import BaseNode, BaseRobotDriver
+from core.engine import generate_uuid, PortType, write_log, node_registry, state_change_log_buffer
+from core.go1_config import (
+    NETWORK_CONFIG,
+    ROBOT_CONTROL_CONFIG,
+    AUTO_AVOIDANCE_CONFIG,
+    SPECIAL_ACTIONS_CONFIG,
+    CAMERA_CONFIG as GO1_CAMERA_CONFIG,
+    MISSION_CONFIG,
+    MODEL_CONFIG,
+    STATE_CHANGE_INTERVAL_SEC_DEFAULT,
+    STATE_CHANGE_URL_DEFAULT,
+)
+import core.engine as engine_module
+from core.mission_utils import (
+    _coerce_bool, _coerce_float, _coerce_int,
+    _mission_signature, _normalize_mission_container, _get_mission_value,
+    _post_json_payload,
+    _extract_mission_id as _mu_extract_mission_id,
+    _extract_mission_type as _mu_extract_mission_type,
+    _extract_mission_post_action as _mu_extract_mission_post_action,
+)
+
+try:
+    import cv2
+    import numpy as np
+    HAS_CV2 = True
+except ImportError:
+    cv2 = None
+    np = None
+    HAS_CV2 = False
+
+try:
+    from flask import Flask, Response
+    HAS_FLASK = True
+except ImportError:
+    Flask = None
+    Response = None
+    HAS_FLASK = False
+
+try:
+    import aiohttp
+    HAS_AIOHTTP = True
+except ImportError:
+    aiohttp = None
+    HAS_AIOHTTP = False
+
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    torch = None
+    HAS_TORCH = False
+
+try:
+    from PIL import Image
+    HAS_PIL = True
+except ImportError:
+    Image = None
+    HAS_PIL = False
+
+try:
+    from depth_anything_v2.dpt import DepthAnythingV2
+    HAS_DA2_OFFICIAL = True
+except ImportError:
+    DepthAnythingV2 = None
+    HAS_DA2_OFFICIAL = False
+
+try:
+    from transformers import pipeline as hf_pipeline
+    HAS_TRANSFORMERS = True
+except ImportError:
+    hf_pipeline = None
+    HAS_TRANSFORMERS = False
+
+# ================= [Unitree SDK Import (Optional)] =================
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '..', '..'))
+arch = platform.machine().lower()
+if arch in ['aarch64', 'arm64']:
+    sdk_arch = 'arm64'
+elif arch in ['x86_64', 'amd64']:
+    sdk_arch = 'amd64'
+else:
+    sdk_arch = 'amd64'
+
+sdk_path = os.path.join(project_root, 'unitree_legged_sdk', 'lib', 'python', sdk_arch)
+if os.path.isdir(sdk_path) and sdk_path not in sys.path:
+    sys.path.append(sdk_path)
+
+try:
+    import robot_interface as sdk
+    HAS_UNITREE_SDK = True
+    SDK_IMPORT_ERROR = ""
+except Exception:
+    sdk = None
+    HAS_UNITREE_SDK = False
+    SDK_IMPORT_ERROR = "robot_interface import failed"
+
+
+# ================= [Go1 Globals] =================
+go1_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+go1_sock.setblocking(False)
+
+HIGHLEVEL = int(NETWORK_CONFIG.get('highlevel', 0xEE))
+LOCAL_PORT = int(NETWORK_CONFIG.get('local_port', 8090))
+GO1_IP = str(NETWORK_CONFIG.get('go1_ip', '192.168.50.41'))
+GO1_PORT = int(NETWORK_CONFIG.get('go1_port', 8082))
+
+GO1_UNITY_IP = str(NETWORK_CONFIG.get('go1_unity_ip', '192.168.50.246'))
+UNITY_STATE_PORT = int(NETWORK_CONFIG.get('unity_state_port', 15101))
+UNITY_CMD_PORT = int(NETWORK_CONFIG.get('unity_cmd_port', 15102))
+UNITY_RX_PORT = int(NETWORK_CONFIG.get('unity_rx_port', 15100))
+UNITY_WAYPOINT_TX_PORT = int(NETWORK_CONFIG.get('unity_waypoint_tx_port', 15104))
+UNITY_PATH_PORT = int(NETWORK_CONFIG.get('unity_path_port', 15110))
+GO1_UNITY_JSON_PORT = int(NETWORK_CONFIG.get('go1_unity_json_port', 5009))
+
+DT = float(ROBOT_CONTROL_CONFIG.get('dt', 0.02))
+V_MAX = float(ROBOT_CONTROL_CONFIG.get('v_max', 0.4))
+S_MAX = float(ROBOT_CONTROL_CONFIG.get('s_max', 0.4))
+W_MAX = float(ROBOT_CONTROL_CONFIG.get('w_max', 2.0))
+VX_CMD = float(ROBOT_CONTROL_CONFIG.get('vx_cmd', 0.20))
+VY_CMD = float(ROBOT_CONTROL_CONFIG.get('vy_cmd', 0.20))
+WZ_CMD = float(ROBOT_CONTROL_CONFIG.get('wz_cmd', 1.00))
+# Minimum actual velocity (m/s or rad/s) from SDK feedback to confirm robot is moving.
+# Below this threshold the reading is treated as noise/standstill.
+ACTUAL_SPEED_THRESHOLD = float(ROBOT_CONTROL_CONFIG.get('actual_speed_threshold', 0.03))
+
+_BODY_HEIGHT_CONFIG = dict(ROBOT_CONTROL_CONFIG.get('body_height', {}))
+BODY_HEIGHT_MIN = float(_BODY_HEIGHT_CONFIG.get('min', -0.12))
+BODY_HEIGHT_MAX = float(_BODY_HEIGHT_CONFIG.get('max', 0.12))
+BODY_HEIGHT_KEY_STEP = float(_BODY_HEIGHT_CONFIG.get('key_step', 0.005))
+
+_TIMING_CONFIG = dict(ROBOT_CONTROL_CONFIG.get('timing', {}))
+hold_timeout_sec = float(_TIMING_CONFIG.get('hold_timeout_sec', 0.1))
+repeat_grace_sec = float(_TIMING_CONFIG.get('repeat_grace_sec', 0.4))
+min_move_sec = float(_TIMING_CONFIG.get('min_move_sec', 0.4))
+stop_brake_sec = float(_TIMING_CONFIG.get('stop_brake_sec', 0.0))
+unity_timeout_sec = float(_TIMING_CONFIG.get('unity_timeout_sec', 0.15))
+
+_YAW_CONTROL_CONFIG = dict(ROBOT_CONTROL_CONFIG.get('yaw_control', {}))
+UNITY_YAW_OFFSET_RAD = math.radians(float(_YAW_CONTROL_CONFIG.get('unity_yaw_offset_deg', 90.0)))
+YAW_FINE_TUNE_RAD = math.radians(float(_YAW_CONTROL_CONFIG.get('yaw_fine_tune_deg', 1.0)))
+YAW_ALIGN_KP = float(_YAW_CONTROL_CONFIG.get('yaw_align_kp', 2.0))
+YAW_ALIGN_TOL_RAD = math.radians(float(_YAW_CONTROL_CONFIG.get('yaw_align_tol_deg', 2.0)))
+
+_ESTOP_CONFIG = dict(ROBOT_CONTROL_CONFIG.get('estop', {}))
+ESTOP_HOLD_SEC = float(_ESTOP_CONFIG.get('hold_sec', 2.0))
+
+FOOT_RAISE_HEIGHT = float(ROBOT_CONTROL_CONFIG.get('foot_raise_height', 0.08))
+
+_PHASE_TIMING_CONFIG = dict(SPECIAL_ACTIONS_CONFIG.get('phase_timing', {}))
+SPECIAL_PREP_STAND_SEC = float(_PHASE_TIMING_CONFIG.get('prep_stand_sec', 1.5))
+SPECIAL_POST_WAIT_SEC = float(_PHASE_TIMING_CONFIG.get('post_wait_sec', 0.3))
+SPECIAL_RECOVER8_SEC = float(_PHASE_TIMING_CONFIG.get('recover8_sec', 1.5))
+SPECIAL_RECOVER1_SEC = float(_PHASE_TIMING_CONFIG.get('recover1_sec', 1.5))
+SPECIAL_RECOVER0_SEC = float(_PHASE_TIMING_CONFIG.get('recover0_sec', 0.5))
+
+GO1_AP_IP = str(NETWORK_CONFIG.get('go1_ap_ip', '192.168.123.161'))
+ARUCO_UDP_PORT = int(NETWORK_CONFIG.get('aruco_udp_port', 5008))
+SERVER_UPLOAD_URL_DEFAULT = str(NETWORK_CONFIG.get('server_upload_url', 'http://192.168.1.100:5001/upload'))
+JSON_CMD_URL_DEFAULT = str(NETWORK_CONFIG.get('json_cmd_url', 'http://127.0.0.1:5001/cmd'))
+
+_GST_CONFIG = dict(GO1_CAMERA_CONFIG.get('gstreamer', {}))
+GST_UDP_PORT = int(_GST_CONFIG.get('udp_port', 9400))
+SSH_KEY_PATH = str(_GST_CONFIG.get('ssh_key_path', '~/.ssh/id_rsa'))
+
+_CAM_TIMING_CONFIG = dict(GO1_CAMERA_CONFIG.get('timing', {}))
+CAM_FIRST_FRAME_WAIT_SEC = float(_CAM_TIMING_CONFIG.get('first_frame_wait_sec', 5.0))
+CAM_UPLOAD_WARMUP_SEC = float(_CAM_TIMING_CONFIG.get('upload_warmup_sec', 2.0))
+CAM_SENDER_WAIT_SEC = float(_CAM_TIMING_CONFIG.get('sender_camera_wait_sec', 10.0))
+CAM_PROC_KILL_TIMEOUT = int(_CAM_TIMING_CONFIG.get('proc_kill_timeout_sec', 2))
+
+_GO1_IP_INITIALIZED = False
+_GO1_IP_INITIALIZED = False
+
+go1_target_vel = {
+    'vx': 0.0,
+    'vy': 0.0,
+    'vyaw': 0.0,
+    'body_height': 0.0,
+}
+
+go1_node_intent = {
+    'vx': 0.0,
+    'vy': 0.0,
+    'wz': 0.0,
+    'body_height': 0.0,
+    'yaw_align': False,
+    'reset_yaw': False,
+    'stop': False,
+    # Unity teleop should be opt-in via GO1_UNITY node.
+    'use_unity_cmd': False,
+    'send_aruco': False,
+    'trigger_time': time.monotonic(),
+}
+
+go1_state = {
+    'world_x': 0.0,
+    'world_z': 0.0,
+    'yaw_unity': 0.0,
+    'vx_cmd': 0.0,
+    'vy_cmd': 0.0,
+    'wz_cmd': 0.0,
+    'body_height_cmd': 0.0,
+    'mode': 1,
+    'reason': "NONE",
+    'battery': -1,
+    'battery_confirmed': False,  # True: 실제 배터리 값 수신 완료
+    'control_latency_ms': 0.0,
+    'vx_actual': 0.0,   # SDK-measured actual velocity (m/s)
+    'vy_actual': 0.0,
+    'wz_actual': 0.0,   # SDK-measured actual yaw rate (rad/s)
+    'sdk_confirmed': False,  # True when SDK is actively receiving robot state
+}
+
+go1_unity_data = {
+    'vx': 0.0,
+    'vy': 0.0,
+    'wz': 0.0,
+    'estop': 0,
+    'active': False,
+    '_recv_mono': 0.0,
+}
+
+go1_estop_hold_until = 0.0
+go1_last_yaw0_reset_mono = 0.0
+
+go1_yaw_calib = {
+    'enabled': False,
+    'offset_rad': 0.0,
+    'invert_yaw': False,
+    'legacy180': False,
+}
+
+go1_server_json_data = {
+    'raw_json': '',
+    'seq': 0,
+    'ts': 0.0,
+    'vx': 0.0,
+    'vy': 0.0,
+    'wz': 0.0,
+    'stop': True,
+    'confidence': 0.0,
+    'connected': False,
+    'fresh': False,
+    'status': 'Idle',
+    'source': '',
+    'motion_active': False,
+    'motion_remaining_ms': 0.0,
+    'last_direction': '',
+}
+
+go1_auto_avoidance_data = {
+    'status': 'Idle',
+    'has_near_obstacle': False,
+    'near_count': 0,
+    'target_found': False,
+    'target_id': None,
+    'target_name': None,
+    'target_group': None,
+    'target_rel_depth': None,
+    'target_action': '',
+    'stop_sent': False,
+    'source': '',
+    'last_error': '',
+    'last_trigger_ts': 0.0,
+}
+
+GO1_MISSION_CONFIG = dict(MISSION_CONFIG)
+GO1_MISSION_PENDING_URL = str(GO1_MISSION_CONFIG.get('pending_url', 'http://100.65.158.54:18080/pending'))
+GO1_MISSION_DECISION_URL = str(GO1_MISSION_CONFIG.get('decision_url', 'http://100.65.158.54:18080/decision'))
+GO1_MISSION_POLL_SEC = float(GO1_MISSION_CONFIG.get('poll_interval_sec', 1.0))
+GO1_MISSION_TIMEOUT_SEC = float(GO1_MISSION_CONFIG.get('request_timeout_sec', 3.0))
+GO1_MISSION_DECISION_MODE = str(GO1_MISSION_CONFIG.get('decision_mode', 'accept_if_destination_present'))
+GO1_MISSION_ALLOWED_TYPES = list(GO1_MISSION_CONFIG.get('allowed_mission_types', ['go1', 'unity_path', 'robot_action']))
+GO1_MISSION_SCHEMA = dict(GO1_MISSION_CONFIG.get('schema', {}))
+GO1_MISSION_DEFAULTS = dict(GO1_MISSION_CONFIG.get('defaults', {}))
+
+_go1_mission_run_id = 0  # RECV 재시작 시 증가 → ACTION 시그니처 리셋 트리거
+
+go1_mission_state = {
+    'status': 'Idle',
+    'mission_id': '',
+    'mission_type': '',
+    'decision': '',
+    'decision_reason': '',
+    'destination_summary': '',
+    'path_json': '',
+    'action_json': '',
+    'source': GO1_MISSION_PENDING_URL,
+    'last_error': '',
+    'updated_ts': 0.0,
+}
+
+GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP = dict(AUTO_AVOIDANCE_CONFIG.get('class_to_group', {}))
+GO1_AUTO_AVOIDANCE_POLICY = dict(AUTO_AVOIDANCE_CONFIG.get('policy', {}))
+GO1_AUTO_AVOIDANCE_GROUP_PRIORITY = dict(AUTO_AVOIDANCE_CONFIG.get('group_priority', {}))
+
+_AUTO_AVOIDANCE_IMAGE_CONFIG = dict(AUTO_AVOIDANCE_CONFIG.get('image', {}))
+GO1_AUTO_AVOIDANCE_IMAGE_WIDTH = int(_AUTO_AVOIDANCE_IMAGE_CONFIG.get('width', 464))
+GO1_AUTO_AVOIDANCE_IMAGE_HEIGHT = int(_AUTO_AVOIDANCE_IMAGE_CONFIG.get('height', 400))
+
+_AUTO_AVOIDANCE_ESCAPE_CONFIG = dict(AUTO_AVOIDANCE_CONFIG.get('escape', {}))
+GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X = int(_AUTO_AVOIDANCE_ESCAPE_CONFIG.get('left_x', 150))
+GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X = int(_AUTO_AVOIDANCE_ESCAPE_CONFIG.get('right_x', 300))
+
+_AUTO_AVOIDANCE_BBOX_CONFIG = dict(AUTO_AVOIDANCE_CONFIG.get('bbox', {}))
+GO1_AUTO_AVOIDANCE_MIN_BBOX_WIDTH = int(_AUTO_AVOIDANCE_BBOX_CONFIG.get('min_width', 24))
+GO1_AUTO_AVOIDANCE_MIN_BBOX_HEIGHT = int(_AUTO_AVOIDANCE_BBOX_CONFIG.get('min_height', 24))
+
+_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG = dict(AUTO_AVOIDANCE_CONFIG.get('height_filter', {}))
+GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A2 = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('a2', -4.5353))
+GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A1 = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('a1', 63.3057))
+GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A0 = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('a0', -3.6661))
+# Height filter is always enabled; use normalized_height for small object detection
+GO1_AUTO_AVOIDANCE_HEIGHT_FILTER_ENABLED = True
+GO1_AUTO_AVOIDANCE_HEIGHT_REF_PX = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('reference_height_px', 48.0))
+GO1_AUTO_AVOIDANCE_HEIGHT_REF_REL_DEPTH = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('reference_rel_depth', 0.5975030660629272))
+GO1_AUTO_AVOIDANCE_HEIGHT_THRESHOLD_SCALE = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('threshold_scale', 1.0))
+GO1_AUTO_AVOIDANCE_HEIGHT_MIN_PX_FALLBACK = float(_AUTO_AVOIDANCE_HEIGHT_FILTER_CONFIG.get('min_height_px_fallback', GO1_AUTO_AVOIDANCE_MIN_BBOX_HEIGHT))
+
+_AUTO_AVOIDANCE_MOTION_CONFIG = dict(AUTO_AVOIDANCE_CONFIG.get('motion', {}))
+GO1_AUTO_AVOIDANCE_MOVE_SPEED = float(_AUTO_AVOIDANCE_MOTION_CONFIG.get('move_speed', 0.2))
+GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC = float(_AUTO_AVOIDANCE_MOTION_CONFIG.get('move_duration_sec', 0.5))
+
+
+def _normalize_go1_detection_group(name, group):
+    normalized_group = str(group or '').strip().upper()
+    if normalized_group and normalized_group in GO1_AUTO_AVOIDANCE_POLICY:
+        return normalized_group
+    name_key = str(name or '').strip().lower()
+    return GO1_AUTO_AVOIDANCE_CLASS_TO_GROUP.get(name_key, 'UNKNOWN_OBSTACLE')
+
+
+def _calibrate_go1_rel_depth_to_cm(rel_depth):
+    try:
+        depth = float(rel_depth)
+    except Exception:
+        return None
+    if not math.isfinite(depth):
+        return None
+
+    distance_cm = (
+        GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A2 * (depth ** 2)
+        + GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A1 * depth
+        + GO1_AUTO_AVOIDANCE_DEPTH_CALIB_A0
+    )
+    return max(0.0, float(distance_cm))
+
+
+def _normalize_mission_point(point, default_frame=None, default_yaw_deg=0.0):
+    if not isinstance(point, dict):
+        return None
+
+    frame = str(point.get('frame', default_frame or GO1_MISSION_DEFAULTS.get('destination_frame', 'go1_local_start'))).strip() or GO1_MISSION_DEFAULTS.get('destination_frame', 'go1_local_start')
+    return {
+        'x': _coerce_float(point.get('x', point.get('x_m', 0.0)), 0.0),
+        'y': _coerce_float(point.get('y', point.get('y_m', 0.0)), 0.0),
+        'z': _coerce_float(point.get('z', point.get('z_m', 0.0)), 0.0),
+        'yaw_deg': _coerce_float(point.get('yaw_deg', point.get('yaw', default_yaw_deg)), default_yaw_deg),
+        'frame': frame,
+        'use_yaw': _coerce_bool(point.get('use_yaw', True), True),
+    }
+
+
+def _extract_mission_id(payload):
+    return _mu_extract_mission_id(payload, GO1_MISSION_SCHEMA)
+
+
+def _extract_mission_type(payload):
+    return _mu_extract_mission_type(payload, GO1_MISSION_SCHEMA)
+
+
+def _extract_mission_destination(payload):
+    if not isinstance(payload, dict):
+        return {}, []
+
+    waypoint_keys = GO1_MISSION_SCHEMA.get('waypoint_keys', ['waypoints', 'points', 'path'])
+    destination_keys = GO1_MISSION_SCHEMA.get('destination_keys', ['destination', 'goal', 'target'])
+    default_frame = str(GO1_MISSION_DEFAULTS.get('destination_frame', 'go1_local_start')).strip() or 'go1_local_start'
+    default_yaw_deg = _coerce_float(GO1_MISSION_DEFAULTS.get('start_yaw_deg', 0.0), 0.0)
+
+    for key in waypoint_keys:
+        value = payload.get(key)
+        if isinstance(value, list) and value:
+            points = []
+            for item in value:
+                normalized = _normalize_mission_point(item, default_frame=default_frame, default_yaw_deg=default_yaw_deg)
+                if normalized is not None:
+                    points.append(normalized)
+            return {}, points
+
+    for key in destination_keys:
+        value = payload.get(key)
+        if isinstance(value, dict):
+            normalized = _normalize_mission_point(value, default_frame=default_frame, default_yaw_deg=default_yaw_deg)
+            if normalized is not None:
+                return normalized, []
+
+    direct_keys = {'x', 'y', 'z', 'yaw_deg', 'frame'}
+    if direct_keys.intersection(payload.keys()):
+        normalized = _normalize_mission_point(payload, default_frame=default_frame, default_yaw_deg=default_yaw_deg)
+        if normalized is not None:
+            return normalized, []
+
+    return {}, []
+
+
+def _extract_mission_post_action(payload):
+    return _mu_extract_mission_post_action(payload, GO1_MISSION_SCHEMA)
+
+
+def _resolve_go1_action_mode(action_payload, default_mode='Stand'):
+    if not isinstance(action_payload, dict):
+        return default_mode
+
+    raw_mode = str(action_payload.get('mode', '')).strip()
+    if raw_mode:
+        return raw_mode
+
+    raw_type = str(action_payload.get('type', action_payload.get('action', ''))).strip().lower().replace('_', ' ').replace('-', ' ')
+    mode_map = {
+        'stand': 'Stand',
+        'reset yaw': 'Reset Yaw0',
+        'reset yaw0': 'Reset Yaw0',
+        'walk': 'Walk Fwd/Back',
+        'walk fwd': 'Walk Fwd/Back',
+        'walk back': 'Walk Fwd/Back',
+        'strafe': 'Walk Strafe',
+        'turn': 'Turn',
+        'sit': 'Sit Down',
+        'stand tall': 'Stand Tall',
+        'set body height': 'Set Body Height',
+        'backflip': 'Backflip',
+        'jump yaw': 'Jump Yaw',
+        'straight hand': 'Straight Hand',
+        'dance 1': 'Dance 1',
+        'dance 2': 'Dance 2',
+    }
+    return mode_map.get(raw_type, default_mode)
+
+
+def _build_go1_path_json(payload):
+    mission_id = _extract_mission_id(payload)
+    destination, waypoints = _extract_mission_destination(payload)
+    default_frame = str(GO1_MISSION_DEFAULTS.get('destination_frame', 'go1_local_start')).strip() or 'go1_local_start'
+    default_yaw_deg = _coerce_float(GO1_MISSION_DEFAULTS.get('start_yaw_deg', 0.0), 0.0)
+
+    start_pose = {'yaw_deg': default_yaw_deg}
+    path_points = [{'index': 0, 'x': 0.0, 'z': 0.0, 'yaw_deg': default_yaw_deg, 'use_yaw': False}]
+
+    if waypoints:
+        for idx, point in enumerate(waypoints, start=1):
+            path_points.append({
+                'index': idx,
+                'x': _coerce_float(point.get('x', 0.0), 0.0),
+                'z': _coerce_float(point.get('z', 0.0), 0.0),
+                'yaw_deg': _coerce_float(point.get('yaw_deg', default_yaw_deg), default_yaw_deg),
+                'use_yaw': _coerce_bool(point.get('use_yaw', True), True),
+            })
+            if idx == 1 and 'yaw_deg' in point:
+                start_pose['yaw_deg'] = _coerce_float(point.get('yaw_deg', default_yaw_deg), default_yaw_deg)
+    elif destination:
+        path_points.append({
+            'index': 1,
+            'x': _coerce_float(destination.get('x', 0.0), 0.0),
+            'z': _coerce_float(destination.get('z', 0.0), 0.0),
+            'yaw_deg': _coerce_float(destination.get('yaw_deg', default_yaw_deg), default_yaw_deg),
+            'use_yaw': _coerce_bool(destination.get('use_yaw', True), True),
+        })
+        start_pose['yaw_deg'] = _coerce_float(destination.get('yaw_deg', default_yaw_deg), default_yaw_deg)
+
+    path_id = _coerce_int(_get_mission_value(payload, ['path_id', 'id', 'seq'], int(time.time() * 1000) % 1000000), int(time.time() * 1000) % 1000000)
+    path_payload = {
+        'type': 'go1_path',
+        'frame': default_frame,
+        'path_id': path_id,
+        'mission_id': mission_id,
+        'start_pose': start_pose,
+        'points': path_points,
+        'source': 'GO1_MISSION_DISPATCH',
+    }
+    return json.dumps(path_payload, ensure_ascii=False)
+
+
+def _build_go1_post_action_json(payload):
+    default_mode = str(GO1_MISSION_DEFAULTS.get('post_action_mode', 'Stand')).strip() or 'Stand'
+    default_value = _coerce_float(GO1_MISSION_DEFAULTS.get('post_action_value', 0.2), 0.2)
+    action_payload = _extract_mission_post_action(payload)
+    mission_id = _extract_mission_id(payload)
+
+    if isinstance(action_payload, dict) and str(action_payload.get('type', '')).strip().lower() == 'sequence':
+        return json.dumps({
+            'mission_id': mission_id,
+            'type': 'sequence',
+            'steps': action_payload.get('steps', []),
+        }, ensure_ascii=False)
+
+    result = {
+        'mission_id': mission_id,
+        'mode': _resolve_go1_action_mode(action_payload, default_mode=default_mode),
+        'v1': _coerce_float(action_payload.get('value', action_payload.get('v1', default_value)), default_value),
+    }
+    if 'type' in action_payload:
+        result['type'] = action_payload.get('type')
+    if 'action' in action_payload:
+        result['action'] = action_payload.get('action')
+    if 'note' in action_payload:
+        result['note'] = action_payload.get('note')
+    return json.dumps(result, ensure_ascii=False)
+
+
+go1_dashboard = {
+    "status": "Idle",
+    "hw_link": "Offline",
+    "unity_link": "Waiting",
+    "special": "Idle",
+}
+
+GO1_SPECIAL_ACTIONS = dict(SPECIAL_ACTIONS_CONFIG.get('special_actions', {}))
+
+go1_special_queue = deque()
+go1_special_state = {
+    'active': False,
+    'name': '',
+    'mode': 0,
+    'phase': 'idle',
+    'queue_size': 0,
+}
+
+aruco_settings = dict(MODEL_CONFIG.get('aruco', {}))
+if 'enabled' not in aruco_settings:
+    aruco_settings['enabled'] = False
+if 'marker_size' not in aruco_settings:
+    aruco_settings['marker_size'] = 0.03
+
+zero_dist_coeffs = np.zeros((4, 1), dtype=np.float32) if HAS_CV2 and np is not None else None
+
+camera_state = {
+    'status': 'Stopped',
+    'target_ip': '',
+    'duration': 0.0,
+    'start_time': 0.0,
+    'timer_started_logged': False,
+    'last_interval_count': 0,
+    'first_frame_ready': False,
+}
+
+camera_command_queue = deque()
+GO1_CAMERA_NANOS = list(GO1_CAMERA_CONFIG.get('camera_nanos', ['unitree@192.168.123.13']))
+CAMERA_CONFIG = [dict(item) for item in GO1_CAMERA_CONFIG.get('camera_config', [
+    {"folder": "Captured_Images/go1_front", "id": "go1_front"},
+])]
+_CAMERA_WORKER_STARTED = False
+_CAMERA_RECEIVER_PROC = None
+
+camera_save_state = dict(GO1_CAMERA_CONFIG.get('camera_save_state_defaults', {
+    'status': 'Stopped',
+    'folder': 'Captured_Images/go1_saved',
+    'duration': 0.0,
+    'start_time': None,
+    'frame_count': 0,
+}))
+camera_save_queue = deque()
+
+# ================= [Go1 Server Sender (HTTP Upload)] =================
+sender_state = {'status': 'Stopped'}
+sender_command_queue = deque()
+multi_sender_active = False
+# Server sender uses a higher polling/send target for smoother updates.
+_MODEL_RUNTIME_CONFIG = dict(MODEL_CONFIG.get('runtime', {}))
+TARGET_FPS = int(_MODEL_RUNTIME_CONFIG.get('target_fps', 30))
+INTERVAL = float(_MODEL_RUNTIME_CONFIG.get('interval', 1.0 / TARGET_FPS if TARGET_FPS else 1.0 / 30.0))
+_SENDER_MANAGER_STARTED = False
+
+_DA2_MODEL_LOCK = threading.Lock()
+_DA2_MODEL_CACHE = {}
+
+_DA2_MODEL_CONFIGS = dict(MODEL_CONFIG.get('da2_models', {}))
+
+
+def _clamp(v, lo, hi):
+    return lo if v < lo else hi if v > hi else v
+
+
+def _extract_front_frame_index(path):
+    name = os.path.basename(path)
+    if not (name.startswith("front_") and name.endswith(".jpg")):
+        return -1
+    number_part = name[6:-4]
+    return int(number_part) if number_part.isdigit() else -1
+
+
+def _compute_roi_pixels(height, width, x0, y0, x1, y1):
+    x0 = _clamp(_coerce_float(x0, 0.3), 0.0, 1.0)
+    y0 = _clamp(_coerce_float(y0, 0.5), 0.0, 1.0)
+    x1 = _clamp(_coerce_float(x1, 0.7), 0.0, 1.0)
+    y1 = _clamp(_coerce_float(y1, 0.95), 0.0, 1.0)
+    if x1 <= x0:
+        x0, x1 = 0.3, 0.7
+    if y1 <= y0:
+        y0, y1 = 0.5, 0.95
+
+    px0 = int(x0 * width)
+    py0 = int(y0 * height)
+    px1 = int(x1 * width)
+    py1 = int(y1 * height)
+    px0 = max(0, min(px0, width - 1))
+    py0 = max(0, min(py0, height - 1))
+    px1 = max(px0 + 1, min(px1, width))
+    py1 = max(py0 + 1, min(py1, height))
+    return px0, py0, px1, py1
+
+
+def _normalize_depth_for_visual(depth_map):
+    if depth_map is None or np is None:
+        return None
+    d = np.asarray(depth_map, dtype=np.float32)
+    finite = np.isfinite(d)
+    if not np.any(finite):
+        return np.zeros_like(d, dtype=np.float32)
+    valid = d[finite]
+    lo = float(np.percentile(valid, 2.0))
+    hi = float(np.percentile(valid, 98.0))
+    if hi <= lo:
+        hi = lo + 1e-6
+    norm = (d - lo) / (hi - lo)
+    norm = np.clip(norm, 0.0, 1.0)
+    norm[~finite] = 0.0
+    return norm
+
+
+def _get_da2_device_name(prefer_cuda=True):
+    if not HAS_TORCH or torch is None:
+        return 'cpu'
+    if prefer_cuda and torch.cuda.is_available():
+        return 'cuda'
+    mps_ok = bool(getattr(torch.backends, 'mps', None)) and torch.backends.mps.is_available()
+    if mps_ok:
+        return 'mps'
+    return 'cpu'
+
+
+def _load_da2_official_model(encoder, checkpoint_path, prefer_cuda=True):
+    if not (HAS_DA2_OFFICIAL and HAS_TORCH):
+        return None, "official model dependencies missing"
+
+    encoder = str(encoder or 'vits').strip().lower()
+    if encoder not in _DA2_MODEL_CONFIGS:
+        encoder = 'vits'
+
+    checkpoint = str(checkpoint_path or '').strip()
+    if not checkpoint:
+        checkpoint = os.path.join('checkpoints', f'depth_anything_v2_{encoder}.pth')
+
+    if not os.path.isfile(checkpoint):
+        return None, f"checkpoint not found: {checkpoint}"
+
+    device = _get_da2_device_name(prefer_cuda=prefer_cuda)
+    cache_key = ('official', encoder, checkpoint, device)
+    with _DA2_MODEL_LOCK:
+        cached = _DA2_MODEL_CACHE.get(cache_key)
+        if cached is not None:
+            return cached, ""
+
+        try:
+            model = DepthAnythingV2(**_DA2_MODEL_CONFIGS[encoder])
+            state_dict = torch.load(checkpoint, map_location='cpu')
+            model.load_state_dict(state_dict)
+            model = model.to(device).eval()
+            _DA2_MODEL_CACHE[cache_key] = model
+            return model, ""
+        except Exception as e:
+            return None, str(e)
+
+
+def _load_da2_hf_pipeline(model_id, prefer_cuda=True):
+    if not (HAS_TRANSFORMERS and HAS_PIL):
+        return None, "transformers or PIL dependency missing"
+
+    model_name = str(model_id or '').strip() or "depth-anything/Depth-Anything-V2-Small-hf"
+    device_index = 0 if (prefer_cuda and HAS_TORCH and torch.cuda.is_available()) else -1
+    cache_key = ('hf', model_name, device_index)
+    with _DA2_MODEL_LOCK:
+        cached = _DA2_MODEL_CACHE.get(cache_key)
+        if cached is not None:
+            return cached, ""
+
+        try:
+            pipe = hf_pipeline(task="depth-estimation", model=model_name, device=device_index)
+            _DA2_MODEL_CACHE[cache_key] = pipe
+            return pipe, ""
+        except Exception as e:
+            return None, str(e)
+
+
+def _is_file_stable(path, wait_sec=0.02):
+    """Check whether a file write has settled before upload."""
+    try:
+        size1 = os.path.getsize(path)
+        time.sleep(wait_sec)
+        size2 = os.path.getsize(path)
+        return size1 > 0 and size1 == size2
+    except OSError:
+        return False
+
+
+def _is_under_dev_shm(path):
+    try:
+        if not os.path.isdir('/dev/shm'):
+            return False
+        real_path = os.path.realpath(str(path or '').strip())
+        shm_root = os.path.realpath('/dev/shm')
+        return real_path == shm_root or real_path.startswith(shm_root + os.sep)
+    except Exception:
+        return False
+
+
+def _reset_output_folder(folder_path):
+    folder_path = str(folder_path or '').strip()
+    if not folder_path:
+        return False
+    try:
+        if os.path.isdir(folder_path):
+            shutil.rmtree(folder_path)
+        os.makedirs(folder_path, exist_ok=True)
+        return True
+    except Exception as e:
+        write_log(f"[Cam START] folder reset failed: {folder_path} | {e}")
+        return False
+
+
+def _append_process_logs(prefix, completed_process):
+    try:
+        stdout_text = str(getattr(completed_process, 'stdout', '') or '').strip()
+        stderr_text = str(getattr(completed_process, 'stderr', '') or '').strip()
+        return_code = getattr(completed_process, 'returncode', None)
+        write_log(f"{prefix} rc={return_code}")
+        if stdout_text:
+            write_log(f"{prefix} stdout: {stdout_text[:600]}")
+        if stderr_text:
+            write_log(f"{prefix} stderr: {stderr_text[:600]}")
+    except Exception:
+        pass
+
+
+def _wrap_pi(a):
+    while a > math.pi:
+        a -= 2.0 * math.pi
+    while a < -math.pi:
+        a += 2.0 * math.pi
+    return a
+
+
+def _marker_size_cm_to_m(marker_size_cm):
+    return max(0.0, _coerce_float(marker_size_cm, 0.0)) / 100.0
+
+
+def _normalize_marker_image_points(corners):
+    points = np.asarray(corners, dtype=np.float32)
+    if points.ndim == 3:
+        points = points[0]
+    return points.reshape(-1, 2)
+
+
+def _build_marker_object_points(marker_size_m):
+    half = marker_size_m * 0.5
+    return np.array([
+        [-half, half, 0.0],
+        [half, half, 0.0],
+        [half, -half, 0.0],
+        [-half, -half, 0.0],
+    ], dtype=np.float32)
+
+
+def _safe_json_dump(path, payload):
+    if not path:
+        return False
+
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return True
+
+
+def _serialize_marker_pose(rvec, tvec):
+    return {
+        'rvec': [round(float(v), 6) for v in np.asarray(rvec, dtype=np.float32).reshape(-1)],
+        'tvec': [round(float(v), 6) for v in np.asarray(tvec, dtype=np.float32).reshape(-1)],
+    }
+
+
+def _has_go1_nodes():
+    return any(n.type_str.startswith("GO1_") for n in node_registry.values())
+
+
+def _has_go1_unity_node():
+    return any(getattr(n, 'type_str', '') == "GO1_UNITY" for n in node_registry.values())
+
+
+def request_go1_special_action(action_name):
+    key = str(action_name or '').strip().lower().replace('_', '')
+    if key not in GO1_SPECIAL_ACTIONS:
+        return False, f"Unknown action: {action_name}"
+
+    go1_special_queue.append(key)
+    go1_special_state['queue_size'] = len(go1_special_queue)
+    go1_dashboard['special'] = f"Queued: {key}"
+    write_log(f"[Go1 Special] queued: {key} (queue={len(go1_special_queue)})")
+    return True, key
+
+
+def _go1_motion_snapshot():
+    reason = str(go1_state.get('reason', '')).strip().upper()
+    mode = _coerce_int(go1_state.get('mode', 1), 1)
+    vx_cmd = _coerce_float(go1_state.get('vx_cmd', 0.0), 0.0)
+    vy_cmd = _coerce_float(go1_state.get('vy_cmd', 0.0), 0.0)
+    wz_cmd = _coerce_float(go1_state.get('wz_cmd', 0.0), 0.0)
+    special_active = bool(go1_special_state.get('active', False))
+    auto_status = str(go1_auto_avoidance_data.get('status', '')).strip().upper()
+    json_motion_active = bool(go1_server_json_data.get('motion_active', False))
+
+    # If commanded velocity is effectively zero, skip actual-velocity check entirely.
+    # This prevents SDK noise (stance oscillation, mode 1↔2 transitions) from being
+    # misread as motion when Unity teleop or other sources command vx=vy=wz=0.
+    cmd_nonzero = any(abs(value) > 1e-4 for value in (vx_cmd, vy_cmd, wz_cmd))
+    sdk_confirmed = bool(go1_state.get('sdk_confirmed', False))
+    if not cmd_nonzero:
+        speed_active = False
+    elif sdk_confirmed:
+        vx_actual = _coerce_float(go1_state.get('vx_actual', 0.0), 0.0)
+        vy_actual = _coerce_float(go1_state.get('vy_actual', 0.0), 0.0)
+        wz_actual = _coerce_float(go1_state.get('wz_actual', 0.0), 0.0)
+        speed_active = any(abs(v) > ACTUAL_SPEED_THRESHOLD for v in (vx_actual, vy_actual, wz_actual))
+    else:
+        speed_active = True  # cmd_nonzero and no SDK feedback → trust the command
+    motion_active = bool(
+        json_motion_active
+        or special_active
+        or auto_status.startswith(('MOVE_', 'BACK_', 'STOP_THEN_BACK_'))
+        or speed_active
+    )
+
+    return motion_active, {
+        'reason': reason,
+        'mode': mode,
+        'vx_cmd': vx_cmd,
+        'vy_cmd': vy_cmd,
+        'wz_cmd': wz_cmd,
+        'special_active': special_active,
+        'auto_status': auto_status,
+        'json_motion_active': json_motion_active,
+    }
+
+
+def _build_go1_state_change_payload(state_change, motion_active, snapshot, source=''):
+    return {
+        'state_change': bool(state_change),
+        'motion_active': bool(motion_active),
+        'source': source,
+        'ts': round(time.time(), 3),
+        'reason': snapshot.get('reason', ''),
+        'mode': snapshot.get('mode', 1),
+        'vx_cmd': snapshot.get('vx_cmd', 0.0),
+        'vy_cmd': snapshot.get('vy_cmd', 0.0),
+        'wz_cmd': snapshot.get('wz_cmd', 0.0),
+        'special_active': bool(snapshot.get('special_active', False)),
+        'auto_status': snapshot.get('auto_status', ''),
+        'json_motion_active': bool(snapshot.get('json_motion_active', False)),
+        'control_latency_ms': float(go1_state.get('control_latency_ms', 0.0)),
+        'world_x': float(go1_state.get('world_x', 0.0)),
+        'world_z': float(go1_state.get('world_z', 0.0)),
+        'yaw_unity': float(go1_state.get('yaw_unity', 0.0)),
+    }
+
+
+def get_go1_rtsp_url():
+    return f"rtsp://{GO1_IP}:8554/live"
+
+
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def go1_estop_callback():
+    global go1_estop_hold_until
+    go1_node_intent['stop'] = True
+    go1_node_intent['vx'] = 0.0
+    go1_node_intent['vy'] = 0.0
+    go1_node_intent['wz'] = 0.0
+    go1_node_intent['trigger_time'] = time.monotonic()
+    go1_estop_hold_until = time.monotonic() + ESTOP_HOLD_SEC
+    go1_target_vel['vx'] = 0.0
+    go1_target_vel['vy'] = 0.0
+    go1_target_vel['vyaw'] = 0.0
+    write_log(f"Go1 EMERGENCY STOP Activated (hold {ESTOP_HOLD_SEC:.1f}s)")
+
+
+def _prompt_go1_ip(default_ip):
+    print("\n" + "=" * 56)
+    print("[System] Go1 IP 확인 (엔터 입력 시 기본값 사용)")
+    print("=" * 56)
+    current = default_ip
+    while True:
+        try:
+            entered = input(f"Go1 IP 입력 [{current}]: ").strip()
+        except EOFError:
+            return current
+        candidate = entered if entered else current
+        try:
+            socket.inet_aton(candidate)
+        except OSError:
+            print("[System] 잘못된 IP 형식입니다. 예: 192.168.50.42")
+            continue
+        try:
+            confirm = input(f"현재 Go1 IP가 {candidate} 맞습니까? (y/n): ").strip().lower()
+        except EOFError:
+            return candidate
+        if confirm in ["y", "yes", ""]:
+            return candidate
+        current = candidate
+
+
+def init_go1_connection():
+    global GO1_IP, _GO1_IP_INITIALIZED, _CAMERA_WORKER_STARTED, _SENDER_MANAGER_STARTED
+    if _GO1_IP_INITIALIZED:
+        return
+    _GO1_IP_INITIALIZED = True
+
+    try:
+        use_ap_mode = input("Go1 AP 모드로 접속합니까? (y/n): ").strip().lower()
+    except EOFError:
+        use_ap_mode = "n"
+
+    if use_ap_mode in ["y", "yes"]:
+        GO1_IP = GO1_AP_IP
+    else:
+        GO1_IP = _prompt_go1_ip(GO1_IP)
+
+    write_log(f"Go1 Target IP: {GO1_IP}")
+    if HAS_UNITREE_SDK:
+        write_log(f"Go1 SDK Ready: {sdk_path}")
+    else:
+        write_log(f"Go1 SDK Missing: {sdk_path} ({SDK_IMPORT_ERROR})")
+    GO1_SPECIAL_ACTIONS = dict(SPECIAL_ACTIONS_CONFIG.get('special_actions', {}))
+
+    if not _CAMERA_WORKER_STARTED:
+        _CAMERA_WORKER_STARTED = True
+        threading.Thread(target=camera_worker_thread, daemon=True).start()
+
+    if not _SENDER_MANAGER_STARTED and HAS_AIOHTTP:
+        _SENDER_MANAGER_STARTED = True
+        threading.Thread(target=sender_manager_thread, daemon=True).start()
+
+
+
+def camera_worker_thread():
+    global camera_state, CAMERA_CONFIG, _CAMERA_RECEIVER_PROC
+    nanos = GO1_CAMERA_NANOS
+
+    while True:
+        if camera_command_queue:
+            cmd_data = camera_command_queue.popleft()
+            cmd = cmd_data[0]
+
+            if cmd == 'START_CMD':
+                _, pc_ip, target_folder, duration = cmd_data
+                target_folder = str(target_folder).strip() or "Captured_Images/go1_front"
+                camera_state['status'] = 'Starting...'
+                camera_state['target_ip'] = pc_ip
+                camera_state['duration'] = float(duration)
+                camera_state['start_time'] = 0.0
+                camera_state['timer_started_logged'] = False
+                camera_state['last_interval_count'] = 0
+
+                clean_target_folder = _is_under_dev_shm(target_folder)
+                if clean_target_folder:
+                    write_log(f"[Cam START] /dev/shm detected -> resetting folder: {target_folder}")
+                    _reset_output_folder(target_folder)
+                else:
+                    os.makedirs(target_folder, exist_ok=True)
+
+                CAMERA_CONFIG.clear()
+                CAMERA_CONFIG.append({"folder": target_folder, "id": "go1_front"})
+
+                write_log(f"[Cam START] Target PC: {pc_ip}, Folder: {target_folder}, Dur: {duration}s")
+                write_log(f"[Cam START] Start sequence: remote stop -> remote launch -> local receiver -> upload warmup")
+
+                for nano in nanos:
+                    key_path = os.path.expanduser(SSH_KEY_PATH)
+
+                    kill_cmd = (
+                        "bash -lc '"
+                        "echo 123 | sudo -S fuser -k /dev/video0 /dev/video1 2>/dev/null ; "
+                        "cd /home/unitree ; "
+                        "./kill_camera.sh || true ; "
+                        "pkill -f go1_send_both || true ; "
+                        "pkill -f gst-launch-1.0 || true'"
+                    )
+
+                    start_cmd = (
+                        f"bash -lc '"
+                        f"cd /home/unitree ; "
+                        f"nohup ./go1_send_both.sh {pc_ip} > send_both_py.log 2>&1 < /dev/null & "
+                        f"sleep 1'"
+                    )
+
+                    base_ssh = [
+                        "ssh", "-i", key_path,
+                        "-o", "StrictHostKeyChecking=accept-new",
+                        "-o", "ConnectTimeout=5",
+                        "-J", f"pi@{GO1_IP}", nano
+                    ]
+
+                    try:
+                        kill_result = subprocess.run(base_ssh + [kill_cmd], capture_output=True, text=True, timeout=30)
+                        _append_process_logs(f"[Cam START] remote kill {nano}", kill_result)
+                        start_result = subprocess.run(base_ssh + [start_cmd], capture_output=True, text=True, timeout=30)
+                        _append_process_logs(f"[Cam START] remote launch {nano}", start_result)
+                        write_log(f"[Cam START] SSH commands completed for {nano}")
+                    except Exception as e:
+                        write_log(f"[Cam START ERROR] SSH execution failed: {e}")
+
+                # Stop previous local receiver process if still alive.
+                try:
+                    if _CAMERA_RECEIVER_PROC is not None and _CAMERA_RECEIVER_PROC.poll() is None:
+                        _CAMERA_RECEIVER_PROC.terminate()
+                        _CAMERA_RECEIVER_PROC.wait(timeout=CAM_PROC_KILL_TIMEOUT)
+                except Exception:
+                    try:
+                        if _CAMERA_RECEIVER_PROC is not None and _CAMERA_RECEIVER_PROC.poll() is None:
+                            _CAMERA_RECEIVER_PROC.kill()
+                    except Exception:
+                        pass
+                finally:
+                    _CAMERA_RECEIVER_PROC = None
+
+                try:
+                    subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
+                    subprocess.call(f"pkill -f 'gst-launch-1.0.*port={GST_UDP_PORT}'", shell=True)
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+                try:
+                    os.makedirs(target_folder, exist_ok=True)
+                    gst_cmd = (
+                        f"gst-launch-1.0 -q udpsrc port={GST_UDP_PORT} "
+                        f"caps=\"application/x-rtp,media=video,encoding-name=JPEG,payload=26\" "
+                        f"! rtpjpegdepay ! multifilesink location=\"{target_folder}/front_%06d.jpg\" sync=false"
+                    )
+                    _CAMERA_RECEIVER_PROC = subprocess.Popen(gst_cmd, shell=True)
+                    write_log(f"[Cam START] Receiver listening on port {GST_UDP_PORT} -> {target_folder}")
+                except Exception as e:
+                    write_log(f"[Cam START ERROR] Failed to start receiver: {e}")
+
+                time.sleep(1.0)
+                camera_state['upload_start_time'] = time.time() + (CAM_UPLOAD_WARMUP_SEC if clean_target_folder else 0.0)
+                if clean_target_folder:
+                    write_log(f"[Cam START] upload warmup enabled for {CAM_UPLOAD_WARMUP_SEC:.1f}s")
+                camera_state['status'] = 'Running'
+                # Start timer only after the first valid frame is actually received.
+                camera_state['start_time'] = 0.0
+                
+                # Monitor folder for first frame arrival
+                camera_state['first_frame_ready'] = False
+                write_log("[Cam START] Waiting for first frame...")
+                monitor_start = time.time()
+                while time.time() - monitor_start < CAM_FIRST_FRAME_WAIT_SEC:
+                    try:
+                        files = glob.glob(os.path.join(target_folder, "*.jpg"))
+                        if files:
+                            write_log("[Cam START] First frame detected, ready for server sender")
+                            camera_state['first_frame_ready'] = True
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(0.1)
+                if not camera_state['first_frame_ready']:
+                    write_log(f"[Cam START] Warning: No frames detected within {CAM_FIRST_FRAME_WAIT_SEC:.1f}s, proceeding anyway")
+                    camera_state['first_frame_ready'] = True
+
+            elif cmd == 'STOP':
+                if camera_state['status'] == 'Running' and float(camera_state.get('duration', 0.0)) > 0.0:
+                    write_log("[Cam Timer] camera timer stopped")
+                camera_state['status'] = 'Stopping...'
+                camera_state['duration'] = 0.0
+                camera_state['first_frame_ready'] = False
+                try:
+                    if _CAMERA_RECEIVER_PROC is not None and _CAMERA_RECEIVER_PROC.poll() is None:
+                        _CAMERA_RECEIVER_PROC.terminate()
+                        _CAMERA_RECEIVER_PROC.wait(timeout=CAM_PROC_KILL_TIMEOUT)
+                except Exception:
+                    try:
+                        if _CAMERA_RECEIVER_PROC is not None and _CAMERA_RECEIVER_PROC.poll() is None:
+                            _CAMERA_RECEIVER_PROC.kill()
+                    except Exception:
+                        pass
+                finally:
+                    _CAMERA_RECEIVER_PROC = None
+                try:
+                    subprocess.call("pkill -f 'gst-launch-1.0.*multifilesink'", shell=True)
+                    subprocess.call(f"pkill -f 'gst-launch-1.0.*port={GST_UDP_PORT}'", shell=True)
+                except Exception:
+                    pass
+                time.sleep(0.5)
+                camera_state['status'] = 'Stopped'
+
+        if camera_state['status'] == 'Running' and float(camera_state.get('duration', 0.0)) > 0.0:
+            start_time = float(camera_state.get('start_time', 0.0) or 0.0)
+            if start_time <= 0.0:
+                time.sleep(0.1)
+                continue
+            elapsed = time.time() - start_time
+            if not camera_state.get('timer_started_logged', False):
+                write_log("[Cam Timer] camera timer started")
+                camera_state['timer_started_logged'] = True
+
+            interval_count = int(elapsed // 10)
+            if interval_count > camera_state.get('last_interval_count', 0) and interval_count > 0:
+                write_log(f"[Cam Timer] {interval_count * 10}s elapsed")
+                camera_state['last_interval_count'] = interval_count
+
+            if elapsed >= float(camera_state.get('duration', 0.0)):
+                write_log("[Cam Timer] camera timer stopped")
+                camera_state['status'] = 'Stopping...'
+                camera_state['duration'] = 0.0
+                for node in node_registry.values():
+                    if node.type_str == 'VIDEO_SRC' and hasattr(node, '_auto_stopped_by_timer'):
+                        node._auto_stopped_by_timer = True
+                    if node.type_str == 'VIS_SAVE':
+                        if hasattr(node, '_save_start_time'):
+                            node._save_start_time = None
+                        if hasattr(node, '_timer_completed_this_run'):
+                            node._timer_completed_this_run = True
+                camera_command_queue.append(('STOP', camera_state.get('target_ip', '')))
+
+        if camera_state['status'] == 'Running':
+            start_time = float(camera_state.get('start_time', 0.0) or 0.0)
+            if start_time <= 0.0:
+                time.sleep(0.1)
+                continue
+            elapsed = time.time() - start_time
+            interval_count = int(elapsed // 10)
+            if interval_count > camera_state.get('last_interval_count', 0) and interval_count > 0:
+                write_log(f"[Cam Running] {interval_count * 10}s elapsed")
+                camera_state['last_interval_count'] = interval_count
+
+        time.sleep(0.1)
+
+
+# ================= [Server Sender Functions] =================
+async def send_image_async(session, filepath, camera_id, server_url):
+    """HTTP multipart/form-data로 이미지 비동기 업로드"""
+    try:
+        if not os.path.exists(filepath):
+            return
+        t_file_mtime = os.path.getmtime(filepath)
+        with open(filepath, 'rb') as f:
+            file_data = f.read()
+        source_name = os.path.basename(filepath)
+        upload_name = f"{camera_id}_{int(time.time() * 1000)}_{source_name}"
+
+        form = aiohttp.FormData()
+        form.add_field('camera_id', camera_id)
+        form.add_field('file', file_data, filename=upload_name, content_type='image/jpeg')
+
+        t_send_start = time.time()
+        async with session.post(server_url, data=form, timeout=aiohttp.ClientTimeout(total=3.5)) as response:
+            t_done = time.time()
+            response_ms = (t_done - t_file_mtime) * 1000
+            transfer_ms = (t_done - t_send_start) * 1000
+            write_log(f"[PERF] ResponseTime={response_ms:.1f}ms TransferTime={transfer_ms:.1f}ms file={source_name}")
+            if response.status != 200:
+                response_text = (await response.text()).strip()
+                if response_text:
+                    write_log(f"[Server Sender] upload failed: {response.status} | file={source_name} | body={response_text[:200]}")
+                else:
+                    write_log(f"[Server Sender] upload failed: {response.status} | file={source_name}")
+    except Exception as e:
+        write_log(f"[Server Sender] upload error ({e.__class__.__name__}): {e!r} | file={os.path.basename(filepath)} | url={server_url}")
+
+
+async def _inotify_watcher(folder, start_after_epoch, latest_ref, new_file_event, stop_event):
+    """inotify로 폴더 감시 — 새 jpg 저장 시 latest_ref 갱신 후 new_file_event 신호"""
+    with Inotify() as inotify:
+        inotify.add_watch(folder, Mask.CLOSE_WRITE | Mask.MOVED_TO)
+        async for event in inotify:
+            if stop_event.is_set():
+                break
+            path = event.path
+            if path is None:
+                continue
+            if not str(path).endswith('.jpg'):
+                continue
+            if start_after_epoch > 0.0 and time.time() < start_after_epoch:
+                continue
+            latest_ref['path'] = str(path)
+            new_file_event.set()
+
+
+async def _upload_loop(session, camera_id, server_url, latest_ref, new_file_event, stop_event):
+    """new_file_event 신호 대기 → latest_ref의 최신 파일 업로드 반복"""
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(new_file_event.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            continue
+        new_file_event.clear()
+        filepath = latest_ref.get('path')
+        if filepath:
+            await send_image_async(session, filepath, camera_id, server_url)
+
+
+async def camera_async_worker(config, server_url):
+    """카메라 폴더 모니터링 및 이미지 송신"""
+    global multi_sender_active
+
+    folder = config["folder"]
+    camera_id = config["id"]
+    start_after_epoch = float(config.get('start_after_epoch', 0.0) or 0.0)
+
+    os.makedirs(folder, exist_ok=True)
+
+    if _HAS_INOTIFY:
+        # inotify 기반: 파일 저장 즉시 감지 → 폴링 대기 없음
+        latest_ref = {'path': None}
+        new_file_event = asyncio.Event()
+        stop_event = asyncio.Event()
+
+        async def _stop_monitor():
+            while multi_sender_active:
+                await asyncio.sleep(0.2)
+            stop_event.set()
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                await asyncio.gather(
+                    _stop_monitor(),
+                    _inotify_watcher(folder, start_after_epoch, latest_ref, new_file_event, stop_event),
+                    _upload_loop(session, camera_id, server_url, latest_ref, new_file_event, stop_event),
+                    return_exceptions=True,
+                )
+        except Exception as e:
+            write_log(f"[Server Sender] inotify worker error ({camera_id}): {e}")
+    else:
+        # fallback: 기존 폴링 방식
+        last_processed_file = None
+        try:
+            async with aiohttp.ClientSession() as session:
+                while multi_sender_active:
+                    cycle_start = time.time()
+                    now_epoch = time.time()
+                    if start_after_epoch > 0.0 and now_epoch < start_after_epoch:
+                        await asyncio.sleep(max(0, min(0.2, start_after_epoch - now_epoch)))
+                        continue
+
+                    files = glob.glob(os.path.join(folder, "*.jpg"))
+                    if files:
+                        valid_files = []
+                        for f in files:
+                            try:
+                                valid_files.append((os.path.getctime(f), f))
+                            except OSError:
+                                pass
+                        if valid_files:
+                            latest_ctime, latest_file = max(valid_files)
+                            try:
+                                file_ready = os.path.getsize(latest_file) > 0
+                            except OSError:
+                                file_ready = False
+                            if (latest_ctime >= start_after_epoch
+                                    and latest_file != last_processed_file
+                                    and file_ready):
+                                last_processed_file = latest_file
+                                await send_image_async(session, latest_file, camera_id, server_url)
+
+                    await asyncio.sleep(max(0, INTERVAL - (time.time() - cycle_start)))
+        except Exception as e:
+            write_log(f"[Server Sender] worker error ({camera_id}): {e}")
+
+
+def start_async_loop(config, server_url):
+    """asyncio 이벤트루프 생성 및 실행"""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(camera_async_worker(config, server_url))
+    except Exception:
+        pass
+
+
+def sender_manager_thread():
+    """송신 명령 처리 및 워커 스레드 관리"""
+    global multi_sender_active, sender_state, CAMERA_CONFIG
+    sender_threads = []
+    
+    while True:
+        if sender_command_queue:
+            cmd, url = sender_command_queue.popleft()
+            
+            if cmd == 'START' and not multi_sender_active:
+                # 송신 원본 폴더는 VIS_SAVE 설정을 우선 사용 (보정/오버레이 결과 업로드)
+                upload_folder = None
+                try:
+                    for node in node_registry.values():
+                        if getattr(node, 'type_str', '') == 'VIS_SAVE':
+                            upload_folder = str(node.state.get('folder', '')).strip()
+                            if upload_folder:
+                                break
+                except Exception:
+                    upload_folder = None
+
+                if not upload_folder:
+                    upload_folder = str(camera_save_state.get('folder', '')).strip() or 'Captured_Images/go1_saved'
+
+                try:
+                    CAMERA_CONFIG.clear()
+                    CAMERA_CONFIG.append({
+                        "folder": upload_folder,
+                        "id": "go1_front",
+                        "start_after_epoch": time.time() + (CAM_UPLOAD_WARMUP_SEC if _is_under_dev_shm(upload_folder) else 0.0),
+                    })
+                except Exception:
+                    pass
+
+                # Wait for first frame from camera before starting sender
+                camera_state['first_frame_ready'] = False
+                write_log("[Server Sender] Waiting for camera first frame...")
+                wait_start = time.time()
+                while time.time() - wait_start < CAM_SENDER_WAIT_SEC:
+                    if camera_state.get('first_frame_ready', False):
+                        break
+                    time.sleep(0.1)
+                if not camera_state.get('first_frame_ready', False):
+                    write_log("[Server Sender] Warning: Camera not ready, proceeding anyway")
+
+                multi_sender_active = True
+                sender_state['status'] = 'Running'
+                if _is_under_dev_shm(upload_folder):
+                    write_log(f"[Server Sender] connected: {url} | folder={upload_folder} | warmup={CAM_UPLOAD_WARMUP_SEC:.1f}s (/dev/shm)")
+                else:
+                    write_log(f"[Server Sender] connected: {url} | folder={upload_folder}")
+                
+                for config in CAMERA_CONFIG:
+                    s_thread = threading.Thread(
+                        target=start_async_loop,
+                        args=(config, url),
+                        daemon=True
+                    )
+                    s_thread.start()
+                    sender_threads.append(s_thread)
+            
+            elif cmd == 'STOP' and multi_sender_active:
+                multi_sender_active = False
+                sender_state['status'] = 'Stopped'
+                write_log("[Server Sender] disconnected")
+                sender_threads.clear()
+        
+        time.sleep(0.1)
+
+
+def go1_keepalive_thread():
+    global GO1_UNITY_IP, go1_estop_hold_until
+
+    if HAS_UNITREE_SDK:
+        try:
+            udp = sdk.UDP(HIGHLEVEL, LOCAL_PORT, GO1_IP, GO1_PORT)
+            cmd = sdk.HighCmd()
+            state = sdk.HighState()
+            udp.InitCmdData(cmd)
+            go1_dashboard["hw_link"] = "Connecting..."
+        except Exception:
+            udp = None
+            cmd = None
+            state = None
+            go1_dashboard["hw_link"] = "Simulation"
+    else:
+        udp = None
+        cmd = None
+        state = None
+        go1_dashboard["hw_link"] = "Simulation"
+
+    sock_tx_state = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock_tx_cmd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    sock_rx_unity = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock_rx_unity.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock_rx_unity.bind(("0.0.0.0", UNITY_RX_PORT))
+        sock_rx_unity.setblocking(False)
+    except Exception:
+        pass
+
+    stand_only = True
+    now = time.monotonic()
+    last_key_time = now
+    last_move_cmd_time = now
+    grace_deadline = now
+    use_grace = True
+    last_unity_cmd_time = now
+
+    yaw0_initialized = False
+    yaw0 = 0.0
+    _yaw0_samples = []
+    _yaw0_collect_start = None
+    world_x = 0.0
+    world_z = 0.0
+    last_dr_time = now
+    seq = 0
+
+    yaw_align_active = False
+    yaw_align_target_rel = 0.0
+
+    last_go1_recv_time = now
+
+    special_runtime = {
+        'active': False,
+        'name': '',
+        'mode': 0,
+        'phase': 'idle',
+        'phase_until': 0.0,
+        'wait_timeout': 0.0,
+        'recovery': 'stand',
+        'wait_started_at': 0.0,
+        'wait_mode_seen': False,
+    }
+    estop_hold_logged = False
+
+    def reset_cmd_base():
+        if not cmd:
+            return
+        cmd.mode = 0
+        cmd.gaitType = 0
+        cmd.speedLevel = 0
+        cmd.footRaiseHeight = FOOT_RAISE_HEIGHT
+        cmd.bodyHeight = _clamp(go1_node_intent.get('body_height', 0.0), BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+        cmd.euler = [0.0, 0.0, 0.0]
+        cmd.velocity = [0.0, 0.0]
+        cmd.yawSpeed = 0.0
+        cmd.reserve = 0
+
+    next_t = time.monotonic()
+
+    while True:
+        tnow = time.monotonic()
+        if tnow < next_t:
+            time.sleep(max(0.0, next_t - tnow))
+        next_t += DT
+
+        raw_yaw = 0.0
+        if udp:
+            try:
+                udp.Recv()
+                udp.GetRecv(state)
+                raw_yaw = float(state.imu.rpy[2])
+
+                # AP/STA 환경 차이로 상태값 변화가 작더라도 수신 성공 자체를 연결 유지로 본다.
+                last_go1_recv_time = tnow
+
+                if (tnow - last_go1_recv_time) < 1.0:
+                    go1_in_use = bool(engine_module.is_running) and (_has_go1_nodes() or special_runtime['active'])
+                    go1_dashboard["hw_link"] = "Online (Active)" if go1_in_use else "Online (Listen)"
+                    try:
+                        if hasattr(state.bms, 'SOC'):
+                            batt_val = int(state.bms.SOC)
+                            go1_state['battery'] = batt_val
+                            if batt_val > 0:
+                                go1_state['battery_confirmed'] = True
+                        elif hasattr(state.bms, 'soc'):
+                            batt_val = int(state.bms.soc)
+                            go1_state['battery'] = batt_val
+                            if batt_val > 0:
+                                go1_state['battery_confirmed'] = True
+                    except Exception:
+                        pass
+                    try:
+                        go1_state['vx_actual'] = float(state.velocity[0])
+                        go1_state['vy_actual'] = float(state.velocity[1])
+                        go1_state['wz_actual'] = float(state.yawSpeed)
+                        go1_state['sdk_confirmed'] = True
+                    except Exception:
+                        pass
+                else:
+                    go1_dashboard["hw_link"] = "Offline"
+                    go1_state['battery'] = -1
+                    go1_state['battery_confirmed'] = False
+                    go1_state['vx_actual'] = 0.0
+                    go1_state['vy_actual'] = 0.0
+                    go1_state['wz_actual'] = 0.0
+                    go1_state['sdk_confirmed'] = False
+            except Exception:
+                go1_dashboard["hw_link"] = "Offline"
+                go1_state['battery'] = -1
+                go1_state['battery_confirmed'] = False
+                go1_state['vx_actual'] = 0.0
+                go1_state['vy_actual'] = 0.0
+                go1_state['wz_actual'] = 0.0
+                go1_state['sdk_confirmed'] = False
+
+        if not yaw0_initialized:
+            if _yaw0_collect_start is None:
+                _yaw0_collect_start = tnow
+                write_log("[YAW0_AUTO] waiting...")
+            _yaw0_samples.append(raw_yaw)
+            if tnow - _yaw0_collect_start >= 1.5:
+                sin_sum = sum(math.sin(s) for s in _yaw0_samples)
+                cos_sum = sum(math.cos(s) for s in _yaw0_samples)
+                yaw0 = math.atan2(sin_sum, cos_sum)
+                yaw0_initialized = True
+                last_dr_time = tnow
+                write_log(f"[YAW0_AUTO] initialized: yaw0={yaw0:.3f} rad ({math.degrees(yaw0):.2f} deg)")
+                _yaw0_samples.clear()
+
+        if go1_node_intent['reset_yaw']:
+            # Immediately reset yaw0 to current raw_yaw, mirror C++ behavior and logging.
+            yaw0 = raw_yaw
+            last_dr_time = time.monotonic()
+            go1_node_intent['reset_yaw'] = False
+            # Debounce repeated resets/logs: only log if sufficient time passed since last reset.
+            try:
+                now_mono = time.monotonic()
+                if now_mono - globals().get('go1_last_yaw0_reset_mono', 0.0) > 0.5:
+                    yaw0_deg = yaw0 * 180.0 / math.pi
+                    write_log(f"[YAW0] reset: {yaw0:.3f} rad ({yaw0_deg:.2f} deg)")
+                    globals()['go1_last_yaw0_reset_mono'] = now_mono
+            except Exception:
+                write_log("[YAW0] reset")
+
+        yaw_rel = _wrap_pi(raw_yaw - yaw0)
+        # Unity 표시 공식: -yaw_unity_deg + yawOffsetDeg + 180 = 90
+        # → yaw_unity_deg = yawOffsetDeg + 90
+        # Unity가 YAW_CALIB로 보내온 yawOffsetDeg를 go1_yaw_calib['offset_rad']로 수신하므로
+        # 동적으로 오프셋을 맞춰 Unity가 항상 90도를 표시하도록 한다.
+        _unity_display_offset = go1_yaw_calib['offset_rad'] + math.radians(90.0)
+        # Add 180 degrees to Unity display yaw to correct facing direction
+        # Apply additional fixed offset: subtract 0.13 radians as requested
+        yaw_unity = _wrap_pi(yaw_rel + _unity_display_offset + YAW_FINE_TUNE_RAD + math.pi - 0.13)
+        go1_state['yaw_unity'] = yaw_unity
+
+        is_node_active = (tnow - go1_node_intent['trigger_time']) < 0.1
+
+        if go1_node_intent['yaw_align']:
+            # Mirror C++: start yaw align immediately with same state updates.
+            yaw_align_active = True
+            # To make Unity show 90deg after alignment, target relative yaw must offset fine-tune
+            yaw_align_target_rel = -YAW_FINE_TUNE_RAD
+            stand_only = False
+            last_key_time = tnow
+            last_move_cmd_time = tnow
+            grace_deadline = tnow
+            use_grace = True
+            # Ensure any movement commands are zeroed and mark trigger time.
+            go1_node_intent['vx'] = 0.0
+            go1_node_intent['vy'] = 0.0
+            go1_node_intent['wz'] = 0.0
+            go1_node_intent['trigger_time'] = time.monotonic()
+            go1_node_intent['yaw_align'] = False
+            write_log("[YAW_ALIGN] start")
+            write_log("Go1: Processing yaw align (R) - starting alignment")
+
+        if go1_node_intent['stop']:
+            yaw_align_active = False
+            stand_only = True
+            last_key_time = tnow
+            last_move_cmd_time = tnow
+            grace_deadline = tnow
+            use_grace = True
+            go1_node_intent['stop'] = False
+        elif is_node_active and not yaw_align_active:
+            # Only override yaw_align if it's not currently active
+            stand_only = False
+            last_key_time = tnow
+            grace_deadline = tnow + repeat_grace_sec
+            if abs(go1_node_intent['vx']) > 0 or abs(go1_node_intent['vy']) > 0 or abs(go1_node_intent['wz']) > 0:
+                last_move_cmd_time = tnow
+
+        got = None
+        while True:
+            try:
+                data, _ = sock_rx_unity.recvfrom(256)
+                text = data.decode("utf-8", errors="ignore").strip()
+                parts = text.split()
+                if parts and parts[0] == 'YAW_CALIB' and len(parts) >= 5:
+                    offset_deg = float(parts[1])
+                    enabled = bool(int(parts[2]))
+                    invert_yaw = bool(int(parts[3]))
+                    legacy180 = bool(int(parts[4]))
+                    go1_yaw_calib['enabled'] = enabled
+                    go1_yaw_calib['offset_rad'] = math.radians(offset_deg)
+                    go1_yaw_calib['invert_yaw'] = invert_yaw
+                    go1_yaw_calib['legacy180'] = legacy180
+                    write_log(
+                        f"[YAW_CALIB] received | enabled={int(enabled)} "
+                        f"offset={offset_deg:.2f}deg invert={int(invert_yaw)} legacy180={int(legacy180)}"
+                    )
+                elif len(parts) >= 4:
+                    try:
+                        got = (float(parts[0]), float(parts[1]), float(parts[2]), int(parts[3]))
+                    except Exception:
+                        pass
+            except Exception:
+                break
+
+        if got:
+            last_unity_cmd_time = tnow
+            go1_dashboard['unity_link'] = "Active"
+            go1_unity_data['vx'], go1_unity_data['vy'], go1_unity_data['wz'], go1_unity_data['estop'] = got
+            go1_unity_data['_recv_mono'] = tnow
+
+        # Unity teleop is only considered when GO1_UNITY node is present and enabled.
+        unity_teleop_enabled = _has_go1_unity_node() and bool(go1_node_intent.get('use_unity_cmd', False))
+        unity_active = unity_teleop_enabled and ((tnow - last_unity_cmd_time) <= unity_timeout_sec)
+        go1_unity_data['active'] = unity_active
+        if not unity_active:
+            go1_dashboard['unity_link'] = "Waiting"
+
+        estop_hold_active = tnow < float(go1_estop_hold_until)
+        if estop_hold_active:
+            go1_node_intent['vx'] = 0.0
+            go1_node_intent['vy'] = 0.0
+            go1_node_intent['wz'] = 0.0
+            go1_node_intent['stop'] = True
+            go1_node_intent['trigger_time'] = tnow
+            unity_active = False
+            go1_unity_data['active'] = False
+            go1_dashboard['unity_link'] = "E-STOP Hold"
+            yaw_align_active = False
+            stand_only = True
+            if not estop_hold_logged:
+                estop_hold_logged = True
+                write_log("[Go1 E-STOP] hold active: keyboard/unity override blocked")
+        elif estop_hold_logged:
+            estop_hold_logged = False
+            write_log("[Go1 E-STOP] hold released")
+
+        since_key = tnow - last_key_time
+        since_move = tnow - last_move_cmd_time
+        active_walk = (
+            ((not stand_only) and (since_key <= hold_timeout_sec))
+            or ((not stand_only) and use_grace and (tnow <= grace_deadline))
+            or ((not stand_only) and (since_move <= min_move_sec))
+        )
+
+        # Dashboard/노드에서 요청한 특수동작 큐 시작.
+        if (not special_runtime['active']) and go1_special_queue:
+            next_name = go1_special_queue.popleft()
+            cfg = GO1_SPECIAL_ACTIONS.get(next_name)
+            if cfg and cmd:
+                special_runtime['active'] = True
+                special_runtime['name'] = next_name
+                special_runtime['mode'] = int(cfg['mode'])
+                special_runtime['phase'] = 'prep_stand'
+                special_runtime['phase_until'] = tnow + SPECIAL_PREP_STAND_SEC
+                special_runtime['trigger_sec'] = float(cfg.get('trigger_sec', 0.2))
+                special_runtime['wait_timeout'] = float(cfg['wait_timeout'])
+                special_runtime['recovery'] = str(cfg['recovery'])
+                special_runtime['wait_started_at'] = 0.0
+                special_runtime['wait_mode_seen'] = False
+                go1_node_intent['stop'] = True
+                go1_dashboard['special'] = f"Running: {next_name}"
+                write_log(f"[Go1 Special] start: {next_name}")
+            elif cfg and not cmd:
+                go1_dashboard['special'] = "Skipped: SDK unavailable"
+                write_log(f"[Go1 Special] skipped(no SDK): {next_name}")
+
+        go1_special_state['active'] = bool(special_runtime['active'])
+        go1_special_state['name'] = special_runtime['name']
+        go1_special_state['mode'] = special_runtime['mode']
+        go1_special_state['phase'] = special_runtime['phase']
+        go1_special_state['queue_size'] = len(go1_special_queue)
+
+        reset_cmd_base()
+        target_mode = 1
+        out_vx = 0.0
+        out_vy = 0.0
+        out_wz = 0.0
+
+        if estop_hold_active:
+            target_mode = 1
+            out_vx = 0.0
+            out_vy = 0.0
+            out_wz = 0.0
+            go1_state['reason'] = "ESTOP_HOLD"
+        elif yaw_align_active:
+            err = _wrap_pi(yaw_rel - yaw_align_target_rel)
+            if abs(err) <= YAW_ALIGN_TOL_RAD:
+                yaw_align_active = False
+                target_mode = 1
+            else:
+                target_mode = 2
+                out_wz = _clamp(-YAW_ALIGN_KP * err, -W_MAX, W_MAX)
+            if target_mode == 2 and cmd:
+                cmd.gaitType = 1
+        elif unity_active:
+            target_mode = 2 if not go1_unity_data['estop'] else 1
+            if cmd:
+                cmd.gaitType = 1
+            out_vx = _clamp(go1_unity_data['vx'], -V_MAX, V_MAX)
+            out_vy = _clamp(go1_unity_data['vy'], -S_MAX, S_MAX)
+            out_wz = _clamp(go1_unity_data['wz'], -W_MAX, W_MAX)
+            go1_state['reason'] = "UNITY"
+        elif active_walk:
+            target_mode = 2
+            if cmd:
+                cmd.gaitType = 1
+            out_vx = _clamp(go1_node_intent['vx'], -V_MAX, V_MAX)
+            out_vy = _clamp(go1_node_intent['vy'], -S_MAX, S_MAX)
+            out_wz = _clamp(go1_node_intent['wz'], -W_MAX, W_MAX)
+            go1_state['reason'] = "NODE_WALK"
+        else:
+            if since_move <= (min_move_sec + stop_brake_sec):
+                target_mode = 2
+                go1_state['reason'] = "BRAKE"
+                if cmd:
+                    cmd.gaitType = 1
+            else:
+                target_mode = 1
+                use_grace = True
+                go1_state['reason'] = "STAND"
+
+        if special_runtime['active']:
+            phase = special_runtime['phase']
+
+            if phase == 'prep_stand':
+                target_mode = 1
+                go1_state['reason'] = "SPECIAL_PREP"
+                if tnow >= special_runtime['phase_until']:
+                    special_runtime['phase'] = 'trigger'
+                    special_runtime['phase_until'] = tnow + special_runtime.get('trigger_sec', 0.2)
+
+            elif phase == 'trigger':
+                target_mode = special_runtime['mode']
+                go1_state['reason'] = f"SPECIAL_TRIG_{special_runtime['mode']}"
+                if tnow >= special_runtime['phase_until']:
+                    special_runtime['phase'] = 'wait_done'
+                    special_runtime['wait_started_at'] = tnow
+
+            elif phase == 'wait_done':
+                # C++ 테스트 코드와 동일하게 트리거 후에는 mode를 계속 밀지 않고 완료를 대기한다.
+                target_mode = 1
+                go1_state['reason'] = f"SPECIAL_WAIT_{special_runtime['mode']}"
+                hw_mode = int(getattr(state, 'mode', special_runtime['mode'])) if state is not None else int(go1_state.get('mode', special_runtime['mode']))
+                if hw_mode == special_runtime['mode']:
+                    special_runtime['wait_mode_seen'] = True
+
+                elapsed = tnow - special_runtime['wait_started_at']
+                done = special_runtime['wait_mode_seen'] and hw_mode != special_runtime['mode']
+                timeout = elapsed >= special_runtime['wait_timeout']
+                if done or timeout:
+                    special_runtime['phase'] = 'post_wait'
+                    special_runtime['phase_until'] = tnow + SPECIAL_POST_WAIT_SEC
+                    if timeout:
+                        write_log(f"[Go1 Special] timeout: {special_runtime['name']}")
+
+            elif phase == 'post_wait':
+                target_mode = 1
+                go1_state['reason'] = "SPECIAL_POST_WAIT"
+                if tnow >= special_runtime['phase_until']:
+                    if special_runtime['recovery'] == 'stand':
+                        special_runtime['phase'] = 'recover8'
+                        special_runtime['phase_until'] = tnow + SPECIAL_RECOVER8_SEC
+                    else:
+                        special_runtime['phase'] = 'recover0'
+                        special_runtime['phase_until'] = tnow + SPECIAL_RECOVER0_SEC
+
+            elif phase == 'recover8':
+                target_mode = 8
+                go1_state['reason'] = "SPECIAL_RECOVER8"
+                if tnow >= special_runtime['phase_until']:
+                    special_runtime['phase'] = 'recover1'
+                    special_runtime['phase_until'] = tnow + SPECIAL_RECOVER1_SEC
+
+            elif phase == 'recover1':
+                target_mode = 1
+                go1_state['reason'] = "SPECIAL_RECOVER1"
+                if tnow >= special_runtime['phase_until']:
+                    finished = special_runtime['name']
+                    special_runtime['active'] = False
+                    special_runtime['name'] = ''
+                    special_runtime['mode'] = 0
+                    special_runtime['phase'] = 'idle'
+                    go1_dashboard['special'] = "Idle"
+                    write_log(f"[Go1 Special] done: {finished}")
+
+            elif phase == 'recover0':
+                target_mode = 0
+                go1_state['reason'] = "SPECIAL_RECOVER0"
+                if tnow >= special_runtime['phase_until']:
+                    finished = special_runtime['name']
+                    special_runtime['active'] = False
+                    special_runtime['name'] = ''
+                    special_runtime['mode'] = 0
+                    special_runtime['phase'] = 'idle'
+                    go1_dashboard['special'] = "Idle"
+                    write_log(f"[Go1 Special] done: {finished}")
+
+            out_vx = 0.0
+            out_vy = 0.0
+            out_wz = 0.0
+            if cmd:
+                cmd.gaitType = 0
+                cmd.speedLevel = 0
+                cmd.footRaiseHeight = 0.0
+                cmd.bodyHeight = 0.0
+                cmd.euler = [0.0, 0.0, 0.0]
+                cmd.velocity = [0.0, 0.0]
+                cmd.yawSpeed = 0.0
+                cmd.reserve = 0
+
+        go1_in_use = bool(engine_module.is_running) and (_has_go1_nodes() or special_runtime['active'])
+
+        suppress_send = bool(special_runtime['active'] and special_runtime['phase'] == 'wait_done')
+
+        if cmd:
+            cmd.mode = target_mode
+            cmd.velocity = [out_vx, out_vy]
+            cmd.yawSpeed = out_wz
+            if go1_in_use and not suppress_send:
+                try:
+                    udp.SetSend(cmd)
+                    udp.Send()
+                    _recv_t = go1_unity_data.get('_recv_mono', 0.0)
+                    if _recv_t > 0.0 and (abs(out_vx) > 1e-4 or abs(out_vy) > 1e-4 or abs(out_wz) > 1e-4):
+                        e2e_ms = (time.monotonic() - _recv_t) * 1000.0
+                        if 0.0 < e2e_ms < 2000.0:
+                            write_log(f"[PERF] E2ELatency={e2e_ms:.1f}ms reason={go1_state.get('reason', '')}")
+                        go1_unity_data['_recv_mono'] = 0.0
+                except Exception:
+                    pass
+
+        if not cmd and go1_in_use:
+            msg = f"cmd_vel {out_vx:.3f} {out_vy:.3f} {out_wz:.3f} {_clamp(go1_node_intent.get('body_height', 0.0), BODY_HEIGHT_MIN, BODY_HEIGHT_MAX):.3f}"
+            try:
+                go1_sock.sendto(msg.encode('utf-8'), (GO1_IP, GO1_PORT))
+            except Exception:
+                pass
+
+        if unity_active and (abs(out_vx) > 1e-4 or abs(out_vy) > 1e-4 or abs(out_wz) > 1e-4):
+            go1_state['control_latency_ms'] = max(0.0, (tnow - last_unity_cmd_time) * 1000.0)
+        elif target_mode == 2 and (abs(out_vx) > 1e-4 or abs(out_vy) > 1e-4 or abs(out_wz) > 1e-4):
+            go1_state['control_latency_ms'] = max(0.0, (tnow - go1_node_intent.get('trigger_time', tnow)) * 1000.0)
+        else:
+            go1_state['control_latency_ms'] = 0.0
+
+        go1_state['vx_cmd'] = out_vx
+        go1_state['vy_cmd'] = out_vy
+        go1_state['wz_cmd'] = out_wz
+        go1_state['mode'] = target_mode
+        go1_state['body_height_cmd'] = _clamp(go1_node_intent.get('body_height', 0.0), BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+
+        dts = tnow - last_dr_time
+        last_dr_time = tnow
+        # Keep odometry aligned with the same yaw convention used by the path follower.
+        yaw_odom = _wrap_pi(-yaw_unity)
+        cy = math.cos(yaw_odom)
+        sy = math.sin(yaw_odom)
+        world_x += (out_vx * cy - out_vy * sy) * dts
+        world_z += (out_vx * sy + out_vy * cy) * dts
+
+        go1_state['world_x'] = world_x
+        go1_state['world_z'] = world_z
+
+        go1_target_vel['vx'] = out_vx
+        go1_target_vel['vy'] = out_vy
+        go1_target_vel['vyaw'] = out_wz
+        go1_target_vel['body_height'] = go1_state['body_height_cmd']
+
+        if special_runtime['active']:
+            go1_dashboard['status'] = f"Special ({special_runtime['name']})"
+        else:
+            go1_dashboard['status'] = "Running" if (go1_in_use and target_mode == 2) else "Idle"
+
+        estop = 1 if target_mode == 1 else 0
+        seq += 1
+        msg_state = (
+            f"{seq} {time.time() * 1000.0:.1f} {world_x:.6f} {world_z:.6f} {yaw_unity:.6f} "
+            f"{out_vx:.3f} {out_vy:.3f} {out_wz:.3f} {estop} {target_mode}"
+        )
+        msg_cmd = f"{out_vx:.3f} {out_vy:.3f} {out_wz:.3f} {estop}"
+
+        try:
+            sock_tx_state.sendto(msg_state.encode("utf-8"), (GO1_UNITY_IP, UNITY_STATE_PORT))
+            sock_tx_cmd.sendto(msg_cmd.encode("utf-8"), (GO1_UNITY_IP, UNITY_CMD_PORT))
+        except Exception:
+            pass
+
+
+# ================= [Go1 Driver/Control Nodes] =================
+class Go1RobotDriver(BaseRobotDriver):
+    def get_ui_schema(self):
+        return [
+            ('vx', "Vx In", 0.0),
+            ('vy', "Vy In", 0.0),
+            ('vyaw', "Wz In", 0.0),
+            ('body_height', "Body H", 0.0),
+        ]
+
+    def get_settings_schema(self):
+        return []
+
+    def execute_command(self, inputs, settings):
+        if inputs.get('vx') is not None:
+            go1_node_intent['vx'] = float(inputs['vx'])
+        if inputs.get('vy') is not None:
+            go1_node_intent['vy'] = float(inputs['vy'])
+        if inputs.get('vyaw') is not None:
+            go1_node_intent['wz'] = float(inputs['vyaw'])
+        if inputs.get('body_height') is not None:
+            go1_node_intent['body_height'] = _clamp(float(inputs['body_height']), BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+
+        if any(inputs.get(k) is not None for k in ['vx', 'vy', 'vyaw']):
+            go1_node_intent['trigger_time'] = time.monotonic()
+
+        return {
+            'vx': go1_state['vx_cmd'],
+            'vy': go1_state['vy_cmd'],
+            'vyaw': go1_state['wz_cmd'],
+            'body_height': go1_state.get('body_height_cmd', 0.0),
+        }
+
+
+class Go1ActionNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Go1 Action", "GO1_ACTION")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.in_mission_action = generate_uuid()
+        self.inputs[self.in_mission_action] = PortType.DATA
+        self.in_val1 = generate_uuid()
+        self.inputs[self.in_val1] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+        self.state['mode'] = "Stand"
+        self.state['v1'] = 0.2
+        self._last_mission_action_signature = ''
+        self._seq_running = False
+        self._seq_thread = None
+        self._last_run_id = -1
+        self._seq_gen = 0
+
+    def _run_sequence(self, steps, seq_gen):
+        write_log(f"[GO1 ACTION SEQ] sequence started: {len(steps)} steps")
+        for i, step in enumerate(steps):
+            if not self._seq_running or self._seq_gen != seq_gen:
+                write_log("[GO1 ACTION SEQ] sequence aborted (restart detected)")
+                break
+            mode = _resolve_go1_action_mode(step, default_mode='Stand')
+            v1 = _coerce_float(step.get('v1', step.get('value', 0.2)), 0.2)
+            duration = _coerce_float(step.get('duration_sec', step.get('duration', 0.5)), 0.5)
+            write_log(f"[GO1 ACTION SEQ] step {i+1}/{len(steps)} start: mode={mode} v1={v1} duration={duration}s")
+
+            if mode == "Stand":
+                go1_node_intent['stop'] = True
+                go1_node_intent['vx'] = 0.0
+                go1_node_intent['vy'] = 0.0
+                go1_node_intent['wz'] = 0.0
+                go1_node_intent['trigger_time'] = time.monotonic()
+                if duration > 0:
+                    time.sleep(duration)
+            else:
+                # stop 플래그를 명시적으로 해제하고 모션 시작
+                go1_node_intent['stop'] = False
+                go1_node_intent['vx'] = v1 if mode == "Walk Fwd/Back" else 0.0
+                go1_node_intent['vy'] = v1 if mode == "Walk Strafe" else 0.0
+                go1_node_intent['wz'] = v1 if mode == "Turn" else 0.0
+                go1_node_intent['trigger_time'] = time.monotonic()
+                deadline = time.monotonic() + duration
+                while time.monotonic() < deadline and self._seq_running and self._seq_gen == seq_gen:
+                    go1_node_intent['trigger_time'] = time.monotonic()
+                    time.sleep(0.02)  # 20ms: hold_timeout(100ms) 대비 5배 여유
+
+            write_log(f"[GO1 ACTION SEQ] step {i+1}/{len(steps)} done")
+
+            if i < len(steps) - 1:
+                # 단계 간 정지: trigger_time 갱신 없이 stop만 설정 → driver가 소비 후 자연 만료
+                go1_node_intent['vx'] = 0.0
+                go1_node_intent['vy'] = 0.0
+                go1_node_intent['wz'] = 0.0
+                go1_node_intent['stop'] = True
+                time.sleep(0.15)
+
+        if self._seq_gen == seq_gen:
+            self._seq_running = False
+        write_log("[GO1 ACTION SEQ] sequence complete")
+
+    def execute(self):
+        if _go1_mission_run_id != self._last_run_id:
+            self._last_run_id = _go1_mission_run_id
+            self._last_mission_action_signature = ''
+            self._seq_gen += 1
+            self._seq_running = False
+
+        mode = self.state.get('mode', 'Stand')
+        v1 = self.fetch_input_data(self.in_val1)
+        v1 = float(v1) if v1 is not None else float(self.state.get('v1', 0.2))
+
+        mission_action_raw = self.fetch_input_data(self.in_mission_action)
+        if mission_action_raw is not None:
+            mission_action_signature = _mission_signature(mission_action_raw)
+            if mission_action_signature and mission_action_signature != self._last_mission_action_signature:
+                self._last_mission_action_signature = mission_action_signature
+                mission_action_payload, _ = _normalize_mission_container(mission_action_raw)
+                if isinstance(mission_action_payload, dict):
+                    action_type = str(mission_action_payload.get('type', '')).strip().lower()
+                    mission_id_log = mission_action_payload.get('mission_id', 'unknown')
+                    if action_type == 'sequence':
+                        steps = mission_action_payload.get('steps', [])
+                        write_log(f"[GO1 ACTION] sequence mission received: id={mission_id_log} steps={len(steps)}")
+                        if not self._seq_running:
+                            self._seq_running = True
+                            gen = self._seq_gen
+                            self._seq_thread = threading.Thread(
+                                target=self._run_sequence,
+                                args=(steps, gen),
+                                daemon=True,
+                            )
+                            self._seq_thread.start()
+                        else:
+                            write_log("[GO1 ACTION] previous sequence running - skipping new sequence")
+                        return self.out_flow
+                    mode = _resolve_go1_action_mode(mission_action_payload, default_mode=mode)
+                    v1 = _coerce_float(mission_action_payload.get('v1', mission_action_payload.get('value', v1)), v1)
+                    write_log(f"[GO1 ACTION] single action received: id={mission_id_log} mode={mode} v1={v1}")
+
+        if mode == "Stand":
+            go1_node_intent['stop'] = True
+        elif mode == "Reset Yaw0":
+            go1_node_intent['reset_yaw'] = True
+        elif mode == "Sit Down":
+            go1_node_intent['body_height'] = BODY_HEIGHT_MIN
+        elif mode == "Stand Tall":
+            go1_node_intent['body_height'] = BODY_HEIGHT_MAX
+        elif mode == "Set Body Height":
+            go1_node_intent['body_height'] = _clamp(v1, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+        elif mode == "Backflip":
+            request_go1_special_action('backflip')
+        elif mode == "Jump Yaw":
+            request_go1_special_action('jumpyaw')
+        elif mode == "Straight Hand":
+            request_go1_special_action('straighthand')
+        elif mode == "Dance 1":
+            request_go1_special_action('dance1')
+        elif mode == "Dance 2":
+            request_go1_special_action('dance2')
+        else:
+            go1_node_intent['vx'] = v1 if mode == "Walk Fwd/Back" else 0.0
+            go1_node_intent['vy'] = v1 if mode == "Walk Strafe" else 0.0
+            go1_node_intent['wz'] = v1 if mode == "Turn" else 0.0
+            go1_node_intent['trigger_time'] = time.monotonic()
+
+        return self.out_flow
+
+
+def _apply_go1_keyboard_intent(state):
+    if state.get('is_focused', False):
+        return 0.0, 0.0, 0.0, go1_node_intent.get('body_height', 0.0)
+
+    # 회피 동작 중에는 키보드 명령 무시
+    auto_avoid_status = str(go1_auto_avoidance_data.get('status', '')).strip().upper()
+    if auto_avoid_status.startswith(('MOVE_', 'BACK_', 'STOP_THEN_BACK_')):
+        return 0.0, 0.0, 0.0, go1_node_intent.get('body_height', 0.0)
+
+    vx = 0.0
+    vy = 0.0
+    wz = 0.0
+
+    key_mode = state.get('keys', 'WASD')
+    if key_mode == 'WASD':
+        if state.get('W'):
+            vx = VX_CMD
+        if state.get('S'):
+            vx = -VX_CMD
+        if state.get('A'):
+            vy = VY_CMD
+        if state.get('D'):
+            vy = -VY_CMD
+    else:
+        if state.get('UP'):
+            vx = VX_CMD
+        if state.get('DOWN'):
+            vx = -VX_CMD
+        if state.get('LEFT'):
+            vy = VY_CMD
+        if state.get('RIGHT'):
+            vy = -VY_CMD
+
+    if state.get('Q'):
+        wz = WZ_CMD
+    if state.get('E'):
+        wz = -WZ_CMD
+
+    # Z is reserved for yaw0 reset (autonomy/C++ behavior). Do not use Z for body height here.
+    if state.get('X'):
+        go1_node_intent['body_height'] = _clamp(go1_node_intent.get('body_height', 0.0) - BODY_HEIGHT_KEY_STEP, BODY_HEIGHT_MIN, BODY_HEIGHT_MAX)
+
+    if state.get('SPACE'):
+        go1_node_intent['stop'] = True
+    if state.get('R_pressed'):
+        go1_node_intent['yaw_align'] = True
+        go1_node_intent['trigger_time'] = time.monotonic()
+        write_log("Go1: R key pressed - request yaw align (intent set)")
+    if state.get('C_pressed'):
+        go1_node_intent['reset_yaw'] = True
+        write_log("Go1: C key pressed - request yaw reset (intent set)")
+
+    if vx or vy or wz:
+        go1_node_intent['vx'] = vx
+        go1_node_intent['vy'] = vy
+        go1_node_intent['wz'] = wz
+        go1_node_intent['trigger_time'] = time.monotonic()
+
+    return vx, vy, wz, go1_node_intent.get('body_height', 0.0)
+
+
+class Go1KeyboardNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Keyboard (Go1)", "GO1_KEYBOARD")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_vx = generate_uuid()
+        self.outputs[self.out_vx] = PortType.DATA
+        self.out_vy = generate_uuid()
+        self.outputs[self.out_vy] = PortType.DATA
+        self.out_vyaw = generate_uuid()
+        self.outputs[self.out_vyaw] = PortType.DATA
+        self.out_body_height = generate_uuid()
+        self.outputs[self.out_body_height] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+    def execute(self):
+        vx, vy, wz, body_height = _apply_go1_keyboard_intent(self.state)
+
+        self.output_data[self.out_vx] = vx
+        self.output_data[self.out_vy] = vy
+        self.output_data[self.out_vyaw] = wz
+        self.output_data[self.out_body_height] = body_height
+        return self.out_flow
+
+
+class Go1UnityKeyboardNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Unity Keyboard (Go1)", "GO1_UNITY_KEYBOARD")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_vx = generate_uuid()
+        self.outputs[self.out_vx] = PortType.DATA
+        self.out_vy = generate_uuid()
+        self.outputs[self.out_vy] = PortType.DATA
+        self.out_vyaw = generate_uuid()
+        self.outputs[self.out_vyaw] = PortType.DATA
+        self.out_body_height = generate_uuid()
+        self.outputs[self.out_body_height] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+    def execute(self):
+        vx, vy, wz, body_height = _apply_go1_keyboard_intent(self.state)
+
+        self.output_data[self.out_vx] = vx
+        self.output_data[self.out_vy] = vy
+        self.output_data[self.out_vyaw] = wz
+        self.output_data[self.out_body_height] = body_height
+        return self.out_flow
+
+
+class Go1UnityNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Unity Connection (Go1)", "GO1_UNITY")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.data_in_id = generate_uuid()
+        self.inputs[self.data_in_id] = PortType.DATA
+        self.relay_json_in_id = generate_uuid()
+        self.inputs[self.relay_json_in_id] = PortType.DATA
+        self.state_change_relay_in_id = generate_uuid()
+        self.inputs[self.state_change_relay_in_id] = PortType.DATA
+
+        self.out_active = generate_uuid()
+        self.outputs[self.out_active] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['unity_ip'] = GO1_UNITY_IP
+        self.state['relay_json_port'] = GO1_UNITY_JSON_PORT
+        self.state['enable_teleop_rx'] = True
+        self.state['send_aruco'] = False
+        self.last_processed_json = ""
+        self._last_relay_json = ""
+
+    def _send_relay_json(self, raw_json):
+        text = ''
+        if isinstance(raw_json, str):
+            text = raw_json.strip()
+        elif raw_json is not None:
+            try:
+                text = json.dumps(raw_json, ensure_ascii=False, separators=(',', ':'))
+            except Exception:
+                text = str(raw_json).strip()
+
+        if not text:
+            return False
+
+        unity_ip = str(self.state.get('unity_ip', GO1_UNITY_IP)).strip() or GO1_UNITY_IP
+        relay_port = int(_coerce_int(self.state.get('relay_json_port', GO1_UNITY_JSON_PORT), GO1_UNITY_JSON_PORT))
+        try:
+            go1_sock.sendto(text.encode('utf-8'), (unity_ip, relay_port))
+            return True
+        except Exception as e:
+            write_log(f"Go1 Unity JSON relay error: {e}")
+            return False
+
+    def execute(self):
+        global GO1_UNITY_IP
+
+        GO1_UNITY_IP = self.state.get('unity_ip', GO1_UNITY_IP)
+        go1_node_intent['use_unity_cmd'] = bool(self.state.get('enable_teleop_rx', True))
+        go1_node_intent['send_aruco'] = bool(self.state.get('send_aruco', False))
+        aruco_settings['enabled'] = bool(self.state.get('send_aruco', False))
+
+        raw_json = self.fetch_input_data(self.data_in_id)
+        if raw_json and raw_json != self.last_processed_json:
+            self.last_processed_json = raw_json
+            try:
+                payload = json.loads(raw_json)
+                go1_unity_data['vx'] = float(payload.get('vx', go1_unity_data['vx']))
+                go1_unity_data['vy'] = float(payload.get('vy', go1_unity_data['vy']))
+                go1_unity_data['wz'] = float(payload.get('wz', go1_unity_data['wz']))
+                go1_unity_data['estop'] = int(payload.get('estop', go1_unity_data['estop']))
+            except Exception as e:
+                write_log(f"Go1 Unity JSON Error: {e}")
+
+        relay_raw_json = self.fetch_input_data(self.relay_json_in_id)
+        if relay_raw_json is not None:
+            if isinstance(relay_raw_json, str):
+                relay_signature = relay_raw_json
+            else:
+                relay_signature = json.dumps(relay_raw_json, ensure_ascii=False, separators=(',', ':'))
+            # Keep last signature update for observability/debugging,
+            # but always relay to Unity even when payload is identical.
+            self._last_relay_json = relay_signature
+            self._send_relay_json(relay_raw_json)
+
+            # Rollback reference (previous dedupe behavior):
+            # if relay_signature != self._last_relay_json:
+            #     self._last_relay_json = relay_signature
+            #     self._send_relay_json(relay_raw_json)
+
+        state_change_json = self.fetch_input_data(self.state_change_relay_in_id)
+        if state_change_json is not None:
+            self._send_relay_json(state_change_json)
+
+        # Unity Connection no longer exposes target velocity outputs here.
+        # Provide only active flag for downstream nodes.
+        self.output_data[self.out_active] = go1_unity_data.get('active', False)
+        return self.out_flow
+
+
+class Go1UnityAutonomyNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Unity Autonomy (Go1)", "GO1_UNITY_AUTO")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.in_mission_path = generate_uuid()
+        self.inputs[self.in_mission_path] = PortType.DATA
+
+        self.out_vx = generate_uuid()
+        self.outputs[self.out_vx] = PortType.DATA
+        self.out_vy = generate_uuid()
+        self.outputs[self.out_vy] = PortType.DATA
+        self.out_vyaw = generate_uuid()
+        self.outputs[self.out_vyaw] = PortType.DATA
+        self.out_active = generate_uuid()
+        self.outputs[self.out_active] = PortType.DATA
+        self.out_path_done = generate_uuid()
+        self.outputs[self.out_path_done] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['unity_ip'] = GO1_UNITY_IP
+        self.state['path_port'] = UNITY_PATH_PORT
+        self.state['waypoint_tx_port'] = UNITY_WAYPOINT_TX_PORT
+        self.state['send_waypoints'] = True
+        self.state['wp_reach_radius'] = 0.12
+        self.state['path_kp_dist'] = 0.5
+        self.state['path_kp_yaw'] = 1.5
+        self.state['path_max_vx'] = 0.12
+        self.state['path_max_wz'] = 0.60
+        self.state['path_turn_only_thresh'] = 0.35
+        self.state['path_yaw_reach_tol_deg'] = 8.0
+        self.state['suppress_unity_teleop_when_active'] = True
+
+        self._rx_sock = None
+        self._tx_sock = None
+        self._rx_port_open = None
+        self._tx_port_open = None
+        self._chunk_pid = -1
+        self._chunk_total = 0
+        self._chunk_parts = {}
+        self._last_raw_path = ''
+        self._last_pf_print_mono = 0.0
+        self._last_seq = 0
+        self._path_active = False
+        self._path_done_pulse = False
+        self._raw_path_points = []
+        self._active_waypoints = []
+        self._current_waypoint_idx = 0
+        self._current_path_id = -1
+        self._path_anchor_world_x = 0.0
+        self._path_anchor_world_z = 0.0
+        self._path_anchor_world_yaw = 0.0
+        self._guidance_logged = False
+        self._last_graph_path_signature = ''
+
+    def _make_udp_sender(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setblocking(False)
+        return s
+
+    def _make_udp_receiver(self, port):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("0.0.0.0", int(port)))
+            s.setblocking(False)
+            return s
+        except Exception:
+            try:
+                s.close()
+            except Exception:
+                pass
+            return None
+
+    def _ensure_sockets(self):
+        path_port = int(self.state.get('path_port', UNITY_PATH_PORT))
+        waypoint_port = int(self.state.get('waypoint_tx_port', UNITY_WAYPOINT_TX_PORT))
+
+        if self._rx_sock is None or self._rx_port_open != path_port:
+            try:
+                if self._rx_sock is not None:
+                    self._rx_sock.close()
+            except Exception:
+                pass
+            self._rx_sock = self._make_udp_receiver(path_port)
+            self._rx_port_open = path_port
+
+        if self._tx_sock is None or self._tx_port_open != waypoint_port:
+            try:
+                if self._tx_sock is not None:
+                    self._tx_sock.close()
+            except Exception:
+                pass
+            self._tx_sock = self._make_udp_sender()
+            self._tx_port_open = waypoint_port
+
+    def _recv_path_packet(self):
+        if self._rx_sock is None:
+            return None
+
+        try:
+            data, _ = self._rx_sock.recvfrom(4096)
+        except BlockingIOError:
+            return None
+        except Exception:
+            return None
+
+        packet = data.decode('utf-8', errors='ignore').strip()
+        if not packet:
+            return None
+
+        if packet.startswith('CHUNK '):
+            meta_end = packet.find(' ', 6)
+            if meta_end < 0:
+                return None
+
+            meta = packet[6:meta_end]
+            try:
+                pid_str, total_str, idx_str = meta.split('/')
+                pid = int(pid_str)
+                total = int(total_str)
+                idx = int(idx_str)
+            except Exception:
+                return None
+
+            if total <= 0 or idx < 0 or idx >= total:
+                return None
+
+            payload = packet[meta_end + 1:]
+            if pid != self._chunk_pid or total != self._chunk_total:
+                self._chunk_pid = pid
+                self._chunk_total = total
+                self._chunk_parts = {}
+                write_log(f"[GO1 UNITY PATH] chunk start pid={pid} total={total}")
+
+            self._chunk_parts[idx] = payload
+            if len(self._chunk_parts) == self._chunk_total:
+                assembled = []
+                for i in range(self._chunk_total):
+                    if i not in self._chunk_parts:
+                        return None
+                    assembled.append(self._chunk_parts[i])
+                raw_json = ''.join(assembled)
+                self._chunk_pid = -1
+                self._chunk_total = 0
+                self._chunk_parts = {}
+                write_log(f"[GO1 UNITY PATH] chunk reassembled pid={pid} bytes={len(raw_json)}")
+                return raw_json
+            return None
+
+        return packet
+
+    def _parse_start_yaw_deg(self, payload):
+        if isinstance(payload, dict):
+            start_pose = payload.get('start_pose')
+            if isinstance(start_pose, dict):
+                return _coerce_float(start_pose.get('yaw_deg', 0.0), 0.0)
+        text = json.dumps(payload, ensure_ascii=False) if isinstance(payload, (dict, list)) else str(payload or '')
+        match = re.search(r'"start_pose"\s*:\s*\{[^\}]*"yaw_deg"\s*:\s*([-+]?[0-9]*\.?[0-9]+)', text)
+        return float(match.group(1)) if match else 0.0
+
+    def _parse_path_json(self, raw_json):
+        if not raw_json:
+            return -1, []
+
+        payload = None
+        try:
+            payload = json.loads(raw_json)
+        except Exception:
+            payload = None
+
+        path_id = -1
+        points = []
+
+        if isinstance(payload, dict):
+            if str(payload.get('type', '')).strip() != 'go1_path':
+                return -1, []
+            if str(payload.get('frame', '')).strip() != 'go1_local_start':
+                return -1, []
+            path_id = _coerce_int(payload.get('path_id', -1), -1)
+            point_list = payload.get('points')
+            if not isinstance(point_list, list):
+                point_list = payload.get('waypoints')
+            if not isinstance(point_list, list):
+                point_list = []
+
+            for item in point_list:
+                if not isinstance(item, dict):
+                    continue
+                points.append({
+                    'index': _coerce_int(item.get('index', len(points)), len(points)),
+                    'x': _coerce_float(item.get('x', 0.0), 0.0),
+                    'z': _coerce_float(item.get('z', 0.0), 0.0),
+                    'yaw_deg': _coerce_float(item.get('yaw_deg', 0.0), 0.0),
+                    'use_yaw': _coerce_bool(item.get('use_yaw', False), False),
+                })
+
+        if not points:
+            text = raw_json if isinstance(raw_json, str) else json.dumps(raw_json, ensure_ascii=False)
+            if '"type"' not in text or '"go1_path"' not in text or '"go1_local_start"' not in text:
+                return -1, []
+            pid_match = re.search(r'"path_id"\s*:\s*([0-9]+)', text)
+            if pid_match:
+                path_id = int(pid_match.group(1))
+            point_re = re.compile(
+                r'\{\s*"index"\s*:\s*([0-9]+)\s*,\s*'
+                r'"x"\s*:\s*([-+]?[0-9]*\.?[0-9]+)\s*,\s*'
+                r'"z"\s*:\s*([-+]?[0-9]*\.?[0-9]+)\s*,\s*'
+                r'"yaw_deg"\s*:\s*([-+]?[0-9]*\.?[0-9]+)\s*,\s*'
+                r'"use_yaw"\s*:\s*(true|false)\s*\}',
+                re.IGNORECASE,
+            )
+            for match in point_re.finditer(text):
+                points.append({
+                    'index': int(match.group(1)),
+                    'x': float(match.group(2)),
+                    'z': float(match.group(3)),
+                    'yaw_deg': float(match.group(4)),
+                    'use_yaw': match.group(5).lower() == 'true',
+                })
+
+        points.sort(key=lambda item: item.get('index', 0))
+        if len(points) < 2:
+            return -1, []
+
+        return path_id, points
+
+    def _local_to_world(self, lx, lz, sx, sz, sy):
+        ox = sx + math.cos(sy) * lz - math.sin(sy) * lx
+        oz = sz + math.sin(sy) * lz + math.cos(sy) * lx
+        return ox, oz
+
+    def _local_yaw_to_world(self, yaw_deg, start_yaw):
+        return _wrap_pi(start_yaw + math.radians(yaw_deg))
+
+    def _cancel_path(self):
+        self._path_active = False
+        self._raw_path_points = []
+        self._active_waypoints = []
+        self._current_waypoint_idx = 0
+        self._current_path_id = -1
+        self._guidance_logged = False
+
+    def _handle_path_cancel_from_unity(self):
+        global go1_estop_hold_until
+
+        self._cancel_path()
+        go1_node_intent['vx'] = 0.0
+        go1_node_intent['vy'] = 0.0
+        go1_node_intent['wz'] = 0.0
+        go1_node_intent['stop'] = True
+        go1_node_intent['trigger_time'] = time.monotonic()
+        go1_estop_hold_until = time.monotonic() + ESTOP_HOLD_SEC
+        go1_state['reason'] = 'PATH_CANCEL'
+        write_log('[PATH] PATH_CANCEL received from Unity')
+        write_log('[PATH] canceled and stop requested. Waiting for new path.')
+
+        try:
+            world_x = float(go1_state.get('world_x', 0.0))
+            world_z = float(go1_state.get('world_z', 0.0))
+            yaw_unity = float(go1_state.get('yaw_unity', 0.0))
+            seq = self._last_seq + 1
+            self._last_seq = seq
+            msg_state = (
+                f"{seq} {time.time() * 1000.0:.1f} {world_x:.6f} {world_z:.6f} {yaw_unity:.6f} "
+                f"0.000 0.000 0.000 1 98"
+            )
+            go1_sock.sendto(msg_state.encode('utf-8'), (GO1_UNITY_IP, UNITY_STATE_PORT))
+            write_log(
+                f"[PATH] cancel ack sent (mode=98) pos=({world_x:.3f}, {world_z:.3f}) yaw={math.degrees(yaw_unity):.2f}deg"
+            )
+        except Exception as e:
+            write_log(f"[PATH] cancel ack send error: {e}")
+
+    def _send_waypoints_to_unity(self):
+        if self._tx_sock is None or not _coerce_bool(self.state.get('send_waypoints', True), True):
+            return
+
+        waypoint_port = int(self.state.get('waypoint_tx_port', UNITY_WAYPOINT_TX_PORT))
+        unity_ip = str(self.state.get('unity_ip', GO1_UNITY_IP)).strip() or GO1_UNITY_IP
+        msg = ["WAYPOINTS", str(len(self._active_waypoints))]
+        for wp in self._active_waypoints:
+            msg.append(f"{wp['x_world']:.6f}")
+            msg.append(f"{wp['z_world']:.6f}")
+        try:
+            payload = ' '.join(msg).encode('utf-8')
+            self._tx_sock.sendto(payload, (unity_ip, waypoint_port))
+            write_log(f"[GO1 UNITY PATH] waypoint send: {len(self._active_waypoints)}")
+        except Exception as e:
+            write_log(f"[GO1 UNITY PATH] waypoint send error: {e}")
+
+    def _activate_path_from_points(self, path_id, points, yaw_now):
+        self._cancel_path()
+        if len(points) < 2:
+            return
+
+        self._raw_path_points = list(points)
+        self._current_path_id = path_id
+        self._path_anchor_world_x = float(go1_state.get('world_x', 0.0))
+        self._path_anchor_world_z = float(go1_state.get('world_z', 0.0))
+        self._path_anchor_world_yaw = yaw_now
+
+        p0 = points[0]
+        for idx, point in enumerate(points[1:], start=1):
+            dx = _coerce_float(point.get('x', 0.0), 0.0) - _coerce_float(p0.get('x', 0.0), 0.0)
+            dz = _coerce_float(point.get('z', 0.0), 0.0) - _coerce_float(p0.get('z', 0.0), 0.0)
+            wx, wz = self._local_to_world(dx, dz, self._path_anchor_world_x, self._path_anchor_world_z, self._path_anchor_world_yaw)
+            wyaw = self._local_yaw_to_world(_coerce_float(point.get('yaw_deg', 0.0), 0.0) - _coerce_float(p0.get('yaw_deg', 0.0), 0.0), self._path_anchor_world_yaw)
+            self._active_waypoints.append({
+                'x_world': wx,
+                'z_world': wz,
+                'yaw_world': wyaw,
+                'use_yaw': bool(point.get('use_yaw', False)),
+            })
+
+            if idx <= 3 or idx == len(points) - 1:
+                write_log(f"[GO1 UNITY PATH] wp[{idx - 1}] local=({dx:.3f},{dz:.3f}) -> world=({wx:.3f},{wz:.3f})")
+
+        self._path_active = len(self._active_waypoints) > 0
+        self._current_waypoint_idx = 0
+        self._path_done_pulse = False
+        write_log(f"[GO1 UNITY PATH] activated id={self._current_path_id} waypoints={len(self._active_waypoints)}")
+        self._send_waypoints_to_unity()
+
+    def _run_path_follower(self, yaw_now):
+        if not self._path_active:
+            return 0.0, 0.0, 0.0, False
+
+        if self._current_waypoint_idx < 0 or self._current_waypoint_idx >= len(self._active_waypoints):
+            self._cancel_path()
+            return 0.0, 0.0, 0.0, False
+
+        target = self._active_waypoints[self._current_waypoint_idx]
+        world_x = float(go1_state.get('world_x', 0.0))
+        world_z = float(go1_state.get('world_z', 0.0))
+        dx = float(target['x_world']) - world_x
+        dz = float(target['z_world']) - world_z
+        dist = math.sqrt(dx * dx + dz * dz)
+
+        wp_reach_radius = float(self.state.get('wp_reach_radius', 0.12))
+        path_kp_dist = float(self.state.get('path_kp_dist', 0.5))
+        path_kp_yaw = float(self.state.get('path_kp_yaw', 1.5))
+        path_max_vx = float(self.state.get('path_max_vx', 0.12))
+        path_max_wz = float(self.state.get('path_max_wz', 0.60))
+        path_turn_only_thresh = float(self.state.get('path_turn_only_thresh', 0.35))
+
+        if dist > wp_reach_radius:
+            ty = math.atan2(dz, dx)
+            ye = _wrap_pi(ty - yaw_now)
+            vx = path_kp_dist * dist
+            wz = -path_kp_yaw * ye
+            vx = max(0.0, min(vx, path_max_vx))
+            wz = max(-path_max_wz, min(wz, path_max_wz))
+
+            abs_ye = abs(ye)
+            if abs_ye > path_turn_only_thresh:
+                vx = 0.0
+            else:
+                yaw_scale = 1.0 - abs_ye / path_turn_only_thresh
+                vx *= max(0.0, yaw_scale)
+
+            now_mono = time.monotonic()
+            if now_mono - self._last_pf_print_mono >= 1.0:
+                self._last_pf_print_mono = now_mono
+                write_log(
+                    f"[GO1 UNITY PATH] wp[{self._current_waypoint_idx}/{len(self._active_waypoints)}] "
+                    f"dist={dist:.3f} ye={math.degrees(ye):.1f}deg vx={vx:.3f} wz={wz:.3f} pos=({world_x:.3f},{world_z:.3f})"
+                )
+
+            return vx, 0.0, wz, True
+
+        if self._current_waypoint_idx % 5 == 0 or self._current_waypoint_idx >= len(self._active_waypoints) - 1:
+            write_log(f"[GO1 UNITY PATH] reached wp[{self._current_waypoint_idx}/{len(self._active_waypoints)}]")
+
+        self._current_waypoint_idx += 1
+        if self._current_waypoint_idx >= len(self._active_waypoints):
+            write_log("[GO1 UNITY PATH] finished")
+            self._cancel_path()
+            self._path_done_pulse = True
+            return 0.0, 0.0, 0.0, False
+
+        return self._run_path_follower(yaw_now)
+
+    def execute(self):
+        global GO1_UNITY_IP
+
+        GO1_UNITY_IP = self.state.get('unity_ip', GO1_UNITY_IP)
+        self._ensure_sockets()
+        # If this is the first execute after the graph/run started, show guidance
+        # so users can perform R/Z calibration BEFORE pressing M in Unity.
+        if not getattr(self, '_guidance_logged', False):
+            write_log("\n" + "="*70)
+            write_log("[GO1 UNITY AUTONOMY] waiting for autonomy command")
+            write_log("Press R / Z to align the real and virtual robot angles.")
+            write_log("")
+            write_log("  R : Set Unity angle to 90 degrees and align real robot accordingly")
+            write_log("  Z : Adjust Unity angle to 90 degrees only")
+            write_log("")
+            write_log("Once angle is aligned, press M in Unity to start autonomous driving.")
+            write_log("="*70)
+            self._guidance_logged = True
+
+        # Handle local key events forwarded from UI (R/Z/C/etc.) so autonomy can react
+        # even when no separate keyboard node is present in the graph.
+        try:
+            if self.state.get('R_pressed'):
+                go1_node_intent['yaw_align'] = True
+                go1_node_intent['trigger_time'] = time.monotonic()
+                write_log("Go1 Autonomy: R pressed - request yaw align (intent set)")
+            if self.state.get('Z'):
+                # Z behaves as 'reset yaw' (C++ reference: reset yaw0)
+                # Debounce requests so a single keypress doesn't generate repeated intents/logs.
+                last = getattr(self, '_last_request_yaw_reset_mono', 0.0)
+                now_m = time.monotonic()
+                if now_m - last > 0.2:
+                    go1_node_intent['reset_yaw'] = True
+                    go1_node_intent['trigger_time'] = time.monotonic()
+                    write_log("Go1 Autonomy: Z pressed - request yaw reset (intent set)")
+                    self._last_request_yaw_reset_mono = now_m
+            if self.state.get('C_pressed'):
+                go1_node_intent['reset_yaw'] = True
+                go1_node_intent['trigger_time'] = time.monotonic()
+                write_log("Go1 Autonomy: C pressed - request yaw reset (intent set)")
+        except Exception:
+            pass
+
+        latest_raw = None
+        graph_path_raw = self.fetch_input_data(self.in_mission_path)
+        use_graph_path = False
+        if graph_path_raw is not None:
+            graph_signature = _mission_signature(graph_path_raw)
+            if graph_signature and graph_signature != self._last_graph_path_signature:
+                self._last_graph_path_signature = graph_signature
+                latest_raw = graph_path_raw
+                use_graph_path = True
+
+        if not use_graph_path:
+            while True:
+                packet = self._recv_path_packet()
+                if packet is None:
+                    break
+                latest_raw = packet
+
+        if isinstance(latest_raw, str):
+            packet_text = latest_raw.strip()
+            if packet_text == 'PATH_CANCEL' or packet_text.startswith('PATH_CANCEL '):
+                self._handle_path_cancel_from_unity()
+                latest_raw = None
+
+        if latest_raw and latest_raw != self._last_raw_path:
+            self._last_raw_path = latest_raw
+            path_id, points = self._parse_path_json(latest_raw)
+            if path_id >= 0 and len(points) >= 2:
+                # Unity 표시 yaw와 SDK/path control yaw는 부호가 반대다.
+                yaw_unity = float(go1_state.get('yaw_unity', 0.0))
+                
+                yaw_control = _wrap_pi(-yaw_unity)
+
+                start_yaw_deg_unity = self._parse_start_yaw_deg(latest_raw)
+                start_yaw_rad_sdk = _wrap_pi(-math.radians(start_yaw_deg_unity))
+
+                yaw_diff = _wrap_pi(yaw_control - start_yaw_rad_sdk)
+                write_log(f"[GO1 UNITY PATH] unity_start_yaw={start_yaw_deg_unity:.2f}deg")
+                write_log(f"[GO1 UNITY PATH] unity_start_as_sdk={math.degrees(start_yaw_rad_sdk):.2f}deg")
+                write_log(f"[GO1 UNITY PATH] yaw_unity_display={math.degrees(yaw_unity):.2f}deg")
+                write_log(f"[GO1 UNITY PATH] yaw_control_sdk={math.degrees(yaw_control):.2f}deg")
+                write_log(f"[GO1 UNITY PATH] sdk_start_vs_control_diff={math.degrees(yaw_diff):.2f}deg")
+
+                if points:
+                    points[0]['yaw_deg'] = 0.0
+
+                self._activate_path_from_points(path_id, points, yaw_control)
+
+        # Use inverted yaw for control while keeping display yaw in go1_state
+        yaw_unity = float(go1_state.get('yaw_unity', 0.0))
+        yaw_world = _wrap_pi(-yaw_unity)
+
+        vx = vy = wz = 0.0
+        path_active = self._path_active
+        if path_active:
+            vx, vy, wz, path_active = self._run_path_follower(yaw_world)
+
+        if bool(self.state.get('suppress_unity_teleop_when_active', True)) and self._path_active:
+            # Prevent stale Unity teleop packets from overriding autonomy outputs.
+            go1_node_intent['use_unity_cmd'] = False
+
+        path_done = self._path_done_pulse
+        self._path_done_pulse = False
+
+        self.output_data[self.out_vx] = float(vx)
+        self.output_data[self.out_vy] = float(vy)
+        self.output_data[self.out_vyaw] = float(wz)
+        self.output_data[self.out_active] = bool(self._path_active)
+        self.output_data[self.out_path_done] = bool(path_done)
+        return self.out_flow
+
+
+class Go1ServerJsonRecvNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Server JSON Receiver", "GO1_SERVER_JSON_RECV")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.out_raw_json = generate_uuid()
+        self.outputs[self.out_raw_json] = PortType.DATA
+
+        self.state['mode'] = 'HTTP'
+        self.state['source'] = JSON_CMD_URL_DEFAULT
+        self.state['poll_interval_sec'] = 0.05
+        self.state['request_timeout_sec'] = 2.0
+        self.state['fresh_timeout_sec'] = 0.2
+        self.state['move_speed'] = 0.2
+        self.state['move_duration_sec'] = 0.5
+
+        self._last_poll_mono = 0.0
+        self._last_ok_mono = 0.0
+        self._last_raw_json = ''
+        self._last_payload = {}
+        self._last_seq = 0
+        self._last_error = ''
+        self._motion_active = False
+        self._motion_until_mono = 0.0
+        self._motion_vx = 0.0
+        self._motion_vy = 0.0
+        self._motion_wz = 0.0
+        self._motion_force_stop = False
+        self._last_direction = ''
+        self._last_motion_trigger_key = ''
+        self._last_logged_raw = ''
+        self._last_logged_error = ''
+        self._last_execute_mono = 0.0
+        
+        # Deferred back motion (for stop_then_back)
+        self._deferred_back_speed = 0.0
+        self._deferred_back_duration = 0.0
+        self._deferred_back_until = 0.0
+        
+        # JSON 백업 기능
+        self.backup_folder = os.path.join(project_root, 'jsonbackup')
+        self._ensure_backup_folder()
+        self._last_backup_timestamp = 0.0
+        self._last_detections = []
+        self._last_json_timestamp = None  # dedup: skip if same timestamp as last packet
+
+    def _log_received_payload(self, source, direction, payload, raw_json):
+        try:
+            timestamp = payload.get('ts', payload.get('timestamp', time.time())) if isinstance(payload, dict) else time.time()
+        except Exception:
+            timestamp = time.time()
+
+        try:
+            ts_text = f"{float(timestamp):.3f}"
+        except Exception:
+            ts_text = str(timestamp)
+
+        # write_log(f"[GO1 JSON RX] json received | timestamp={ts_text}")
+
+    def _read_source_text(self, mode, source, timeout_sec):
+        source = str(source or '').strip()
+        if not source:
+            raise RuntimeError('source is empty')
+
+        if mode == 'FILE' or (not source.startswith('http://') and not source.startswith('https://')):
+            if not os.path.exists(source):
+                raise FileNotFoundError(source)
+            with open(source, 'r', encoding='utf-8') as f:
+                return f.read()
+
+        req = urllib.request.Request(
+            source,
+            headers={
+                'Accept': 'application/json',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+            },
+            method='GET',
+        )
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            charset = resp.headers.get_content_charset() or 'utf-8'
+            return resp.read().decode(charset, errors='replace')
+
+    def _pick_payload(self, payload):
+        if isinstance(payload, dict):
+            for key in ('cmd', 'data', 'payload', 'command'):
+                nested = payload.get(key)
+                if isinstance(nested, dict):
+                    return nested
+            return payload
+        if isinstance(payload, list) and payload:
+            last_item = payload[-1]
+            if isinstance(last_item, dict):
+                return last_item
+        return {}
+
+    def _ensure_backup_folder(self):
+        """jsonbackup 폴더 생성 (없을 경우)"""
+        try:
+            if not os.path.exists(self.backup_folder):
+                os.makedirs(self.backup_folder, exist_ok=True)
+                write_log(f"[GO1 JSON RX] Created backup folder: {self.backup_folder}")
+        except Exception as e:
+            write_log(f"[GO1 JSON RX] Error creating backup folder: {e}")
+
+    def _prune_json_backups(self, max_files=300):
+        try:
+            max_files = max(1, int(max_files))
+        except Exception:
+            max_files = 300
+
+        try:
+            files = glob.glob(os.path.join(self.backup_folder, '*.json'))
+        except Exception:
+            return 0
+
+        if len(files) <= max_files:
+            return 0
+
+        files.sort(key=lambda path: (os.path.getmtime(path), os.path.basename(path)))
+        removed = 0
+        for old_path in files[:len(files) - max_files]:
+            try:
+                os.remove(old_path)
+                removed += 1
+            except Exception as e:
+                write_log(f"[GO1 JSON RX] Error removing old backup: {old_path} | {e}")
+
+        if removed > 0:
+            # write_log(f"[GO1 JSON RX] Pruned {removed} old JSON backups (kept {max_files})")
+            pass
+        return removed
+
+    def _save_json_backup(self, raw_json_str, parsed_data):
+        """JSON을 시간대별 파일명으로 백업 저장"""
+        try:
+            # 타임스탐프 기반 파일명 생성 (timestamp_camera_id.json)
+            timestamp = parsed_data.get('timestamp', time.time())
+            camera_id = parsed_data.get('camera_id', 'unknown')
+            
+            # timestamp를 깔끔한 형식으로 변환
+            try:
+                ts_float = float(timestamp)
+                ts_str = str(ts_float).replace('.', '_')
+            except:
+                ts_str = str(time.time()).replace('.', '_')
+            
+            filename = f"{ts_str}_{camera_id}.json"
+            filepath = os.path.join(self.backup_folder, filename)
+            
+            # JSON 파일 저장
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(parsed_data, f, ensure_ascii=False, indent=2)
+
+            self._prune_json_backups(300)
+            
+            return True
+        except Exception as e:
+            write_log(f"[GO1 JSON RX] Error saving JSON backup: {e}")
+            return False
+
+    def _process_detections(self, detections_list):
+        """detections 정보 처리 및 로그 출력"""
+        try:
+            if not isinstance(detections_list, list):
+                return []
+            
+            processed_detections = []
+            for idx, det in enumerate(detections_list):
+                if isinstance(det, dict):
+                    normalized_group = _normalize_go1_detection_group(det.get('name'), det.get('group'))
+                    rel_depth = det.get('rel_depth')
+                    try:
+                        rel_depth_text = f"{float(rel_depth):.3f}"
+                    except Exception:
+                        rel_depth_text = str(rel_depth)
+
+                    processed_det = {
+                        'id': det.get('id'),
+                        'name': det.get('name'),
+                        'group': normalized_group or det.get('group'),
+                        'rel_depth': det.get('rel_depth'),
+                        'risk_level': det.get('risk_level'),
+                        'bbox_xyxy': det.get('bbox_xyxy'),
+                    }
+                    processed_detections.append(processed_det)
+                    
+                    # 각 detection 로그 출력
+                    # write_log(
+                    #     f"[GO1 JSON RX] Detection {idx}: "
+                    #     f"id={det.get('id')}, name={det.get('name')}, "
+                    #     f"group={processed_det['group']}, risk={det.get('risk_level')}, "
+                    #     f"depth={rel_depth_text}, bbox={det.get('bbox_xyxy')}"
+                    # )
+            
+            return processed_detections
+        except Exception as e:
+            write_log(f"[GO1 JSON RX] Error processing detections: {e}")
+            return []
+
+    def _extract_direction_text(self, payload):
+        allowed = {'left', 'right', 'front', 'back', 'stop'}
+
+        if isinstance(payload, str):
+            text = payload.strip().lower()
+            return text if text in allowed else ''
+
+        if isinstance(payload, list) and payload:
+            last_item = payload[-1]
+            if isinstance(last_item, str):
+                text = last_item.strip().lower()
+                return text if text in allowed else ''
+
+        if isinstance(payload, dict):
+            for key in ('cmd', 'command', 'direction', 'action'):
+                value = payload.get(key)
+                if isinstance(value, str):
+                    text = value.strip().lower()
+                    if text in allowed:
+                        return text
+            for key in ('left', 'right', 'front', 'back', 'stop'):
+                if _coerce_bool(payload.get(key, False), False):
+                    return key
+
+        return ''
+
+    def _inject_direction_motion(self, direction, move_speed, move_duration_sec, trigger_key):
+        global go1_estop_hold_until
+        # Validate trigger key and prevent duplicate injection
+        if not direction:
+            return
+        try:
+            trigger_key = str(trigger_key)
+        except Exception:
+            trigger_key = ''
+        if trigger_key and trigger_key == self._last_motion_trigger_key:
+            return
+
+        self._last_motion_trigger_key = trigger_key
+        self._last_direction = direction
+
+        direction = str(direction or '').strip().lower()
+
+        # handle emergency stop command
+        if direction == 'stop':
+            go1_node_intent['vx'] = 0.0
+            go1_node_intent['vy'] = 0.0
+            go1_node_intent['wz'] = 0.0
+            go1_node_intent['stop'] = True
+            go1_node_intent['trigger_time'] = time.monotonic()
+            go1_estop_hold_until = time.monotonic() + ESTOP_HOLD_SEC
+            self._motion_active = False
+            self._motion_until_mono = 0.0
+            self._motion_vx = 0.0
+            self._motion_vy = 0.0
+            self._motion_wz = 0.0
+            self._motion_force_stop = False
+            write_log(f"[GO1 JSON RX] command=stop -> E-STOP hold path ({ESTOP_HOLD_SEC:.1f}s)")
+            return
+
+        # Coerce and clamp move parameters
+        move_speed_val = _coerce_float(move_speed, GO1_AUTO_AVOIDANCE_MOVE_SPEED)
+        move_speed_val = abs(move_speed_val)
+        # Duration: sane min/max
+        move_duration_val = _coerce_float(move_duration_sec, GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC)
+        move_duration_val = max(0.05, min(move_duration_val, 10.0))
+
+        vx = 0.0
+        vy = 0.0
+        wz = 0.0
+        if direction == 'front':
+            vx = move_speed_val
+        elif direction == 'back':
+            vx = -move_speed_val
+        elif direction == 'left':
+            vy = move_speed_val
+        elif direction == 'right':
+            vy = -move_speed_val
+        else:
+            write_log(f"[GO1 JSON RX] invalid direction='{direction}'")
+            return
+
+        # Apply platform velocity limits
+        go1_node_intent['vx'] = _clamp(vx, -V_MAX, V_MAX)
+        go1_node_intent['vy'] = _clamp(vy, -S_MAX, S_MAX)
+        go1_node_intent['wz'] = _clamp(wz, -W_MAX, W_MAX)
+        go1_node_intent['stop'] = False
+        go1_node_intent['trigger_time'] = time.monotonic()
+
+        self._motion_active = True
+        self._motion_until_mono = time.monotonic() + move_duration_val
+        self._motion_vx = go1_node_intent['vx']
+        self._motion_vy = go1_node_intent['vy']
+        self._motion_wz = go1_node_intent['wz']
+        self._motion_force_stop = False
+        write_log(
+            f"[GO1 JSON RX] command={direction} -> move vx={go1_node_intent['vx']:.3f}, "
+            f"vy={go1_node_intent['vy']:.3f}, wz={go1_node_intent['wz']:.3f}, duration={move_duration_val:.2f}s"
+        )
+
+    def _inject_back_then_stop(self, move_speed, back_sec, trigger_key):
+        """Move backward without a stop hold."""
+        try:
+            trigger_key = str(trigger_key)
+        except Exception:
+            trigger_key = ''
+        if trigger_key and trigger_key == self._last_motion_trigger_key:
+            return
+
+        self._last_motion_trigger_key = trigger_key
+
+        # validate duration and speed
+        back_duration = _coerce_float(back_sec, 1.0)
+        back_duration = max(0.05, min(back_duration, 10.0))
+        back_speed_val = _coerce_float(move_speed, GO1_AUTO_AVOIDANCE_MOVE_SPEED)
+        back_speed_val = abs(back_speed_val)
+        back_speed = -abs(back_speed_val)
+
+        # clamp by platform limits
+        back_speed = _clamp(back_speed, -V_MAX, V_MAX)
+
+        go1_node_intent['vx'] = back_speed
+        go1_node_intent['vy'] = 0.0
+        go1_node_intent['wz'] = 0.0
+        go1_node_intent['stop'] = False
+        go1_node_intent['trigger_time'] = time.monotonic()
+
+        self._motion_active = True
+        self._motion_until_mono = time.monotonic() + back_duration
+        self._motion_vx = back_speed
+        self._motion_vy = 0.0
+        self._motion_wz = 0.0
+        self._motion_force_stop = False
+
+        self._deferred_back_speed = 0.0
+        self._deferred_back_duration = 0.0
+        self._deferred_back_until = 0.0
+
+        write_log(
+            f"[GO1 JSON RX] command=back -> move for {back_duration:.2f}s at speed {abs(back_speed):.3f}"
+        )
+
+    def _publish_state(self, raw_json, payload, connected, fresh, status, source):
+        seq = _coerce_int(payload.get('seq', self._last_seq), self._last_seq)
+        ts = _coerce_float(payload.get('ts', payload.get('timestamp', time.time())), time.time())
+        vx_raw = _coerce_float(payload.get('vx', 0.0), 0.0)
+        vy_raw = _coerce_float(payload.get('vy', 0.0), 0.0)
+        wz_raw = _coerce_float(payload.get('wz', payload.get('yaw', 0.0)), 0.0)
+
+        stop_raw = payload.get('stop', payload.get('estop', False))
+        stop = _coerce_bool(stop_raw, False)
+        if 'estop' in payload:
+            stop = stop or _coerce_bool(payload.get('estop', False), False)
+
+        confidence = _clamp(_coerce_float(payload.get('confidence', 1.0), 1.0), 0.0, 1.0)
+        vx = 0.0 if stop else _clamp(vx_raw, -V_MAX, V_MAX)
+        vy = 0.0 if stop else _clamp(vy_raw, -S_MAX, S_MAX)
+        wz = 0.0 if stop else _clamp(wz_raw, -W_MAX, W_MAX)
+
+        self._last_seq = seq
+        self._last_raw_json = raw_json
+        self._last_payload = dict(payload)
+        if connected and fresh:
+            self._last_ok_mono = time.monotonic()
+
+        go1_server_json_data.update({
+            'raw_json': raw_json,
+            'seq': seq,
+            'ts': ts,
+            'vx': vx,
+            'vy': vy,
+            'wz': wz,
+            'stop': stop,
+            'confidence': confidence,
+            'connected': bool(connected),
+            'fresh': bool(fresh),
+            'status': status,
+            'source': source,
+        })
+
+        self.output_data[self.out_raw_json] = raw_json
+
+    def execute(self):
+        mode = str(self.state.get('mode', 'HTTP')).strip().upper()
+        source = str(self.state.get('source', '')).strip()
+        poll_interval_sec = max(0.0, _coerce_float(self.state.get('poll_interval_sec', 0.05), 0.05))
+        request_timeout_sec = max(0.2, _coerce_float(self.state.get('request_timeout_sec', 2.0), 2.0))
+        fresh_timeout_sec = max(0.05, _coerce_float(self.state.get('fresh_timeout_sec', 0.2), 0.2))
+        move_speed = max(0.01, _coerce_float(self.state.get('move_speed', 0.2), 0.2))
+        move_duration_sec = max(0.05, _coerce_float(self.state.get('move_duration_sec', 0.5), 0.5))
+
+        now_mono = time.monotonic()
+
+        # If graph execution was paused and resumed, allow the same text command to trigger again.
+        if self._last_execute_mono > 0.0:
+            paused_gap = now_mono - self._last_execute_mono
+            if paused_gap > max(1.0, poll_interval_sec * 8.0):
+                self._last_motion_trigger_key = ''
+                write_log("[GO1 JSON RX] execution resumed -> retrigger unlocked")
+        self._last_execute_mono = now_mono
+
+        if self._motion_active:
+            if now_mono < self._motion_until_mono:
+                if self._motion_force_stop:
+                    go1_node_intent['vx'] = 0.0
+                    go1_node_intent['vy'] = 0.0
+                    go1_node_intent['wz'] = 0.0
+                    go1_node_intent['stop'] = True
+                else:
+                    go1_node_intent['vx'] = self._motion_vx
+                    go1_node_intent['vy'] = self._motion_vy
+                    go1_node_intent['wz'] = self._motion_wz
+                    go1_node_intent['stop'] = False
+                go1_node_intent['trigger_time'] = now_mono
+            else:
+                go1_node_intent['vx'] = 0.0
+                go1_node_intent['vy'] = 0.0
+                go1_node_intent['wz'] = 0.0
+                go1_node_intent['stop'] = True
+                go1_node_intent['trigger_time'] = now_mono
+                self._motion_active = False
+                self._motion_until_mono = 0.0
+                self._motion_vx = 0.0
+                self._motion_vy = 0.0
+                self._motion_wz = 0.0
+                self._motion_force_stop = False
+                write_log("[GO1 JSON RX] timed motion finished -> stop")
+
+        # Check for deferred back motion (stop_then_back)
+        if self._deferred_back_until > 0.0 and now_mono >= self._deferred_back_until:
+            global go1_estop_hold_until
+            # Time to start back motion
+            back_until = now_mono + max(0.05, self._deferred_back_duration)
+            self._motion_active = True
+            self._motion_until_mono = back_until
+            self._motion_vx = -self._deferred_back_speed  # back motion
+            self._motion_vy = 0.0
+            self._motion_wz = 0.0
+            self._motion_force_stop = False
+            go1_node_intent['vx'] = self._motion_vx
+            go1_node_intent['vy'] = self._motion_vy
+            go1_node_intent['wz'] = self._motion_wz
+            go1_node_intent['stop'] = False
+            go1_node_intent['trigger_time'] = now_mono
+            # Reset deferred state
+            self._deferred_back_speed = 0.0
+            self._deferred_back_duration = 0.0
+            self._deferred_back_until = 0.0
+            write_log(
+                f"[GO1 JSON RX] deferred back motion started -> vx={self._motion_vx:.3f}, duration={self._deferred_back_duration:.2f}s"
+            )
+
+        remaining_ms = 0.0
+        if self._motion_active:
+            remaining_ms = max(0.0, (self._motion_until_mono - now_mono) * 1000.0)
+        go1_server_json_data['motion_active'] = bool(self._motion_active)
+        go1_server_json_data['motion_remaining_ms'] = float(remaining_ms)
+        go1_server_json_data['last_direction'] = self._last_direction
+
+        should_poll = (now_mono - self._last_poll_mono) >= poll_interval_sec or not self._last_raw_json
+
+        if should_poll:
+            self._last_poll_mono = now_mono
+            try:
+                raw_json = self._read_source_text(mode, source, request_timeout_sec)
+                parsed = json.loads(raw_json)
+                direction = self._extract_direction_text(parsed)
+                payload = self._pick_payload(parsed)
+                if not isinstance(payload, dict):
+                    payload = {}
+
+                # ===== JSON 백업 및 detections 처리 =====
+                # 같은 timestamp면 이미 처리한 패킷이므로 스킵
+                incoming_ts = parsed.get('timestamp')
+                if incoming_ts is not None and str(incoming_ts) == str(self._last_json_timestamp):
+                    self._publish_state(raw_json, payload, True, True, 'OK', source)
+                    self.output_data[self.out_raw_json] = None  # Unity relay 차단
+                    return self.out_flow
+                if incoming_ts is not None:
+                    self._last_json_timestamp = incoming_ts
+
+                self._save_json_backup(raw_json, parsed)
+
+                # detections 정보 추출 및 처리
+                detections = parsed.get('detections', [])
+                if detections and detections != self._last_detections:
+                    camera_id = parsed.get('camera_id', 'unknown')
+                    timestamp = parsed.get('timestamp', time.time())
+                    has_near_obstacle = parsed.get('has_near_obstacle', False)
+                    
+                    # 헤더 로그
+                    # write_log(f"[GO1 JSON RX] JSON Received - timestamp={timestamp}, camera={camera_id}, has_near_obstacle={has_near_obstacle}")
+                    # write_log(f"[GO1 JSON RX] Total detections: {len(detections)}")
+                    
+                    # detections 처리 및 로그
+                    self._last_detections = detections
+                    processed_dets = self._process_detections(detections)
+                    
+                    # detections를 payload에 추가 (나중에 로봇 이동에 사용 가능)
+                    payload['detections'] = processed_dets
+                    payload['camera_id'] = camera_id
+                    payload['has_near_obstacle'] = has_near_obstacle
+                # ===== JSON 백업 및 detections 처리 끝 =====
+
+                if direction:
+                    if direction == 'front':
+                        payload['vx'] = move_speed
+                        payload['vy'] = 0.0
+                        payload['wz'] = 0.0
+                        payload['stop'] = False
+                    elif direction == 'back':
+                        payload['vx'] = -move_speed
+                        payload['vy'] = 0.0
+                        payload['wz'] = 0.0
+                        payload['stop'] = False
+                    elif direction == 'left':
+                        payload['vx'] = 0.0
+                        payload['vy'] = move_speed
+                        payload['wz'] = 0.0
+                        payload['stop'] = False
+                    elif direction == 'right':
+                        payload['vx'] = 0.0
+                        payload['vy'] = -move_speed
+                        payload['wz'] = 0.0
+                        payload['stop'] = False
+                    elif direction == 'stop':
+                        payload['vx'] = 0.0
+                        payload['vy'] = 0.0
+                        payload['wz'] = 0.0
+                        payload['stop'] = True
+
+                if 'ts' not in payload and 'timestamp' not in payload:
+                    payload['ts'] = time.time()
+
+                self._last_error = ''
+                self._publish_state(raw_json, payload, True, True, 'OK', source)
+                self._log_received_payload(source, direction, payload, raw_json)
+
+                raw_for_log = raw_json.strip()
+                if raw_for_log != self._last_logged_raw:
+                    # if direction:
+                    #     write_log(f"[GO1 JSON RX] read ok | source={source} | direction={direction}")
+                    # else:
+                    #     write_log(f"[GO1 JSON RX] read ok | source={source}")
+                    self._last_logged_raw = raw_for_log
+                self._last_logged_error = ''
+
+                if direction:
+                    trigger_key = raw_json.strip()
+                    self._inject_direction_motion(direction, move_speed, move_duration_sec, trigger_key)
+            except Exception as e:
+                self._last_error = str(e)
+                fresh = (now_mono - self._last_ok_mono) <= fresh_timeout_sec if self._last_ok_mono else False
+                status = f'ERR: {e.__class__.__name__}'
+                self._publish_state(self._last_raw_json, self._last_payload, False, fresh, status, source)
+                if self._last_error != self._last_logged_error:
+                    write_log(f"[GO1 JSON RX] read error | source={source} | {e.__class__.__name__}: {self._last_error}")
+                    self._last_logged_error = self._last_error
+        else:
+            fresh = (now_mono - self._last_ok_mono) <= fresh_timeout_sec if self._last_ok_mono else False
+            status = go1_server_json_data.get('status', 'Idle')
+            if not fresh and status == 'OK':
+                status = 'STALE'
+            self._publish_state(self._last_raw_json, self._last_payload, bool(self._last_raw_json), fresh, status, source)
+
+        return self.out_flow
+
+
+class Go1AutoAvoidanceNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Auto Avoidance", "GO1_AUTO_AVOIDANCE")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.in_json = generate_uuid()
+        self.inputs[self.in_json] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self._last_processed_key = ''
+        self._last_status = 'Idle'
+        
+        # Escape direction thresholds are enforced from policy YAML constants
+
+    def _parse_payload(self, raw_value):
+        if raw_value is None:
+            return None, ''
+        if isinstance(raw_value, dict):
+            return raw_value, json.dumps(raw_value, ensure_ascii=False, sort_keys=True)
+        if isinstance(raw_value, list):
+            signature = json.dumps(raw_value, ensure_ascii=False, sort_keys=True)
+            if raw_value and isinstance(raw_value[-1], dict):
+                return raw_value[-1], signature
+            return None, signature
+        if isinstance(raw_value, str):
+            text = raw_value.strip()
+            if not text:
+                return None, ''
+            try:
+                parsed = json.loads(text)
+                return parsed, text
+            except Exception:
+                return None, text
+        return None, str(raw_value)
+
+    def _collect_policy_targets(self, detections):
+        matched_objects = []
+        action_candidates = []
+
+        if not isinstance(detections, list):
+            return matched_objects, None
+
+        for idx, det in enumerate(detections):
+            if not isinstance(det, dict):
+                continue
+            if str(det.get('risk_level', '')).strip().lower() != 'near':
+                continue
+            group = _normalize_go1_detection_group(det.get('name'), det.get('group'))
+            policy = GO1_AUTO_AVOIDANCE_POLICY.get(group)
+            if not group or policy is None:
+                continue
+
+            rel_depth = det.get('rel_depth')
+            try:
+                rel_depth_value = float(rel_depth)
+            except Exception:
+                rel_depth_value = float('inf')
+
+            entry = {
+                'index': idx,
+                'det': det,
+                'group': group,
+                'policy': policy,
+                'rel_depth': rel_depth_value,
+            }
+            matched_objects.append(entry)
+            if str(policy.get('action', '')).strip().lower() != 'skip':
+                action_candidates.append(entry)
+
+        def _sort_key(entry):
+            return (
+                GO1_AUTO_AVOIDANCE_GROUP_PRIORITY.get(entry['group'], 999),
+                entry['rel_depth'],
+                entry['index'],
+            )
+
+        matched_objects.sort(key=_sort_key)
+        action_candidates.sort(key=_sort_key)
+        return matched_objects, (action_candidates[0] if action_candidates else None)
+
+    def _choose_escape_direction(self, bbox):
+        if not bbox or len(bbox) < 4:
+            return None
+        try:
+            x0 = float(bbox[0])
+            x1 = float(bbox[2])
+        except Exception:
+            return None
+        # Use policy-defined escape thresholds (from YAML) only — ignore node.state overrides
+        left_limit = float(GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X)
+        right_limit = float(GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X)
+        # 좌측은 bbox의 오른쪽 끝(x1), 우측은 bbox의 왼쪽 끝(x0) 기준으로
+        # 회피가 더 이상 필요 없는지를 판단한다.
+        if x1 <= left_limit or x0 >= right_limit:
+            return ''
+        center_x = float(GO1_AUTO_AVOIDANCE_IMAGE_WIDTH) / 2.0
+        bbox_center_x = (x0 + x1) / 2.0
+        return 'right' if bbox_center_x < center_x else 'left'
+
+    def _compute_height_filter_metrics(self, bbox, rel_depth):
+        metrics = {
+            'valid': False,
+            'height_px': None,
+            'distance_cm': None,
+            'normalized_height': None,
+            'threshold': None,
+            'is_small': False,
+            'reason': '',
+        }
+
+        if not bbox or len(bbox) < 4:
+            metrics['reason'] = 'invalid_bbox'
+            return metrics
+        try:
+            x0 = float(bbox[0])
+            y0 = float(bbox[1])
+            x1 = float(bbox[2])
+            y1 = float(bbox[3])
+        except Exception:
+            metrics['reason'] = 'invalid_bbox_value'
+            return metrics
+
+        _ = abs(x1 - x0)
+        height = abs(y1 - y0)
+        metrics['height_px'] = height
+        metrics['valid'] = True
+
+        # Always use height_filter; calculate reference distance and threshold
+        reference_distance_cm = _calibrate_go1_rel_depth_to_cm(GO1_AUTO_AVOIDANCE_HEIGHT_REF_REL_DEPTH)
+        if reference_distance_cm is None or reference_distance_cm <= 0.0:
+            metrics['reason'] = 'invalid_reference_depth'
+            return metrics
+
+        threshold = GO1_AUTO_AVOIDANCE_HEIGHT_REF_PX * reference_distance_cm * GO1_AUTO_AVOIDANCE_HEIGHT_THRESHOLD_SCALE
+        metrics['threshold'] = threshold
+
+        # Calculate actual distance from rel_depth
+        distance_cm = _calibrate_go1_rel_depth_to_cm(rel_depth)
+        if distance_cm is None:
+            metrics['reason'] = 'invalid_rel_depth'
+            return metrics
+
+        # Determine if object is small by normalized height comparison
+        normalized_height = height * distance_cm
+        metrics['distance_cm'] = distance_cm
+        metrics['normalized_height'] = normalized_height
+        metrics['reason'] = 'height_depth_normalized'
+        metrics['is_small'] = normalized_height <= threshold
+        return metrics
+
+    def _is_small_bbox(self, bbox, rel_depth):
+        metrics = self._compute_height_filter_metrics(bbox, rel_depth)
+        return bool(metrics.get('is_small', False))
+
+    def _format_near_targets_for_log(self, near_objects):
+        if not near_objects:
+            return 'none'
+
+        parts = []
+        for entry in near_objects:
+            det = entry.get('det', {})
+            name = str(det.get('name', 'unknown')).strip() or 'unknown'
+            group = str(entry.get('group', '')).strip() or 'UNKNOWN'
+            rel_depth = det.get('rel_depth')
+            try:
+                rel_depth_text = f"{float(rel_depth):.3f}"
+            except Exception:
+                rel_depth_text = str(rel_depth)
+            parts.append(f"{name}[{group}]@{rel_depth_text}")
+        return ', '.join(parts)
+
+    def _trigger_robot_stop(self, hold_sec=2.0, status='STOP_SENT'):
+        global go1_estop_hold_until
+        go1_node_intent['vx'] = 0.0
+        go1_node_intent['vy'] = 0.0
+        go1_node_intent['wz'] = 0.0
+        go1_node_intent['stop'] = True
+        go1_node_intent['trigger_time'] = time.monotonic()
+        go1_estop_hold_until = time.monotonic() + max(0.0, float(hold_sec))
+        go1_auto_avoidance_data['stop_sent'] = True
+        go1_auto_avoidance_data['target_action'] = 'stop'
+        go1_auto_avoidance_data['status'] = status
+        self._last_status = status
+
+    def execute(self):
+        raw_value = self.fetch_input_data(self.in_json)
+        payload, signature = self._parse_payload(raw_value)
+        is_new_input = signature != self._last_processed_key
+        self._last_processed_key = signature
+        go1_auto_avoidance_data['stop_sent'] = False
+        go1_auto_avoidance_data['last_error'] = ''
+        go1_auto_avoidance_data['source'] = 'GO1_SERVER_JSON_RECV'
+
+        if not isinstance(payload, dict):
+            if is_new_input:
+                write_log("[GO1 AUTO AVOID] status=WAITING | payload is not dict")
+            go1_auto_avoidance_data['status'] = 'WAITING'
+            go1_auto_avoidance_data['has_near_obstacle'] = False
+            go1_auto_avoidance_data['near_count'] = 0
+            go1_auto_avoidance_data['target_found'] = False
+            go1_auto_avoidance_data['target_id'] = None
+            go1_auto_avoidance_data['target_name'] = None
+            go1_auto_avoidance_data['target_group'] = None
+            go1_auto_avoidance_data['target_rel_depth'] = None
+            go1_auto_avoidance_data['target_action'] = ''
+            self._last_status = 'WAITING'
+            return self.out_flow
+
+        has_near_obstacle = _coerce_bool(payload.get('has_near_obstacle', False), False)
+        detections = payload.get('detections', [])
+        near_objects, action_target = self._collect_policy_targets(detections)
+
+        go1_auto_avoidance_data['has_near_obstacle'] = bool(has_near_obstacle or near_objects)
+        go1_auto_avoidance_data['near_count'] = len(near_objects)
+        go1_auto_avoidance_data['last_trigger_ts'] = time.time()
+        go1_auto_avoidance_data['target_found'] = bool(action_target)
+        go1_auto_avoidance_data['target_id'] = action_target['det'].get('id') if action_target else None
+        go1_auto_avoidance_data['target_name'] = action_target['det'].get('name') if action_target else None
+        go1_auto_avoidance_data['target_group'] = action_target['group'] if action_target else None
+        go1_auto_avoidance_data['target_rel_depth'] = action_target['det'].get('rel_depth') if action_target else None
+        go1_auto_avoidance_data['target_action'] = str(action_target['policy'].get('action', '')).strip().lower() if action_target else ''
+
+        if is_new_input:
+            write_log(
+                f"[GO1 AUTO AVOID] near detections: {self._format_near_targets_for_log(near_objects)}"
+            )
+
+        if not has_near_obstacle and not near_objects:
+            if is_new_input:
+                write_log("[GO1 AUTO AVOID] status=SAFE | no near detections")
+            go1_auto_avoidance_data['status'] = 'SAFE'
+            self._last_status = 'SAFE'
+            return self.out_flow
+
+        if not near_objects:
+            if is_new_input:
+                write_log("[GO1 AUTO AVOID] status=NEAR_OBSTACLE_NONE | has_near_obstacle=true but no actionable targets")
+            go1_auto_avoidance_data['status'] = 'NEAR_OBSTACLE_NONE'
+            self._last_status = 'NEAR_OBSTACLE_NONE'
+            return self.out_flow
+
+        if action_target is None:
+            if is_new_input:
+                write_log("[GO1 AUTO AVOID] action=skip | result=pass-through (no robot motion)")
+            go1_auto_avoidance_data['status'] = 'SMALL_OBSTACLE_SKIPPED'
+            self._last_status = 'SMALL_OBSTACLE_SKIPPED'
+            return self.out_flow
+
+        target = action_target['det']
+        target_group = action_target['group']
+        target_action = str(action_target['policy'].get('action', '')).strip().lower()
+        target_id = target.get('id')
+        target_name = target.get('name')
+        target_rel_depth = target.get('rel_depth')
+        bbox = target.get('bbox_xyxy')
+
+        small_metrics = self._compute_height_filter_metrics(bbox, target_rel_depth)
+        if small_metrics.get('is_small', False):
+            if is_new_input:
+                height_px = small_metrics.get('height_px')
+                distance_cm = small_metrics.get('distance_cm')
+                normalized_height = small_metrics.get('normalized_height')
+                threshold = small_metrics.get('threshold')
+                reason = str(small_metrics.get('reason', 'unknown'))
+                if normalized_height is not None and threshold is not None and distance_cm is not None:
+                    write_log(
+                        f"[GO1 AUTO AVOID] action=skip | target={target_name}[{target_group}] | "
+                        f"small by height*distance | h={height_px:.1f}px | d={distance_cm:.1f}cm | "
+                        f"h*d={normalized_height:.1f} <= threshold={threshold:.1f}"
+                    )
+                else:
+                    write_log(
+                        f"[GO1 AUTO AVOID] action=skip | target={target_name}[{target_group}] | "
+                        f"small by fallback({reason}) | h={float(height_px or 0.0):.1f}px < min={GO1_AUTO_AVOIDANCE_HEIGHT_MIN_PX_FALLBACK:.1f}px"
+                    )
+            go1_auto_avoidance_data['status'] = f"SMALL_BBOX_SKIPPED_{target_group}"
+            self._last_status = go1_auto_avoidance_data['status']
+            return self.out_flow
+
+        # if is_new_input:
+        #     write_log(
+        #         f"[GO1 AUTO AVOID] near target detected | id={target_id} | name={target_name} | "
+        #         f"group={target_group} | action={target_action} | rel_depth={target_rel_depth}"
+        #     )
+
+        if target_action == 'stop':
+            hold_sec = float(action_target['policy'].get('hold_sec', 2.0))
+            status = f"STOP_SENT_{target_group}"
+            if is_new_input:
+                write_log(
+                    f"[GO1 AUTO AVOID] action=stop | target={target_name}[{target_group}] | hold={hold_sec:.1f}s"
+                )
+            self._trigger_robot_stop(hold_sec=hold_sec, status=status)
+            write_log(f"[GO1 AUTO AVOID] status={status} | stop hold={hold_sec:.1f}s applied")
+            return self.out_flow
+
+        if target_action == 'avoid':
+            inject_dir = self._choose_escape_direction(bbox)
+            if inject_dir is None:
+                write_log(f"[GO1 AUTO AVOID] action=avoid | target={target_name}[{target_group}] | bbox missing -> emergency stop")
+                self._trigger_robot_stop(hold_sec=4.0, status='HARD_OBSTACLE_NO_BBOX_STOP')
+                return self.out_flow
+
+            if inject_dir == '':
+                write_log(
+                    f"[GO1 AUTO AVOID] action=avoid | target={target_name}[{target_group}] | "
+                    f"escape not needed (left uses x1<= {GO1_AUTO_AVOIDANCE_ESCAPE_LEFT_X}, right uses x0>= {GO1_AUTO_AVOIDANCE_ESCAPE_RIGHT_X})"
+                )
+                go1_auto_avoidance_data['status'] = f"ESCAPE_NOT_NEEDED_{target_group}"
+                self._last_status = go1_auto_avoidance_data['status']
+                return self.out_flow
+
+            dir_msg = '오른쪽' if inject_dir == 'right' else '왼쪽'
+            if is_new_input:
+                write_log(
+                    f"[GO1 AUTO AVOID] action=avoid | target={target_name}[{target_group}] | "
+                    f"escape={dir_msg} | bbox={bbox}"
+                )
+
+            json_node = None
+            try:
+                json_node = next((n for n in node_registry.values() if getattr(n, 'type_str', None) == 'GO1_SERVER_JSON_RECV'), None)
+            except Exception:
+                json_node = None
+
+            if json_node and hasattr(json_node, '_inject_direction_motion'):
+                try:
+                    # 그룹별로 설정된 move_speed/move_duration_sec가 있으면 우선 사용
+                    move_speed = _coerce_float(action_target['policy'].get('move_speed', GO1_AUTO_AVOIDANCE_MOVE_SPEED), GO1_AUTO_AVOIDANCE_MOVE_SPEED)
+                    move_duration = _coerce_float(action_target['policy'].get('move_duration_sec', GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC), GO1_AUTO_AVOIDANCE_MOVE_DURATION_SEC)
+                    json_node._inject_direction_motion(
+                        inject_dir,
+                        move_speed,
+                        move_duration,
+                        signature,
+                    )
+                    go1_auto_avoidance_data['status'] = f"MOVE_{inject_dir.upper()}_{target_group}"
+                    self._last_status = go1_auto_avoidance_data['status']
+                    write_log(
+                        f"[GO1 AUTO AVOID] result=move {inject_dir.upper()} | target={target_name}[{target_group}] | "
+                        f"speed={move_speed:.2f} | duration={move_duration:.1f}s"
+                    )
+                except Exception:
+                    write_log('[GO1 AUTO AVOID] motion injection failed — fallback stop command sent')
+                    self._trigger_robot_stop(hold_sec=4.0, status='HARD_OBSTACLE_MOVE_FAIL_STOP')
+            else:
+                write_log('[GO1 AUTO AVOID] motion inject method not found on JSON RX node — stop command sent')
+                self._trigger_robot_stop(hold_sec=4.0, status='HARD_OBSTACLE_NO_INJECTOR_STOP')
+
+            return self.out_flow
+
+        if target_action == 'stop_then_back':
+            back_sec = float(action_target['policy'].get('back_sec', 1.0))
+            if is_new_input:
+                write_log(
+                    f"[GO1 AUTO AVOID] action=back | target={target_name}[{target_group}] | "
+                    f"back={back_sec:.1f}s"
+                )
+            json_node = None
+            try:
+                json_node = next((n for n in node_registry.values() if getattr(n, 'type_str', None) == 'GO1_SERVER_JSON_RECV'), None)
+            except Exception:
+                json_node = None
+
+            if json_node and hasattr(json_node, '_inject_back_then_stop'):
+                try:
+                    move_speed = _coerce_float(action_target['policy'].get('move_speed', GO1_AUTO_AVOIDANCE_MOVE_SPEED), GO1_AUTO_AVOIDANCE_MOVE_SPEED)
+                    json_node._inject_back_then_stop(
+                        move_speed,
+                        back_sec,
+                        signature,
+                    )
+                    go1_auto_avoidance_data['status'] = f"BACK_{target_group}"
+                    self._last_status = go1_auto_avoidance_data['status']
+                    write_log(
+                        f"[GO1 AUTO AVOID] result=back({back_sec:.1f}s) | target={target_name}[{target_group}] | "
+                        f"speed={move_speed:.2f}"
+                    )
+                except Exception:
+                    write_log('[GO1 AUTO AVOID] backup motion injection failed — no alternative move available')
+                    self._trigger_robot_stop(hold_sec=4.0, status='STOP_THEN_BACK_MOVE_FAIL')
+            else:
+                write_log('[GO1 AUTO AVOID] backup method not found on JSON RX node — no alternative move available')
+                self._trigger_robot_stop(hold_sec=4.0, status='STOP_THEN_BACK_NO_INJECTOR')
+
+            return self.out_flow
+
+        write_log(
+            f"[GO1 AUTO AVOID] policy=UNKNOWN | target={target_name}[{target_group}] | "
+            f"group action={target_action}"
+        )
+        go1_auto_avoidance_data['status'] = 'POLICY_UNKNOWN'
+        self._last_status = 'POLICY_UNKNOWN'
+
+        return self.out_flow
+
+
+class Go1MissionReceiverNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Mission Receiver (Go1)", "GO1_MISSION_RECV")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_raw_json = generate_uuid()
+        self.outputs[self.out_raw_json] = PortType.DATA
+        self.out_mission_id = generate_uuid()
+        self.outputs[self.out_mission_id] = PortType.DATA
+        self.out_has_mission = generate_uuid()
+        self.outputs[self.out_has_mission] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['mode'] = 'HTTP'
+        self.state['source'] = GO1_MISSION_PENDING_URL
+        self.state['poll_interval_sec'] = GO1_MISSION_POLL_SEC
+        self.state['request_timeout_sec'] = GO1_MISSION_TIMEOUT_SEC
+        self.state['decision_url'] = GO1_MISSION_DECISION_URL
+        self._last_poll_mono = 0.0
+        self._last_signature = ''
+        self._last_raw_json = ''
+        self._last_mission_id = ''
+        self._last_has_mission = False
+        self._last_error = ''
+        self._new_mission_pulse = False
+        self._last_run_generation = -1
+
+    def _read_source_text(self, mode, source, timeout_sec):
+        source = str(source or '').strip()
+        if not source:
+            raise RuntimeError('source is empty')
+
+        if mode == 'FILE' or (not source.startswith('http://') and not source.startswith('https://')):
+            if not os.path.exists(source):
+                raise FileNotFoundError(source)
+            with open(source, 'r', encoding='utf-8') as f:
+                return f.read()
+
+        req = urllib.request.Request(
+            source,
+            headers={
+                'Accept': 'application/json',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+            },
+            method='GET',
+        )
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            charset = resp.headers.get_content_charset() or 'utf-8'
+            return resp.read().decode(charset, errors='replace')
+
+    def execute(self):
+        cur_gen = engine_module.run_generation
+        if cur_gen != self._last_run_generation:
+            self._last_run_generation = cur_gen
+            global _go1_mission_run_id
+            _go1_mission_run_id += 1
+            self._last_signature = ''
+            self._last_poll_mono = 0.0
+            write_log("[GO1 MISSION RX] restart detected - resetting signature")
+
+        # go1가 연결된 상태에서 배터리 값이 아직 수신되지 않은 경우 폴링 대기
+        # (SDK 초기화 직후 battery=0으로 나오는 race condition 방지)
+        hw_link = go1_dashboard.get('hw_link', 'Offline')
+        if hw_link in ('Online (Active)', 'Online (Listen)') and not go1_state.get('battery_confirmed', False):
+            return None
+
+        mode = str(self.state.get('mode', 'HTTP')).strip().upper()
+        source = str(self.state.get('source', GO1_MISSION_PENDING_URL)).strip()
+        poll_interval_sec = max(0.0, _coerce_float(self.state.get('poll_interval_sec', GO1_MISSION_POLL_SEC), GO1_MISSION_POLL_SEC))
+        request_timeout_sec = max(0.2, _coerce_float(self.state.get('request_timeout_sec', GO1_MISSION_TIMEOUT_SEC), GO1_MISSION_TIMEOUT_SEC))
+        now_mono = time.monotonic()
+
+        if (now_mono - self._last_poll_mono) < poll_interval_sec and self._last_raw_json:
+            self.output_data[self.out_raw_json] = self._last_raw_json
+            self.output_data[self.out_mission_id] = self._last_mission_id
+            self.output_data[self.out_has_mission] = bool(self._last_has_mission)
+            return self.out_flow if self._new_mission_pulse else None
+
+        self._last_poll_mono = now_mono
+        try:
+            raw_json = self._read_source_text(mode, source, request_timeout_sec)
+            payload, signature = _normalize_mission_container(raw_json)
+            mission_id = _extract_mission_id(payload)
+            has_mission = bool(mission_id or payload)
+
+            self._last_raw_json = raw_json
+            self._last_mission_id = mission_id
+            self._last_has_mission = has_mission
+            self.output_data[self.out_raw_json] = raw_json
+            self.output_data[self.out_mission_id] = mission_id
+            self.output_data[self.out_has_mission] = has_mission
+
+            go1_mission_state.update({
+                'status': 'Pending' if has_mission else 'Idle',
+                'mission_id': mission_id,
+                'source': source,
+                'last_error': '',
+                'updated_ts': time.time(),
+            })
+
+            if has_mission and signature and signature != self._last_signature:
+                self._last_signature = signature
+                self._new_mission_pulse = True
+                go1_mission_state['mission_type'] = _extract_mission_type(payload)
+                write_log(f"[GO1 MISSION RX] pending mission received: {mission_id or 'unknown'}")
+            else:
+                self._new_mission_pulse = False
+        except Exception as e:
+            self._last_error = str(e)
+            self._new_mission_pulse = False
+            go1_mission_state.update({
+                'status': 'Error',
+                'last_error': self._last_error,
+                'source': source,
+                'updated_ts': time.time(),
+            })
+            write_log(f"[GO1 MISSION RX] error: {e}")
+            self.output_data[self.out_raw_json] = self._last_raw_json
+            self.output_data[self.out_mission_id] = self._last_mission_id
+            self.output_data[self.out_has_mission] = bool(self._last_has_mission)
+
+        if self._new_mission_pulse:
+            self._new_mission_pulse = False
+            return self.out_flow
+        return None
+
+
+def _evaluate_mission_conditions(conditions):
+    """
+    conditions: dict with optional keys:
+        go1_connected (bool)        : go1 must be Online (Active/Listen)
+        go1_battery_min (int/float) : go1 battery must be >= n %
+        ep01_connected (bool)       : ep01 must be Online
+        ep01_battery_min (int/float): ep01 battery must be >= n %
+    Returns (passed: bool, fail_reason: str)
+    """
+    if not isinstance(conditions, dict):
+        return True, ''
+
+    if _coerce_bool(conditions.get('go1_connected', False), False):
+        hw = go1_dashboard.get('hw_link', 'Offline')
+        if hw not in ('Online (Active)', 'Online (Listen)'):
+            return False, f'go1 not connected (hw_link={hw})'
+
+    go1_batt_min = conditions.get('go1_battery_min')
+    if go1_batt_min is not None:
+        min_pct = _coerce_float(go1_batt_min, 0.0)
+        batt = go1_state.get('battery', -1)
+        if batt < 0:
+            return False, 'go1 battery unknown (not connected)'
+        if batt < min_pct:
+            return False, f'go1 battery too low ({batt}% < {min_pct:.0f}%)'
+
+    def _get_ep01_dashboard():
+        import sys as _sys
+        # Online 상태를 보이는 모듈 우선 반환 (ep_manager worker 모드에서는
+        # 메인 프로세스의 ep01.ep_dashboard가 Offline이고
+        # ui.dpg_manager.ep_dashboard가 실제 상태를 반영함)
+        candidates = ('nodes.robots.ep01', 'ep01', 'ui.dpg_manager', 'dpg_manager')
+        fallback = (None, None)
+        for _name in candidates:
+            _mod = _sys.modules.get(_name)
+            if _mod is None or not hasattr(_mod, 'ep_dashboard'):
+                continue
+            _dash = getattr(_mod, 'ep_dashboard', {})
+            _st = getattr(_mod, 'ep_state', {})
+            if 'Online' in _dash.get('hw_link', ''):
+                return _dash, _st
+            if fallback == (None, None):
+                fallback = (_dash, _st)
+        return fallback
+
+    if _coerce_bool(conditions.get('ep01_connected', False), False):
+        _ep_dash, _ = _get_ep01_dashboard()
+        if _ep_dash is None:
+            write_log('[CONDITION] ep01 module not found (nodes.robots.ep01 / ep01 both not loaded)')
+            return False, 'ep01 module not loaded'
+        hw = _ep_dash.get('hw_link', 'Offline')
+        write_log(f'[CONDITION] ep01 hw_link={hw!r}')
+        if 'Online' not in hw:
+            return False, f'ep01 not connected (hw_link={hw})'
+
+    ep01_batt_min = conditions.get('ep01_battery_min')
+    if ep01_batt_min is not None:
+        _ep_dash, _ep_st = _get_ep01_dashboard()
+        if _ep_dash is None:
+            return False, 'ep01 module not loaded'
+        hw = _ep_dash.get('hw_link', 'Offline')
+        if 'Online' not in hw:
+            return False, 'ep01 not connected (cannot check battery)'
+        min_pct = _coerce_float(ep01_batt_min, 0.0)
+        batt = (_ep_st or {}).get('battery', -1)
+        if batt < 0:
+            return False, 'ep01 battery unknown'
+        if batt < min_pct:
+            return False, f'ep01 battery too low ({batt}% < {min_pct:.0f}%)'
+
+    return True, ''
+
+
+class Go1MissionDecisionNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Mission Decision (Go1)", "GO1_MISSION_DECIDE")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.in_raw_json = generate_uuid()
+        self.inputs[self.in_raw_json] = PortType.DATA
+        self.out_raw_json = generate_uuid()
+        self.outputs[self.out_raw_json] = PortType.DATA
+        self.out_mission_id = generate_uuid()
+        self.outputs[self.out_mission_id] = PortType.DATA
+        self.out_decision = generate_uuid()
+        self.outputs[self.out_decision] = PortType.DATA
+        self.out_reason = generate_uuid()
+        self.outputs[self.out_reason] = PortType.DATA
+        self.out_accepted = generate_uuid()
+        self.outputs[self.out_accepted] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['decision_mode'] = GO1_MISSION_DECISION_MODE
+        self.state['allowed_mission_types'] = ', '.join(GO1_MISSION_ALLOWED_TYPES)
+        self.state['decision_url'] = GO1_MISSION_DECISION_URL
+        self.state['request_timeout_sec'] = GO1_MISSION_TIMEOUT_SEC
+        self.state['require_destination'] = True
+        self._last_post_signature = ''
+
+    def execute(self):
+        raw_json = self.fetch_input_data(self.in_raw_json)
+        payload, signature = _normalize_mission_container(raw_json)
+        if not payload:
+            write_log("[GO1 MISSION DECIDE] no input payload - skipping")
+            return None
+
+        mission_id = _extract_mission_id(payload)
+        mission_type = _extract_mission_type(payload)
+        destination, waypoints = _extract_mission_destination(payload)
+        has_destination = bool(destination or waypoints)
+        mode = str(self.state.get('decision_mode', GO1_MISSION_DECISION_MODE)).strip().lower()
+        require_destination = _coerce_bool(self.state.get('require_destination', True), True)
+        allowed_types = [item.strip().lower() for item in str(self.state.get('allowed_mission_types', ', '.join(GO1_MISSION_ALLOWED_TYPES))).split(',') if item.strip()]
+
+        conditions = payload.get('conditions')
+        cond_fail = ''
+        if isinstance(conditions, dict) and conditions:
+            cond_ok, cond_fail = _evaluate_mission_conditions(conditions)
+            if not cond_ok:
+                cond_fail = f'condition failed: {cond_fail}'
+
+        if cond_fail:
+            decision = 'reject'
+            reason = cond_fail
+        elif not mission_id:
+            decision = 'reject'
+            reason = 'missing mission_id'
+        elif mode == 'accept_all':
+            decision = 'accept'
+            reason = 'accept_all'
+        elif mode == 'accept_if_allowed_type' and allowed_types:
+            decision = 'accept' if (mission_type.lower() in allowed_types and (has_destination or not require_destination)) else 'reject'
+            reason = 'allowed_type' if decision == 'accept' else 'type or destination mismatch'
+        else:
+            decision = 'accept' if ((has_destination or not require_destination) and (not allowed_types or not mission_type or mission_type.lower() in allowed_types)) else 'reject'
+            reason = 'destination present' if decision == 'accept' else 'destination missing or type blocked'
+
+        accepted = decision == 'accept'
+        decision_url = str(self.state.get('decision_url', GO1_MISSION_DECISION_URL)).strip() or GO1_MISSION_DECISION_URL
+        timeout_sec = max(0.2, _coerce_float(self.state.get('request_timeout_sec', GO1_MISSION_TIMEOUT_SEC), GO1_MISSION_TIMEOUT_SEC))
+        post_payload = {'mission_id': mission_id, 'decision': decision}
+
+        if mission_id and signature and signature != self._last_post_signature:
+            self._last_post_signature = signature
+            write_log(f"[GO1 MISSION DECIDE] mission={mission_id} type={mission_type} mode={mode} -> {decision} (reason: {reason})")
+            try:
+                status_code, body = _post_json_payload(decision_url, post_payload, timeout_sec)
+                write_log(f"[GO1 MISSION DECIDE] POST {decision_url} -> rc={status_code}")
+                if body:
+                    write_log(f"[GO1 MISSION DECIDE] response: {body[:200]}")
+                go1_mission_state.update({
+                    'status': 'Accepted' if accepted else 'Rejected',
+                    'mission_id': mission_id,
+                    'mission_type': mission_type,
+                    'decision': decision,
+                    'decision_reason': reason,
+                    'source': decision_url,
+                    'last_error': '',
+                    'updated_ts': time.time(),
+                })
+            except Exception as e:
+                go1_mission_state.update({
+                    'status': 'DecisionError',
+                    'mission_id': mission_id,
+                    'mission_type': mission_type,
+                    'decision': decision,
+                    'decision_reason': reason,
+                    'source': decision_url,
+                    'last_error': str(e),
+                    'updated_ts': time.time(),
+                })
+                write_log(f"[GO1 MISSION DECIDE] POST failed (server unavailable etc.): {e} -> continuing with decision={decision}")
+        elif mission_id and signature and signature == self._last_post_signature:
+            write_log(f"[GO1 MISSION DECIDE] duplicate mission skipped: {mission_id}")
+        elif not mission_id:
+            go1_mission_state.update({
+                'status': 'Rejected',
+                'mission_id': '',
+                'mission_type': mission_type,
+                'decision': 'reject',
+                'decision_reason': reason,
+                'source': decision_url,
+                'last_error': '',
+                'updated_ts': time.time(),
+            })
+
+        self.output_data[self.out_raw_json] = raw_json
+        self.output_data[self.out_mission_id] = mission_id
+        self.output_data[self.out_decision] = decision
+        self.output_data[self.out_reason] = reason
+        self.output_data[self.out_accepted] = accepted
+        return self.out_flow
+
+
+class Go1MissionDispatchNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Mission Dispatch (Go1)", "GO1_MISSION_DISPATCH")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.in_raw_json = generate_uuid()
+        self.inputs[self.in_raw_json] = PortType.DATA
+        self.in_decision = generate_uuid()
+        self.inputs[self.in_decision] = PortType.DATA
+        self.out_path_json = generate_uuid()
+        self.outputs[self.out_path_json] = PortType.DATA
+        self.out_action_json = generate_uuid()
+        self.outputs[self.out_action_json] = PortType.DATA
+        self.out_mission_id = generate_uuid()
+        self.outputs[self.out_mission_id] = PortType.DATA
+        self.out_accepted = generate_uuid()
+        self.outputs[self.out_accepted] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['default_destination_frame'] = str(GO1_MISSION_DEFAULTS.get('destination_frame', 'go1_local_start'))
+        self.state['default_start_yaw_deg'] = float(GO1_MISSION_DEFAULTS.get('start_yaw_deg', 0.0))
+        self.state['default_post_action_mode'] = str(GO1_MISSION_DEFAULTS.get('post_action_mode', 'Stand'))
+        self.state['default_post_action_value'] = float(GO1_MISSION_DEFAULTS.get('post_action_value', 0.2))
+        self._last_dispatch_signature = ''
+
+    def execute(self):
+        raw_json = self.fetch_input_data(self.in_raw_json)
+        decision = self.fetch_input_data(self.in_decision)
+        payload, signature = _normalize_mission_container(raw_json)
+        if not payload:
+            write_log("[GO1 MISSION DISPATCH] no input payload - skipping")
+            return None
+
+        mission_id = _extract_mission_id(payload)
+        if isinstance(decision, bool):
+            accepted = decision
+        else:
+            accepted = str(decision).strip().lower() in ('accept', 'true', '1', 'yes') if decision is not None else False
+
+        if accepted:
+            path_json = _build_go1_path_json(payload)
+            action_json = _build_go1_post_action_json(payload)
+            destination, waypoints = _extract_mission_destination(payload)
+            destination_summary = _mission_signature(destination or waypoints)
+            go1_mission_state.update({
+                'status': 'Dispatched',
+                'mission_id': mission_id,
+                'mission_type': _extract_mission_type(payload),
+                'decision': 'accept',
+                'decision_reason': 'mission accepted',
+                'destination_summary': destination_summary,
+                'path_json': path_json,
+                'action_json': action_json,
+                'last_error': '',
+                'updated_ts': time.time(),
+            })
+            if signature and signature != self._last_dispatch_signature:
+                self._last_dispatch_signature = signature
+                action_preview = (action_json[:120] + '...') if action_json and len(action_json) > 120 else action_json
+                write_log(f"[GO1 MISSION DISPATCH] mission dispatched: {mission_id or 'unknown'}")
+                write_log(f"[GO1 MISSION DISPATCH] action_json: {action_preview}")
+            elif signature and signature == self._last_dispatch_signature:
+                write_log(f"[GO1 MISSION DISPATCH] duplicate mission skipped: {mission_id}")
+        else:
+            path_json = ''
+            action_json = ''
+            write_log(f"[GO1 MISSION DISPATCH] mission rejected: {mission_id or 'unknown'} (decision={decision})")
+            go1_mission_state.update({
+                'status': 'Rejected',
+                'mission_id': mission_id,
+                'mission_type': _extract_mission_type(payload),
+                'decision': 'reject',
+                'decision_reason': 'mission rejected',
+                'destination_summary': '',
+                'path_json': '',
+                'action_json': '',
+                'last_error': '',
+                'updated_ts': time.time(),
+            })
+
+        self.output_data[self.out_path_json] = path_json
+        self.output_data[self.out_action_json] = action_json
+        self.output_data[self.out_mission_id] = mission_id
+        self.output_data[self.out_accepted] = accepted
+        return self.out_flow
+
+
+# ================= [Vision Nodes] =================
+_default_camera_matrix = None
+_default_dist_coeffs = None
+if HAS_CV2:
+    try:
+        calib_dir = "Calib_data"
+        _default_camera_matrix = np.load(os.path.join(calib_dir, "K1.npy"))
+        _default_dist_coeffs = np.load(os.path.join(calib_dir, "D1.npy"))
+    except Exception:
+        _default_camera_matrix = np.array([[640.0, 0.0, 320.0], [0.0, 640.0, 240.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+        _default_dist_coeffs = np.zeros((4, 1), dtype=np.float32)
+
+_aruco_dict = None
+_aruco_detector = None
+if HAS_CV2 and hasattr(cv2, 'aruco'):
+    try:
+        _aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        _aruco_detector = cv2.aruco.ArucoDetector(_aruco_dict, cv2.aruco.DetectorParameters())
+    except Exception:
+        _aruco_dict = None
+        _aruco_detector = None
+
+
+class VideoSourceNode(BaseNode):
+    """라즈베리파이 Go1 카메라와 PC를 연결하는 노드
+    - PC IP 설정만 담당
+    - 라즈베리파이로 START/STOP 명령 전송
+    - 이미지 저장은 VideoSaveNode에서 담당
+    """
+    def __init__(self, node_id):
+        super().__init__(node_id, "Video Source", "VIDEO_SRC")
+        self.out_frame = generate_uuid()
+        self.outputs[self.out_frame] = PortType.DATA
+        self.state['target_ip'] = get_local_ip()
+        self.state['receiver_folder'] = 'Captured_Images/go1_front'
+        self.state['max_frames'] = 300
+        self._started = False
+        self._last_frame = None
+        self._auto_stopped_by_timer = False
+
+    def execute(self):
+        if not HAS_CV2:
+            camera_state['status'] = 'Stopped'
+            return None
+
+        if not engine_module.is_running:
+            self._auto_stopped_by_timer = False
+
+        run_flag = bool(engine_module.is_running and not self._auto_stopped_by_timer)
+        target_ip = str(self.state.get('target_ip', get_local_ip())).strip() or get_local_ip()
+        
+        if run_flag:
+            if not self._started and camera_state['status'] in ['Stopped', 'Stopping...']:
+                receiver_folder = str(self.state.get('receiver_folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
+                start_duration = 0.0
+                for node in node_registry.values():
+                    if node.type_str == 'VIS_SAVE':
+                        raw_use_timer = node.state.get('use_timer', False)
+                        if isinstance(raw_use_timer, str):
+                            use_timer = raw_use_timer.strip().lower() in ['1', 'true', 'yes', 'on']
+                        else:
+                            use_timer = bool(raw_use_timer)
+                        if use_timer:
+                            try:
+                                start_duration = max(0.0, float(node.state.get('duration', 0.0)))
+                            except Exception:
+                                start_duration = 0.0
+                        break
+                camera_command_queue.append(('START_CMD', target_ip, receiver_folder, start_duration))
+                self._started = True
+        else:
+            if self._started and camera_state['status'] in ['Running', 'Starting...']:
+                camera_command_queue.append(('STOP', target_ip))
+            self._started = False
+            self._last_frame = None
+            self.output_data[self.out_frame] = None
+            return None
+
+        # 수신 전용 폴더에서 최신 안정 프레임 읽기 (VIS_SAVE 출력 폴더와 분리)
+        frame = self._last_frame
+        got_fresh_frame = False
+        try:
+            source_folder = str(self.state.get('receiver_folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
+            try:
+                max_frames = max(10, int(float(self.state.get('max_frames', 300))))
+            except Exception:
+                max_frames = 300
+
+            files = glob.glob(os.path.join(source_folder, "front_*.jpg"))
+            if len(files) >= 2:
+                files.sort(key=os.path.getctime)
+                if len(files) > max_frames:
+                    for old_file in files[:len(files) - max_frames]:
+                        try:
+                            os.remove(old_file)
+                        except Exception:
+                            pass
+                    files = files[len(files) - max_frames:]
+                # 최신 파일은 쓰기 중일 수 있으므로 직전 파일부터 역순 탐색
+                candidates = files[:-1][-5:]
+                for target_file in reversed(candidates):
+                    if not _is_file_stable(target_file):
+                        continue
+                    loaded = cv2.imread(target_file)
+                    if loaded is not None and len(loaded.shape) >= 2 and loaded.shape[1] > 1:
+                        self._last_frame = loaded
+                        frame = loaded
+                        got_fresh_frame = True
+                        break
+        except Exception:
+            frame = self._last_frame
+
+        # Delay camera timer start until the first valid frame is actually available.
+        if got_fresh_frame and camera_state.get('status') == 'Running' and float(camera_state.get('start_time', 0.0) or 0.0) <= 0.0:
+            camera_state['start_time'] = time.time()
+            camera_state['timer_started_logged'] = False
+            camera_state['last_interval_count'] = 0
+            write_log("[Cam Timer] first frame received - timer started")
+
+        self.output_data[self.out_frame] = frame
+        return None
+
+
+class FisheyeUndistortNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Fisheye Undistort", "VIS_FISHEYE")
+        self.in_frame = generate_uuid()
+        self.inputs[self.in_frame] = PortType.DATA
+        self.out_frame = generate_uuid()
+        self.outputs[self.out_frame] = PortType.DATA
+        self.state['enabled'] = True
+        self.state['crop_enabled'] = True
+        self.state['crop_mode'] = 'left_half'
+        self.state['crop_ratio'] = 0.5
+
+    def execute(self):
+        frame = self.fetch_input_data(self.in_frame)
+        if frame is None or not HAS_CV2:
+            return None
+
+        try:
+            use_calib = _coerce_bool(self.state.get('enabled', True), True)
+            if use_calib:
+                undistorted = cv2.fisheye.undistortImage(
+                    frame,
+                    _default_camera_matrix,
+                    _default_dist_coeffs,
+                    Knew=_default_camera_matrix,
+                )
+            else:
+                undistorted = frame
+
+            out_frame = undistorted
+            crop_enabled = _coerce_bool(self.state.get('crop_enabled', True), True)
+            if crop_enabled and out_frame is not None and len(out_frame.shape) >= 2:
+                h, w = out_frame.shape[:2]
+                if w > 1:
+                    crop_mode = str(self.state.get('crop_mode', 'left_half')).strip().lower()
+                    if crop_mode == 'custom_ratio':
+                        ratio = _clamp(_coerce_float(self.state.get('crop_ratio', 0.5), 0.5), 0.1, 1.0)
+                        crop_w = max(1, int(w * ratio))
+                    else:
+                        crop_w = max(1, w // 2)
+                    out_frame = out_frame[:, :crop_w]
+
+            self.output_data[self.out_frame] = out_frame
+        except Exception:
+            self.output_data[self.out_frame] = frame
+        return None
+
+
+class DepthAnythingV2Node(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Depth Anything V2", "VIS_DEPTH_DA2")
+        self.in_frame = generate_uuid()
+        self.inputs[self.in_frame] = PortType.DATA
+
+        self.out_frame = generate_uuid()
+        self.outputs[self.out_frame] = PortType.DATA
+        self.out_depth = generate_uuid()
+        self.outputs[self.out_depth] = PortType.DATA
+        self.out_near_score = generate_uuid()
+        self.outputs[self.out_near_score] = PortType.DATA
+        self.out_obstacle = generate_uuid()
+        self.outputs[self.out_obstacle] = PortType.DATA
+        self.out_json = generate_uuid()
+        self.outputs[self.out_json] = PortType.DATA
+
+        self.state['enabled'] = True
+        self.state['backend'] = 'transformers'
+        self.state['encoder'] = 'vits'
+        self.state['checkpoint_path'] = 'checkpoints/depth_anything_v2_vits.pth'
+        self.state['hf_model_id'] = 'depth-anything/Depth-Anything-V2-Small-hf'
+        self.state['prefer_cuda'] = True
+        self.state['input_size'] = 518
+        self.state['inference_interval_sec'] = 0.2
+        self.state['closer_is_brighter'] = True
+        self.state['risk_threshold'] = 0.65
+        self.state['roi_x0'] = 0.3
+        self.state['roi_y0'] = 0.5
+        self.state['roi_x1'] = 0.7
+        self.state['roi_y1'] = 0.95
+        self.state['consecutive_frames_for_stop'] = 2
+        self.state['use_stop_signal'] = False
+        self.state['save_json'] = False
+        self.state['json_path'] = 'depth_da2_data.json'
+
+        self._last_infer_ts = 0.0
+        self._last_depth = None
+        self._last_vis = None
+        self._last_json = ""
+        self._last_near_score = 0.0
+        self._last_obstacle = False
+        self._risk_hit_count = 0
+        self._last_error = ""
+
+    def _run_inference(self, frame):
+        backend = str(self.state.get('backend', 'transformers')).strip().lower()
+        prefer_cuda = _coerce_bool(self.state.get('prefer_cuda', True), True)
+        input_size = max(64, _coerce_int(self.state.get('input_size', 518), 518))
+
+        if backend == 'official':
+            model, err = _load_da2_official_model(
+                self.state.get('encoder', 'vits'),
+                self.state.get('checkpoint_path', ''),
+                prefer_cuda=prefer_cuda,
+            )
+            if model is None:
+                raise RuntimeError(err or 'failed to load official DA2 model')
+
+            try:
+                depth = model.infer_image(frame, input_size=input_size)
+            except TypeError:
+                depth = model.infer_image(frame)
+            return np.asarray(depth, dtype=np.float32)
+
+        pipe, err = _load_da2_hf_pipeline(
+            self.state.get('hf_model_id', 'depth-anything/Depth-Anything-V2-Small-hf'),
+            prefer_cuda=prefer_cuda,
+        )
+        if pipe is None:
+            raise RuntimeError(err or 'failed to load transformers depth pipeline')
+
+        if not HAS_PIL or Image is None:
+            raise RuntimeError('PIL is required for transformers backend')
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
+        result = pipe(pil_img)
+        raw_depth = result.get('depth') if isinstance(result, dict) else None
+        if raw_depth is None:
+            raise RuntimeError('depth output is missing from transformers pipeline')
+        return np.asarray(raw_depth, dtype=np.float32)
+
+    def execute(self):
+        frame = self.fetch_input_data(self.in_frame)
+        if frame is None or not HAS_CV2 or np is None:
+            self.output_data[self.out_frame] = frame
+            self.output_data[self.out_depth] = None
+            self.output_data[self.out_near_score] = 0.0
+            self.output_data[self.out_obstacle] = False
+            self.output_data[self.out_json] = ""
+            return None
+
+        if not _coerce_bool(self.state.get('enabled', True), True):
+            self._risk_hit_count = 0
+            self.output_data[self.out_frame] = frame
+            self.output_data[self.out_depth] = None
+            self.output_data[self.out_near_score] = 0.0
+            self.output_data[self.out_obstacle] = False
+            self.output_data[self.out_json] = json.dumps({'status': 'disabled'})
+            return None
+
+        infer_interval = max(0.02, _coerce_float(self.state.get('inference_interval_sec', 0.2), 0.2))
+        now = time.monotonic()
+        should_infer = (self._last_depth is None) or ((now - self._last_infer_ts) >= infer_interval)
+        backend = str(self.state.get('backend', 'transformers')).strip().lower()
+
+        vis_frame = self._last_vis if self._last_vis is not None else frame
+        depth_map = self._last_depth
+        near_score = float(self._last_near_score)
+        obstacle = bool(self._last_obstacle)
+        payload_json = self._last_json
+
+        if should_infer:
+            start_t = time.perf_counter()
+            try:
+                depth_map = self._run_inference(frame)
+                norm = _normalize_depth_for_visual(depth_map)
+
+                if norm is None:
+                    raise RuntimeError('failed to normalize depth output')
+
+                closer_is_brighter = _coerce_bool(self.state.get('closer_is_brighter', True), True)
+                near_map = norm if closer_is_brighter else (1.0 - norm)
+
+                h, w = near_map.shape[:2]
+                px0, py0, px1, py1 = _compute_roi_pixels(
+                    h,
+                    w,
+                    self.state.get('roi_x0', 0.3),
+                    self.state.get('roi_y0', 0.5),
+                    self.state.get('roi_x1', 0.7),
+                    self.state.get('roi_y1', 0.95),
+                )
+                roi = near_map[py0:py1, px0:px1]
+                if roi.size == 0:
+                    near_score = 0.0
+                else:
+                    near_score = float(np.percentile(roi, 90.0))
+
+                risk_threshold = _clamp(_coerce_float(self.state.get('risk_threshold', 0.65), 0.65), 0.0, 1.0)
+                obstacle = near_score >= risk_threshold
+
+                if obstacle:
+                    self._risk_hit_count += 1
+                else:
+                    self._risk_hit_count = 0
+
+                required_hits = max(1, _coerce_int(self.state.get('consecutive_frames_for_stop', 2), 2))
+                stop_recommended = bool(obstacle and self._risk_hit_count >= required_hits)
+                if stop_recommended and _coerce_bool(self.state.get('use_stop_signal', False), False):
+                    go1_node_intent['stop'] = True
+                    go1_node_intent['trigger_time'] = time.monotonic()
+
+                vis_gray = np.clip(norm * 255.0, 0, 255).astype(np.uint8)
+                vis_color = cv2.applyColorMap(vis_gray, cv2.COLORMAP_INFERNO)
+                cv2.rectangle(vis_color, (px0, py0), (px1 - 1, py1 - 1), (255, 255, 255), 2)
+                text = f"NearScore:{near_score:.2f} Thr:{risk_threshold:.2f} {'STOP' if stop_recommended else 'SAFE'}"
+                cv2.putText(vis_color, text, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+                infer_latency_ms = (time.perf_counter() - start_t) * 1000.0
+                payload = {
+                    'status': 'ok',
+                    'timestamp': round(time.time(), 3),
+                    'backend': backend,
+                    'near_score': round(float(near_score), 4),
+                    'risk_threshold': round(float(risk_threshold), 4),
+                    'obstacle': bool(obstacle),
+                    'stop_recommended': bool(stop_recommended),
+                    'risk_hit_count': int(self._risk_hit_count),
+                    'roi': {'x0': px0, 'y0': py0, 'x1': px1, 'y1': py1, 'width': w, 'height': h},
+                    'infer_latency_ms': round(float(infer_latency_ms), 2),
+                }
+                payload_json = json.dumps(payload)
+
+                if _coerce_bool(self.state.get('save_json', False), False):
+                    json_path = str(self.state.get('json_path', 'depth_da2_data.json')).strip() or 'depth_da2_data.json'
+                    if not _safe_json_dump(json_path, payload):
+                        write_log(f"[VIS_DEPTH_DA2] JSON save failed: path={json_path}")
+
+                self._last_depth = depth_map
+                self._last_vis = vis_color
+                self._last_json = payload_json
+                self._last_near_score = near_score
+                self._last_obstacle = obstacle
+                self._last_infer_ts = now
+                self._last_error = ""
+                vis_frame = vis_color
+            except Exception as e:
+                self._last_error = str(e)
+                write_log(f"[VIS_DEPTH_DA2] {self._last_error}")
+                payload = {'status': 'error', 'message': self._last_error, 'timestamp': round(time.time(), 3)}
+                payload_json = json.dumps(payload)
+                if _coerce_bool(self.state.get('save_json', False), False):
+                    json_path = str(self.state.get('json_path', 'depth_da2_data.json')).strip() or 'depth_da2_data.json'
+                    if not _safe_json_dump(json_path, payload):
+                        write_log(f"[VIS_DEPTH_DA2] JSON save failed: path={json_path}")
+                self._last_json = payload_json
+                self._risk_hit_count = 0
+                depth_map = self._last_depth
+                vis_frame = frame
+                near_score = 0.0
+                obstacle = False
+
+        self.output_data[self.out_frame] = vis_frame
+        self.output_data[self.out_depth] = depth_map
+        self.output_data[self.out_near_score] = float(near_score)
+        self.output_data[self.out_obstacle] = bool(obstacle)
+        self.output_data[self.out_json] = payload_json
+        return None
+
+
+class ArUcoDetectNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "ArUco Detect", "VIS_ARUCO")
+        self.in_frame = generate_uuid()
+        self.inputs[self.in_frame] = PortType.DATA
+        self.out_frame = generate_uuid()
+        self.outputs[self.out_frame] = PortType.DATA
+        self.out_data = generate_uuid()
+        self.outputs[self.out_data] = PortType.DATA
+        self.out_json = generate_uuid()
+        self.outputs[self.out_json] = PortType.DATA
+
+        self.state['camera_id'] = 'go1_front'
+        self.state['marker_size_m'] = 0.03
+        self.state['input_undistorted'] = False
+        self.state['json_path'] = 'aruco_data.json'
+        self.state['draw_axes'] = True
+        self.state['draw_overlay_text'] = True
+
+    def execute(self):
+        frame = self.fetch_input_data(self.in_frame)
+        if frame is None or not HAS_CV2 or _aruco_detector is None:
+            self.output_data[self.out_frame] = frame
+            self.output_data[self.out_data] = []
+            self.output_data[self.out_json] = ""
+            return None
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        corners, ids, _ = _aruco_detector.detectMarkers(gray)
+
+        detected = []
+        draw = frame.copy()
+        marker_size_m = max(0.0, _coerce_float(self.state.get('marker_size_m', 0.03), 0.03))
+        if marker_size_m <= 0.0:
+            marker_size_m = 0.03
+        aruco_settings['marker_size'] = marker_size_m
+
+        camera_matrix = _default_camera_matrix if _default_camera_matrix is not None else np.array(
+            [[640.0, 0.0, 320.0], [0.0, 640.0, 240.0], [0.0, 0.0, 1.0]],
+            dtype=np.float32,
+        )
+        use_undistorted_input = _coerce_bool(self.state.get('input_undistorted', False), False)
+        dist_coeffs = zero_dist_coeffs if use_undistorted_input else _default_dist_coeffs
+        if dist_coeffs is None:
+            dist_coeffs = np.zeros((4, 1), dtype=np.float32)
+
+        marker_points = _build_marker_object_points(marker_size_m)
+        camera_id = str(self.state.get('camera_id', 'go1_front')).strip() or 'go1_front'
+        payload_json = ""
+
+        if ids is not None and len(ids) > 0:
+            for i, marker_id in enumerate(ids.flatten()):
+                try:
+                    ret, rvec, tvec = cv2.solvePnP(marker_points, corners[i], camera_matrix, dist_coeffs)
+                except Exception:
+                    ret = False
+                    rvec = None
+                    tvec = None
+
+                if not ret or rvec is None or tvec is None:
+                    continue
+
+                if _coerce_bool(self.state.get('draw_axes', True), True):
+                    try:
+                        cv2.drawFrameAxes(draw, camera_matrix, dist_coeffs, rvec, tvec, 0.03)
+                    except Exception:
+                        pass
+
+                try:
+                    cv2.aruco.drawDetectedMarkers(draw, corners)
+                except Exception:
+                    pass
+
+                tx = float(tvec[0][0])
+                ty = float(tvec[1][0])
+                tz = float(tvec[2][0])
+                marker_data = {
+                    'id': int(marker_id),
+                    'x': round(tx, 4),
+                    'y': round(ty, 4),
+                    'z': round(tz, 4),
+                    'cam': camera_id,
+                }
+                detected.append(marker_data)
+
+                if _coerce_bool(self.state.get('draw_overlay_text', True), True):
+                    try:
+                        text = f"[{camera_id}] ID:{int(marker_id)} X:{tx:.2f} Y:{ty:.2f} Z:{tz:.2f}"
+                        cx = int(corners[i][0][0][0])
+                        cy = int(corners[i][0][0][1])
+                        cv2.putText(draw, text, (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    except Exception:
+                        pass
+
+        if len(detected) > 0:
+            payload = {
+                'camera': camera_id,
+                'timestamp': round(time.time(), 3),
+                'markers': detected,
+            }
+            payload_json = json.dumps(payload)
+
+            if go1_node_intent.get('send_aruco', False):
+                try:
+                    go1_sock.sendto(payload_json.encode('utf-8'), (GO1_UNITY_IP, ARUCO_UDP_PORT))
+                except Exception as e:
+                    write_log(f"[VIS_ARUCO] UDP send failed: {e}")
+
+            json_path = str(self.state.get('json_path', 'aruco_data.json')).strip() or 'aruco_data.json'
+            try:
+                json_dir = os.path.dirname(json_path)
+                if json_dir:
+                    os.makedirs(json_dir, exist_ok=True)
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    f.write(payload_json)
+            except Exception as e:
+                write_log(f"[VIS_ARUCO] JSON save failed: {e} | path={json_path}")
+
+        self.output_data[self.out_frame] = draw
+        self.output_data[self.out_data] = detected
+        self.output_data[self.out_json] = payload_json
+        return None
+
+
+_flask_app = Flask(__name__) if HAS_FLASK else None
+_flask_latest_jpg = None
+_flask_lock = threading.Lock()
+_flask_thread_started = False
+
+if HAS_FLASK:
+    @_flask_app.route('/video_feed')
+    def _video_feed():
+        def generate():
+            while True:
+                frame = None
+                with _flask_lock:
+                    frame = _flask_latest_jpg
+                if frame is not None:
+                    yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
+                time.sleep(0.03)
+        return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+
+class FlaskStreamNode(BaseNode):
+    def __init__(self, node_id):
+        super().__init__(node_id, "Flask Stream", "VIS_FLASK")
+        self.in_frame = generate_uuid()
+        self.inputs[self.in_frame] = PortType.DATA
+        self.state['port'] = 5000
+        self.state['is_running'] = False
+        self._started_local = False
+
+    def _start_server_once(self):
+        global _flask_thread_started
+        if not HAS_FLASK or _flask_app is None:
+            return
+        if _flask_thread_started:
+            return
+
+        port = int(self.state.get('port', 5000))
+
+        def run_server():
+            _flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+        threading.Thread(target=run_server, daemon=True).start()
+        _flask_thread_started = True
+        write_log(f"Flask Stream Started: http://0.0.0.0:{port}/video_feed")
+
+    def execute(self):
+        if not HAS_CV2 or not HAS_FLASK:
+            return None
+
+        if bool(self.state.get('is_running', False)):
+            if not self._started_local:
+                self._start_server_once()
+                self._started_local = True
+
+            frame = self.fetch_input_data(self.in_frame)
+            if frame is not None:
+                ok, buf = cv2.imencode('.jpg', frame)
+                if ok:
+                    with _flask_lock:
+                        global _flask_latest_jpg
+                        _flask_latest_jpg = buf.tobytes()
+
+        return None
+
+
+# ================= [Video Frame Save Node] =================
+class VideoFrameSaveNode(BaseNode):
+    """VideoSourceNode에서 전달받은 프레임을 지정된 폴더에 저장
+    - 입력 포트에서 프레임 수신
+    - 이미지를 JPEG 파일로 저장
+    - 타이머 설정 가능 (타이머 종료 후 저장 중단)
+    - 타이머 미설정 시 Max Frames 초과 파일 자동 삭제
+    """
+    def __init__(self, node_id):
+        super().__init__(node_id, "Video Save", "VIS_SAVE")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.in_frame = generate_uuid()
+        self.inputs[self.in_frame] = PortType.DATA
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+
+        self.state['folder'] = 'Captured_Images/go1_saved'
+        self.state['duration'] = 10.0
+        self.state['use_timer'] = False
+        self.state['max_frames'] = 100
+        
+        self._save_start_time = None
+        self._frame_count = 0
+        self._timer_completed_this_run = False
+        self._frame_index = 0
+        self._save_armed = False
+
+    def _extract_frame_index(self, path):
+        name = os.path.basename(path)
+        if not (name.startswith("front_") and name.endswith(".jpg")):
+            return -1
+        number_part = name[6:-4]
+        return int(number_part) if number_part.isdigit() else -1
+
+    def _sync_frame_index_from_folder(self, folder):
+        files = glob.glob(os.path.join(folder, "front_*.jpg"))
+        max_idx = 0
+        for path in files:
+            idx = self._extract_frame_index(path)
+            if idx > max_idx:
+                max_idx = idx
+        self._frame_index = max_idx
+
+    def _prune_saved_frames(self, folder, max_frames):
+        """Max Frames 초과 파일 삭제"""
+        files = glob.glob(os.path.join(folder, "front_*.jpg"))
+        if len(files) <= max_frames:
+            return
+
+        # 파일명(front_000001.jpg) 인덱스를 우선 기준으로 정렬해 가장 오래된 프레임부터 삭제한다.
+        files.sort(key=lambda p: (self._extract_frame_index(p), os.path.getmtime(p)))
+        delete_fail_count = 0
+        for old_file in files[:len(files) - max_frames]:
+            try:
+                os.remove(old_file)
+            except Exception as e:
+                delete_fail_count += 1
+                if delete_fail_count == 1:
+                    write_log(f"[VIS_SAVE] MaxFrames delete failed: {os.path.basename(old_file)} ({e})")
+
+    def execute(self):
+        global camera_save_state
+        
+        folder = str(self.state.get('folder', 'Captured_Images/go1_front')).strip() or 'Captured_Images/go1_front'
+        is_saving = bool(engine_module.is_running)
+        duration = float(self.state.get('duration', 10.0))
+        raw_use_timer = self.state.get('use_timer', False)
+        if isinstance(raw_use_timer, str):
+            use_timer = raw_use_timer.strip().lower() in ['1', 'true', 'yes', 'on']
+        else:
+            use_timer = bool(raw_use_timer)
+        raw_max_frames = self.state.get('max_frames', 100)
+        try:
+            max_frames = max(1, int(float(raw_max_frames)))
+        except Exception:
+            max_frames = 100
+
+        if not is_saving:
+            self._timer_completed_this_run = False
+            self._save_armed = False
+
+        # 저장 상태 업데이트
+        camera_save_state['folder'] = folder
+        camera_save_state['duration'] = duration
+
+        if not is_saving:
+            if self._save_start_time is not None:
+                write_log("[VIS_SAVE] saving stopped")
+                self._save_start_time = None
+                self._save_armed = False
+                camera_save_state['status'] = 'Stopped'
+                camera_save_state['start_time'] = None
+                camera_save_state['frame_count'] = 0
+            return self.out_flow
+
+        # 저장 준비: 타이머는 첫 유효 프레임 수신 시점에 시작한다.
+        if is_saving and not self._save_start_time and not self._timer_completed_this_run and not self._save_armed:
+            self._frame_count = 0
+            camera_save_state['status'] = 'Arming'
+            camera_save_state['start_time'] = None
+            try:
+                os.makedirs(folder, exist_ok=True)
+                self._sync_frame_index_from_folder(folder)
+                self._save_armed = True
+                write_log(f"[VIS_SAVE] ready to save: {folder} (timer starts on first frame)")
+            except Exception as e:
+                write_log(f"[VIS_SAVE] failed to create folder: {e}")
+                return self.out_flow
+
+        # 타이머 체크
+        if self._save_start_time and use_timer and duration > 0:
+            elapsed = time.time() - self._save_start_time
+            if elapsed > duration:
+                write_log(f"[VIS_SAVE] timer expired: {duration:.1f}s elapsed")
+                self._save_start_time = None
+                self._timer_completed_this_run = True
+                camera_save_state['status'] = 'Stopped'
+                camera_save_state['start_time'] = None
+                camera_save_state['frame_count'] = 0
+                # 저장 완료 시 스트리밍도 함께 정지
+                for node in node_registry.values():
+                    if node.type_str == 'VIDEO_SRC':
+                        node._auto_stopped_by_timer = True
+                camera_command_queue.append(('STOP', ''))
+                return self.out_flow
+
+        # 프레임 저장
+        frame = self.fetch_input_data(self.in_frame)
+        if frame is not None and HAS_CV2 and (self._save_start_time is not None or self._save_armed):
+            try:
+                if self._save_start_time is None:
+                    self._save_start_time = time.time()
+                    camera_save_state['status'] = 'Running'
+                    camera_save_state['start_time'] = self._save_start_time
+                    write_log("[VIS_SAVE] first frame received - timer started")
+
+                self._frame_index += 1
+                filename = os.path.join(folder, f"front_{self._frame_index:06d}.jpg")
+                success = cv2.imwrite(filename, frame)
+                if success:
+                    self._save_armed = False
+                    self._frame_count += 1
+                    camera_save_state['frame_count'] = self._frame_count
+            except Exception as e:
+                write_log(f"[VIS_SAVE] frame save failed: {e}")
+
+        # Max Frames 정리 (타이머 OFF 상태에서만)
+        if self._save_start_time is not None and not use_timer:
+            self._prune_saved_frames(folder, max_frames)
+        
+        return self.out_flow
+
+
+# ================= [Server Sender Node] =================
+class ServerSenderNode(BaseNode):
+    """원격 서버로 이미지 업로드하는 노드
+    - VideoFrameSaveNode에서 저장한 이미지 감지
+    - HTTP multipart/form-data로 비동기 업로드
+    - 시작/중지 제어
+    """
+    def __init__(self, node_id):
+        super().__init__(node_id, "Server Sender", "GO1_SERVER_SENDER")
+        self.in_flow = generate_uuid()
+        self.inputs[self.in_flow] = PortType.FLOW
+        self.out_flow = generate_uuid()
+        self.outputs[self.out_flow] = PortType.FLOW
+        self.out_state_change_json = generate_uuid()
+        self.outputs[self.out_state_change_json] = PortType.DATA
+
+        self.state['action'] = 'Start Sender'  # "Start Sender" / "Stop Sender"
+        self.state['server_url'] = SERVER_UPLOAD_URL_DEFAULT
+        self.state['enable_state_change'] = False
+        self.state['state_change_url'] = STATE_CHANGE_URL_DEFAULT
+        self.state['state_change_interval_sec'] = STATE_CHANGE_INTERVAL_SEC_DEFAULT
+        
+        self._last_action = None
+        self._last_request_ts = 0.0
+        self._last_state_change_send_mono = 0.0
+        self._last_motion_active = False
+        self._last_state_change_value = False
+        self._state_change_inflight = False
+        self._last_state_change_enabled = False
+        self._motion_active_stable = False   # debounced motion state
+        self._motion_off_hold_until = 0.0    # hold "active" for N sec after speed drops to 0
+
+    def _post_state_change_payload(self, url, payload):
+        try:
+            body = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+                method='POST',
+            )
+            with urllib.request.urlopen(req, timeout=1.0) as response:
+                response.read()
+            return True
+        except Exception as e:
+            write_log(f"[Server Sender] state_change upload error ({e.__class__.__name__}): {e!r} | url={url}")
+            return False
+        finally:
+            self._state_change_inflight = False
+
+    def _queue_state_change_payload(self, url, payload):
+        if self._state_change_inflight:
+            return False
+        self._state_change_inflight = True
+        threading.Thread(
+            target=self._post_state_change_payload,
+            args=(url, payload),
+            daemon=True,
+        ).start()
+        return True
+
+    def execute(self):
+        global sender_state, multi_sender_active
+        
+        action = self.state.get('action', 'Start Sender')
+        url = self.state.get('server_url', SERVER_UPLOAD_URL_DEFAULT)
+        state_change_enabled = bool(self.state.get('enable_state_change', False))
+        state_change_url = str(self.state.get('state_change_url', STATE_CHANGE_URL_DEFAULT)).strip() or STATE_CHANGE_URL_DEFAULT
+        state_change_interval_sec = max(0.05, float(self.state.get('state_change_interval_sec', STATE_CHANGE_INTERVAL_SEC_DEFAULT)))
+        now = time.monotonic()
+        cooldown_ok = (now - self._last_request_ts) > 0.5
+        motion_active_raw, motion_snapshot = _go1_motion_snapshot()
+        # Debounce: once active, hold for 0.4s after raw signal drops to avoid noise oscillation
+        if motion_active_raw:
+            self._motion_off_hold_until = now + 0.4
+        motion_active = motion_active_raw or (now < self._motion_off_hold_until)
+        self.output_data[self.out_state_change_json] = None
+        should_send_state_change = False
+        state_change_value = False
+        was_state_change_enabled = self._last_state_change_enabled
+        self._last_state_change_enabled = state_change_enabled
+        
+        # 액션 변경 기록(디버깅/상태 추적용)
+        if action != self._last_action:
+            self._last_action = action
+
+        if not state_change_enabled:
+            self._last_motion_active = motion_active
+            self._last_state_change_value = False
+        else:
+            if not was_state_change_enabled:
+                self._last_motion_active = motion_active
+                should_send_state_change = True
+                state_change_value = motion_active
+
+            motion_transition = motion_active != self._last_motion_active
+            if motion_active:
+                state_change_value = True
+                if motion_transition:
+                    should_send_state_change = True
+                elif (now - self._last_state_change_send_mono) >= state_change_interval_sec:
+                    should_send_state_change = True
+            else:
+                state_change_value = False
+                if motion_transition:
+                    should_send_state_change = True
+                elif (now - self._last_state_change_send_mono) >= state_change_interval_sec:
+                    should_send_state_change = True
+
+            if should_send_state_change:
+                payload = _build_go1_state_change_payload(
+                    state_change_value,
+                    motion_active,
+                    motion_snapshot,
+                    source='GO1_SERVER_SENDER',
+                )
+                ts_str = datetime.now().strftime("%H:%M:%S")
+                sc_val = bool(payload.get('state_change', False))
+                reason = str(payload.get('reason', '')).strip() or '-'
+                # Always update _last_motion_active so transition detection
+                # doesn't re-fire every cycle while HTTP is inflight.
+                self._last_motion_active = motion_active
+                self._last_state_change_value = state_change_value
+                http_ok = self._queue_state_change_payload(state_change_url, payload)
+                if http_ok:
+                    self._last_state_change_send_mono = now
+                    state_change_log_buffer.append(
+                        f"[{ts_str}] HTTP  sc={sc_val} motion={motion_active} reason={reason}"
+                    )
+                payload_json_str = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+                self.output_data[self.out_state_change_json] = payload_json_str
+                state_change_log_buffer.append(
+                    f"[{ts_str}] Unity sc={sc_val} motion={motion_active} reason={reason}"
+                )
+
+        # 토글 변경이 없어도 현재 의도 상태를 유지하도록 재요청 가능하게 처리
+        if action == "Start Sender":
+            if (not multi_sender_active) and sender_state['status'] in ['Stopped', 'Stopping...'] and cooldown_ok:
+                sender_state['status'] = 'Starting...'
+                sender_command_queue.append(('START', url))
+                self._last_request_ts = now
+
+        elif action == "Stop Sender":
+            if multi_sender_active and sender_state['status'] in ['Running', 'Starting...'] and cooldown_ok:
+                sender_state['status'] = 'Stopping...'
+                sender_command_queue.append(('STOP', url))
+                self._last_request_ts = now
+        
+        return self.out_flow
+
