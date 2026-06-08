@@ -1198,7 +1198,7 @@ async def send_image_async(session, filepath, camera_id, server_url):
             t_done = time.time()
             response_ms = (t_done - t_file_mtime) * 1000
             transfer_ms = (t_done - t_send_start) * 1000
-            write_log(f"[PERF] ResponseTime={response_ms:.1f}ms TransferTime={transfer_ms:.1f}ms file={source_name}")
+            # write_log(f"[PERF] ResponseTime={response_ms:.1f}ms TransferTime={transfer_ms:.1f}ms file={source_name}")
             if response.status != 200:
                 response_text = (await response.text()).strip()
                 if response_text:
@@ -3198,7 +3198,10 @@ class Go1ServerJsonRecvNode(BaseNode):
         if should_poll:
             self._last_poll_mono = now_mono
             try:
+                t_fetch_start = time.time()
                 raw_json = self._read_source_text(mode, source, request_timeout_sec)
+                fetch_ms = (time.time() - t_fetch_start) * 1000
+                write_log(f"[PERF] JsonFetchTime={fetch_ms:.1f}ms source={source}")
                 parsed = json.loads(raw_json)
                 direction = self._extract_direction_text(parsed)
                 payload = self._pick_payload(parsed)
