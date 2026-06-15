@@ -4237,6 +4237,7 @@ class VideoSourceNode(BaseNode):
         self.state['max_frames'] = 300
         self._started = False
         self._last_frame = None
+        self._last_perf_file = None
         self._auto_stopped_by_timer = False
 
     def execute(self):
@@ -4307,7 +4308,10 @@ class VideoSourceNode(BaseNode):
                         self._last_frame = loaded
                         frame = loaded
                         got_fresh_frame = True
-                        record_perf_event('video_source')
+                        # 같은 파일을 여러 틱에서 반복 소비해도 한 번만 카운트 (실제 신규 프레임 처리율)
+                        if target_file != self._last_perf_file:
+                            self._last_perf_file = target_file
+                            record_perf_event('video_source')
                         break
         except Exception:
             frame = self._last_frame
