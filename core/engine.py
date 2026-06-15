@@ -48,10 +48,11 @@ def write_log(msg):
     line = f"[{timestamp}] {msg}"
     print(line)
     system_log_buffer.append(line)
-    try:
-        _get_log_file().write(line + '\n')
-    except Exception:
-        pass
+    # 로그 파일 저장 기능 비활성화
+    # try:
+    #     _get_log_file().write(line + '\n')
+    # except Exception:
+    #     pass
 
 def execute_graph_once():
     start_node = next((n for n in node_registry.values() if n.type_str == "START"), None)

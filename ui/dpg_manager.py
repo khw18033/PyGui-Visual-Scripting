@@ -7,6 +7,7 @@ import json
 import threading
 import subprocess
 import importlib
+from collections import deque
 from core.engine import write_log
 
 from core.engine import node_registry, link_registry, system_log_buffer, state_change_log_buffer, generate_uuid, PortType, HwStatus
@@ -1815,6 +1816,21 @@ def delete_selection(sender, app_data):
         del node_registry[nid]
         if dpg.does_item_exist(nid): dpg.delete_item(nid)
 
+# ================= [Performance Monitoring] =================
+PERF_METRICS = [
+    ("video_source", "Video Source FPS"),
+    ("json_receiver", "JSON Receiver FPS"),
+    ("unity_json", "Unity JSON FPS"),
+    ("server_sender", "Server Sender FPS"),
+]
+PERF_SAMPLE_INTERVAL = 0.2  # seconds
+PERF_HISTORY_LEN = 300      # 60s @ 5Hz
+perf_history_x = deque(maxlen=PERF_HISTORY_LEN)
+perf_history_y = {name: deque(maxlen=PERF_HISTORY_LEN) for name, _ in PERF_METRICS}
+perf_start_time = time.time()
+_last_perf_sample_time = 0.0
+
+
 def __init_ui__():
     threading.Thread(target=network_monitor_thread, daemon=True).start()
 
@@ -1989,6 +2005,21 @@ def __init_ui__():
                         dpg.add_text("Network Info", color=(100,200,255))
                         dpg.add_text("Loading...", tag="sys_tab_net", color=(180,180,180))
 
+            # ================= [Performance Tab] =================
+            with dpg.tab(label="Performance"):
+                for row in range(2):
+                    with dpg.group(horizontal=True):
+                        for col in range(2):
+                            idx = row * 2 + col
+                            name, label = PERF_METRICS[idx]
+                            with dpg.child_window(width=600, height=280, border=True):
+                                dpg.add_text(f"{label}: 0.0", tag=f"perf_text_{name}", color=(0,255,180))
+                                with dpg.plot(label=label, width=-1, height=230):
+                                    dpg.add_plot_legend()
+                                    dpg.add_plot_axis(dpg.mvXAxis, label="Time (s)", tag=f"perf_xaxis_{name}")
+                                    with dpg.plot_axis(dpg.mvYAxis, label="FPS", tag=f"perf_yaxis_{name}"):
+                                        dpg.add_line_series([], [], label=label, tag=f"perf_series_{name}")
+
         dpg.add_separator()
         
         # ================= [Node Palette] =================
@@ -2070,9 +2101,27 @@ def start_gui():
     LOGIC_RATE = 0.02
     last_fb_time = 0
 
+    global _last_perf_sample_time
+
     while dpg.is_dearpygui_running():
         if ep_manager is not None:
             _ep_refresh_worker_list_ui()
+
+        # --- Performance Tab Sampling ---
+        now_perf = time.time()
+        if now_perf - _last_perf_sample_time >= PERF_SAMPLE_INTERVAL:
+            _last_perf_sample_time = now_perf
+            perf_history_x.append(now_perf - perf_start_time)
+            x_list = list(perf_history_x)
+            for name, label in PERF_METRICS:
+                fps = go1_module.get_perf_fps(name) if go1_module is not None else 0.0
+                perf_history_y[name].append(fps)
+                if dpg.does_item_exist(f"perf_series_{name}"):
+                    dpg.set_value(f"perf_series_{name}", [x_list, list(perf_history_y[name])])
+                    dpg.fit_axis_data(f"perf_xaxis_{name}")
+                    dpg.fit_axis_data(f"perf_yaxis_{name}")
+                if dpg.does_item_exist(f"perf_text_{name}"):
+                    dpg.set_value(f"perf_text_{name}", f"{label}: {fps:.1f}")
 
         # --- MT4 UI Update ---
         if mt4_dashboard["last_pkt_time"] > 0: dpg.set_value("mt4_dash_status", f"Status: {mt4_dashboard['status']}")

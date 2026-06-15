@@ -15,6 +15,12 @@ import urllib.request
 from datetime import datetime
 from collections import deque
 
+try:
+    from asyncinotify import Inotify, Mask
+    _HAS_INOTIFY = True
+except ImportError:
+    _HAS_INOTIFY = False
+
 from nodes.base import BaseNode, BaseRobotDriver
 from core.engine import generate_uuid, PortType, write_log, node_registry, state_change_log_buffer
 from core.go1_config import (
@@ -534,6 +540,31 @@ go1_dashboard = {
     "unity_link": "Waiting",
     "special": "Idle",
 }
+
+# ================= [Performance Monitoring] =================
+# 각 구간을 통과하는 이벤트의 타임스탬프(monotonic)를 기록해 FPS를 계산한다.
+PERF_METRIC_NAMES = ('video_source', 'json_receiver', 'unity_json', 'server_sender')
+PERF_STALE_SEC = 2.0  # 이 시간 동안 이벤트가 없으면 FPS=0으로 표시
+perf_events = {name: deque(maxlen=30) for name in PERF_METRIC_NAMES}
+
+
+def record_perf_event(name):
+    dq = perf_events.get(name)
+    if dq is not None:
+        dq.append(time.monotonic())
+
+
+def get_perf_fps(name):
+    dq = perf_events.get(name)
+    if not dq or len(dq) < 2:
+        return 0.0
+    now = time.monotonic()
+    if now - dq[-1] > PERF_STALE_SEC:
+        return 0.0
+    span = dq[-1] - dq[0]
+    if span <= 0:
+        return 0.0
+    return (len(dq) - 1) / span
 
 GO1_SPECIAL_ACTIONS = dict(SPECIAL_ACTIONS_CONFIG.get('special_actions', {}))
 
@@ -1199,6 +1230,8 @@ async def send_image_async(session, filepath, camera_id, server_url):
             response_ms = (t_done - t_file_mtime) * 1000
             transfer_ms = (t_done - t_send_start) * 1000
             # write_log(f"[PERF] ResponseTime={response_ms:.1f}ms TransferTime={transfer_ms:.1f}ms file={source_name}")
+            if response.status == 200:
+                record_perf_event('server_sender')
             if response.status != 200:
                 response_text = (await response.text()).strip()
                 if response_text:
@@ -1209,51 +1242,103 @@ async def send_image_async(session, filepath, camera_id, server_url):
         write_log(f"[Server Sender] upload error ({e.__class__.__name__}): {e!r} | file={os.path.basename(filepath)} | url={server_url}")
 
 
+async def _inotify_watcher(folder, start_after_epoch, latest_ref, new_file_event, stop_event):
+    """inotify로 폴더 감시 — 새 jpg 저장 시 latest_ref 갱신 후 new_file_event 신호"""
+    with Inotify() as inotify:
+        inotify.add_watch(folder, Mask.CLOSE_WRITE | Mask.MOVED_TO)
+        async for event in inotify:
+            if stop_event.is_set():
+                break
+            path = event.path
+            if path is None:
+                continue
+            if not str(path).endswith('.jpg'):
+                continue
+            if start_after_epoch > 0.0 and time.time() < start_after_epoch:
+                continue
+            latest_ref['path'] = str(path)
+            new_file_event.set()
+
+
+async def _upload_loop(session, camera_id, server_url, latest_ref, new_file_event, stop_event):
+    """new_file_event 신호 대기 → latest_ref의 최신 파일 업로드 반복"""
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(new_file_event.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            continue
+        new_file_event.clear()
+        filepath = latest_ref.get('path')
+        if filepath:
+            await send_image_async(session, filepath, camera_id, server_url)
+
+
 async def camera_async_worker(config, server_url):
     """카메라 폴더 모니터링 및 이미지 송신"""
     global multi_sender_active
 
     folder = config["folder"]
     camera_id = config["id"]
-    last_processed_file = None
     start_after_epoch = float(config.get('start_after_epoch', 0.0) or 0.0)
 
     os.makedirs(folder, exist_ok=True)
 
-    try:
-        async with aiohttp.ClientSession() as session:
+    if _HAS_INOTIFY:
+        # inotify 기반: 파일 저장 즉시 감지 → 폴링 대기 없음
+        latest_ref = {'path': None}
+        new_file_event = asyncio.Event()
+        stop_event = asyncio.Event()
+
+        async def _stop_monitor():
             while multi_sender_active:
-                cycle_start = time.time()
-                now_epoch = time.time()
-                if start_after_epoch > 0.0 and now_epoch < start_after_epoch:
-                    await asyncio.sleep(max(0, min(0.2, start_after_epoch - now_epoch)))
-                    continue
+                await asyncio.sleep(0.2)
+            stop_event.set()
 
-                files = glob.glob(os.path.join(folder, "*.jpg"))
+        try:
+            async with aiohttp.ClientSession() as session:
+                await asyncio.gather(
+                    _stop_monitor(),
+                    _inotify_watcher(folder, start_after_epoch, latest_ref, new_file_event, stop_event),
+                    _upload_loop(session, camera_id, server_url, latest_ref, new_file_event, stop_event),
+                    return_exceptions=True,
+                )
+        except Exception as e:
+            write_log(f"[Server Sender] inotify worker error ({camera_id}): {e}")
+    else:
+        # fallback: 기존 폴링 방식
+        last_processed_file = None
+        try:
+            async with aiohttp.ClientSession() as session:
+                while multi_sender_active:
+                    cycle_start = time.time()
+                    now_epoch = time.time()
+                    if start_after_epoch > 0.0 and now_epoch < start_after_epoch:
+                        await asyncio.sleep(max(0, min(0.2, start_after_epoch - now_epoch)))
+                        continue
 
-                if files:
-                    valid_files = []
-                    for f in files:
-                        try:
-                            valid_files.append((os.path.getctime(f), f))
-                        except OSError:
-                            pass
+                    files = glob.glob(os.path.join(folder, "*.jpg"))
+                    if files:
+                        valid_files = []
+                        for f in files:
+                            try:
+                                valid_files.append((os.path.getctime(f), f))
+                            except OSError:
+                                pass
+                        if valid_files:
+                            latest_ctime, latest_file = max(valid_files)
+                            try:
+                                file_ready = os.path.getsize(latest_file) > 0
+                            except OSError:
+                                file_ready = False
+                            if (latest_ctime >= start_after_epoch
+                                    and latest_file != last_processed_file
+                                    and file_ready):
+                                last_processed_file = latest_file
+                                await send_image_async(session, latest_file, camera_id, server_url)
 
-                    if valid_files:
-                        latest_ctime, latest_file = max(valid_files)
-                        try:
-                            file_ready = os.path.getsize(latest_file) > 0
-                        except OSError:
-                            file_ready = False
-                        if (latest_ctime >= start_after_epoch
-                                and latest_file != last_processed_file
-                                and file_ready):
-                            last_processed_file = latest_file
-                            await send_image_async(session, latest_file, camera_id, server_url)
-
-                await asyncio.sleep(max(0, INTERVAL - (time.time() - cycle_start)))
-    except Exception as e:
-        write_log(f"[Server Sender] worker error ({camera_id}): {e}")
+                    await asyncio.sleep(max(0, INTERVAL - (time.time() - cycle_start)))
+        except Exception as e:
+            write_log(f"[Server Sender] worker error ({camera_id}): {e}")
 
 
 def start_async_loop(config, server_url):
@@ -1800,7 +1885,7 @@ def go1_keepalive_thread():
                     if _recv_t > 0.0 and (abs(out_vx) > 1e-4 or abs(out_vy) > 1e-4 or abs(out_wz) > 1e-4):
                         e2e_ms = (time.monotonic() - _recv_t) * 1000.0
                         if 0.0 < e2e_ms < 2000.0:
-                            write_log(f"[PERF] E2ELatency={e2e_ms:.1f}ms reason={go1_state.get('reason', '')}")
+                            pass  # write_log(f"[PERF] E2ELatency={e2e_ms:.1f}ms reason={go1_state.get('reason', '')}")
                         go1_unity_data['_recv_mono'] = 0.0
                 except Exception:
                     pass
@@ -2217,6 +2302,7 @@ class Go1UnityNode(BaseNode):
             # but always relay to Unity even when payload is identical.
             self._last_relay_json = relay_signature
             self._send_relay_json(relay_raw_json)
+            record_perf_event('unity_json')
 
             # Rollback reference (previous dedupe behavior):
             # if relay_signature != self._last_relay_json:
@@ -3198,10 +3284,7 @@ class Go1ServerJsonRecvNode(BaseNode):
         if should_poll:
             self._last_poll_mono = now_mono
             try:
-                t_fetch_start = time.time()
                 raw_json = self._read_source_text(mode, source, request_timeout_sec)
-                fetch_ms = (time.time() - t_fetch_start) * 1000
-                write_log(f"[PERF] JsonFetchTime={fetch_ms:.1f}ms source={source}")
                 parsed = json.loads(raw_json)
                 direction = self._extract_direction_text(parsed)
                 payload = self._pick_payload(parsed)
@@ -3217,6 +3300,7 @@ class Go1ServerJsonRecvNode(BaseNode):
                     return self.out_flow
                 if incoming_ts is not None:
                     self._last_json_timestamp = incoming_ts
+                record_perf_event('json_receiver')
 
                 self._save_json_backup(raw_json, parsed)
 
@@ -4223,6 +4307,7 @@ class VideoSourceNode(BaseNode):
                         self._last_frame = loaded
                         frame = loaded
                         got_fresh_frame = True
+                        record_perf_event('video_source')
                         break
         except Exception:
             frame = self._last_frame

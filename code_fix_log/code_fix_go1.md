@@ -1447,6 +1447,7 @@ odes/robots/go1.py (함수/클래스 추가)
   - 수신 서버에서 실제로 JSON이 들어오는지 즉시 확인할 수 있는 테스트 서버를 별도로 준비함.
 
 - 조치 방안:
+
   - `nodes/robots/go1.py`
     - `Go1ServerJsonRecvNode`에 수신 로그를 추가하고, 같은 timestamp의 JSON은 중복 처리하지 않도록 필터링함.
     - 수신 로그는 JSON 본문 전체가 아니라 `json received` 메시지와 `timestamp`만 출력하도록 축약함.
@@ -1483,6 +1484,95 @@ odes/robots/go1.py (함수/클래스 추가)
   - `nodes/go1_config/network_config.yaml`
   - `ref_code/state_change_receiver_test.py`
   - `ref_code/state_change_payload_sample.json`
+
+---
+
+### [2026-06-07] 서버 센더 이미지 감지 inotify 이벤트 기반 전환 및 롤백
+
+#### 1. 기존 폴링 방식
+
+- `camera_async_worker()`의 이미지 송신 루프는 매 사이클마다 `glob.glob(folder/*.jpg)`로 폴더 전체를 스캔하여 `ctime` 기준 최신 파일을 찾고, 이전에 처리한 파일과 다르면서 `size > 0`인 경우에만 업로드함.
+- 사이클 간격은 `INTERVAL`(기본 `1/TARGET_FPS`, 약 33ms)만큼 `asyncio.sleep`.
+
+#### 2. inotify 이벤트 기반으로 전환 (커밋 `e84e7e7`)
+
+- `asyncinotify` 패키지를 optional import (`_HAS_INOTIFY` 플래그, 미설치 시 `False`).
+- 새 코루틴 `_inotify_watcher(folder, start_after_epoch, latest_ref, new_file_event, stop_event)` 추가:
+  - `Inotify()`로 대상 폴더에 `Mask.CLOSE_WRITE | Mask.MOVED_TO` 워치를 걸고, `.jpg` 파일에 대한 이벤트가 발생하면 `latest_ref['path']`를 갱신하고 `new_file_event`를 set.
+- 새 코루틴 `_upload_loop(session, camera_id, server_url, latest_ref, new_file_event, stop_event)` 추가:
+  - `new_file_event`를 대기(최대 1초 타임아웃)하다가 신호가 오면 `latest_ref`의 최신 파일을 즉시 업로드.
+- `camera_async_worker()`를 분기 처리:
+  - `_HAS_INOTIFY = True`: `_stop_monitor()`(센더 비활성화 감지용 `stop_event` 설정), `_inotify_watcher()`, `_upload_loop()`를 `asyncio.gather()`로 동시 실행 → 폴더 폴링 없이 파일 저장 이벤트 즉시 감지 후 업로드.
+  - `_HAS_INOTIFY = False`: 기존 폴링 루프를 fallback으로 그대로 유지.
+- `send_image_async()` 내부의 `[PERF] ResponseTime=...TransferTime=...` 로그 주석을 해제하여 업로드 응답/전송 시간을 측정.
+
+---
+
+### [2026-06-15] PERF 측정값 그래프 탭(Performance) 추가 및 PERF 로그/로그파일 저장 비활성화
+
+#### 1. 목적
+
+- 기존에 `[PERF]` 접두사로 cmd에 출력되던 성능 로그(ResponseTime/TransferTime, E2ELatency) 대신, 4가지 핵심 구간의 처리율(FPS)을 실시간 그래프로 확인할 수 있는 탭을 추가함.
+  - Video Source FPS
+  - JSON Receiver FPS
+  - Unity JSON FPS
+  - Server Sender FPS
+- cmd 로그 스팸 및 디스크 I/O를 줄이기 위해 PERF cmd 로그와 시스템 로그 파일(`.log`) 저장 기능을 비활성화함.
+
+#### 2. PERF 측정 인프라 추가 (`nodes/robots/go1.py`)
+
+- `go1_dashboard` 정의 직후에 측정 헬퍼를 추가함.
+  - `PERF_METRIC_NAMES = ('video_source', 'json_receiver', 'unity_json', 'server_sender')`
+  - `PERF_STALE_SEC = 2.0`
+  - `perf_events`: 항목별 최근 이벤트 시각(`time.monotonic()`)을 담는 `deque(maxlen=30)`
+  - `record_perf_event(name)`: 해당 항목의 deque에 현재 시각을 append
+  - `get_perf_fps(name)`: deque의 시간 간격으로 FPS 계산. 이벤트가 2개 미만이거나 마지막 이벤트로부터 `PERF_STALE_SEC` 이상 경과하면 `0.0` 반환(정지 상태 표시)
+
+#### 3. 이벤트 기록 위치 4곳
+
+| 항목 | 위치 | 기록 시점 |
+|---|---|---|
+| Video Source FPS | `VideoSourceNode.execute()` | 수신 폴더에서 새 프레임을 성공적으로 읽었을 때 (`got_fresh_frame=True`) |
+| JSON Receiver FPS | `Go1ServerJsonRecvNode.execute()` | 서버로부터 새로운 `timestamp`를 가진 JSON을 수신했을 때 (중복 timestamp는 카운트하지 않음) |
+| Unity JSON FPS | `Go1UnityNode.execute()` | `relay_json_in` 입력으로 들어온 JSON을 Unity로 릴레이(`_send_relay_json`)했을 때 |
+| Server Sender FPS | `send_image_async()` | 이미지 업로드 응답이 HTTP 200으로 성공했을 때 |
+
+#### 4. 기존 `[PERF]` cmd 로그 주석처리
+
+- `send_image_async()`: `write_log(f"[PERF] ResponseTime=...ms TransferTime=...ms file=...")` 호출을 주석처리. 응답/전송 시간 계산 코드(`response_ms`, `transfer_ms`)는 유지하고 로그 출력만 비활성화함.
+- Go1 keepalive 루프(cmd 송신부): `write_log(f"[PERF] E2ELatency=...ms reason=...")` 호출을 주석처리(`pass`로 대체).
+
+#### 5. 로그 파일 저장 기능 비활성화 (`core/engine.py`)
+
+- `write_log()`에서 `_get_log_file().write(line + '\n')` 호출부를 주석처리함.
+- 콘솔 출력(`print`)과 GUI 표시용 `system_log_buffer` 적재는 그대로 유지하고, `Node_Files/system_*.log` 파일 생성/기록만 중단함.
+
+#### 6. Performance 탭 UI 추가 (`ui/dpg_manager.py`)
+
+- 최상단 import에 `from collections import deque` 추가.
+- 탭바에 "Performance" 탭을 신설하고 2x2 그리드로 4개 `dpg.plot`을 배치함.
+  - 각 plot은 `mvXAxis`(Time(s)) / `mvYAxis`(FPS) + `line_series` 1개로 구성.
+  - 태그 규칙: `perf_text_{name}`(현재값 텍스트), `perf_series_{name}`, `perf_xaxis_{name}`, `perf_yaxis_{name}`.
+- `__init_ui__()` 위에 모듈 레벨 상태를 추가함.
+  - `PERF_METRICS`(4개 항목명/라벨 목록), `PERF_SAMPLE_INTERVAL = 0.2`, `PERF_HISTORY_LEN = 300`(60초치, 5Hz)
+  - `perf_history_x`, `perf_history_y`(항목별 `deque(maxlen=300)`), `perf_start_time`, `_last_perf_sample_time`
+- `start_gui()` 메인 루프 진입부에 0.2초 주기 샘플러를 추가함.
+  - `go1_module.get_perf_fps(name)`로 각 항목의 현재 FPS를 조회해 history에 push
+  - `dpg.set_value("perf_series_{name}", [x_list, y_list])` + `dpg.fit_axis_data(...)`로 그래프 갱신
+  - `perf_text_{name}`에 `"{label}: {fps:.1f}"` 형태로 현재값 표시
+
+#### 7. 검증
+
+- 앱을 실행해 GUI가 정상 기동하고 "Performance" 탭이 노출되는 것을 확인함.
+- 별도 스모크 테스트로 `record_perf_event` → `get_perf_fps` → `dpg.set_value`/`fit_axis_data` 호출까지 예외 없이 동작함을 확인함.
+
+#### 8. 수정 파일 요약
+
+| 파일 | 변경 내용 |
+|---|---|
+| `nodes/robots/go1.py` | `perf_events`/`record_perf_event`/`get_perf_fps` 추가, 4개 노드/함수에 이벤트 기록 삽입, `[PERF]` cmd 로그 2건 주석처리 |
+| `ui/dpg_manager.py` | `deque` import 추가, "Performance" 탭(4개 FPS 그래프) 추가, 메인 루프에 0.2초 주기 샘플러 및 그래프 갱신 로직 추가 |
+| `core/engine.py` | `write_log()`의 로그 파일 저장(`.log`) 기능 주석처리 |
 
 ---
 
