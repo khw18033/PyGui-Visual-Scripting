@@ -429,7 +429,7 @@ def go1_move_to_coord_callback(sender, app_data, user_data):
 def _go1_connect_callback(sender=None, app_data=None, user_data=None):
     if not HAS_GO1:
         return
-    use_ap = dpg.get_value("go1_conn_mode") == "AP 모드"
+    use_ap = dpg.get_value("go1_conn_mode") == "AP mode"
     ip = dpg.get_value("go1_conn_ip_input").strip()
     go1_module.start_go1_connection(ip, use_ap=use_ap)
 
@@ -1898,9 +1898,9 @@ def __init_ui__():
                     with dpg.child_window(width=220, height=190, border=True):
                         dpg.add_text("Go1 Connection", color=(120,200,255))
                         dpg.add_radio_button(
-                            items=["직접 입력", "AP 모드"],
+                            items=["IP input", "AP mode"],
                             tag="go1_conn_mode",
-                            default_value="직접 입력",
+                            default_value="IP input",
                             horizontal=True,
                         )
                         dpg.add_input_text(
@@ -1912,7 +1912,7 @@ def __init_ui__():
                         with dpg.group(horizontal=True):
                             dpg.add_button(label="Connect", width=90, callback=_go1_connect_callback)
                             dpg.add_button(label="Disconnect", width=90, callback=_go1_disconnect_callback)
-                        dpg.add_text("● Disconnected", tag="go1_dash_conn_state", color=(255,80,80))
+                        dpg.add_text("Disconnected", tag="go1_dash_conn_state", color=(255,80,80))
 
                     with dpg.child_window(width=220, height=190, border=True):
                         dpg.add_text("Go1 Status", color=(150,150,150))
@@ -2197,11 +2197,11 @@ def start_gui():
 
             conn_state = getattr(go1_module, '_GO1_CONN_STATE', 'disconnected')
             conn_labels = {
-                'disconnected': ("● Disconnected", (255,80,80)),
-                'connecting':   ("● Connecting...", (255,200,0)),
-                'connected':    ("● Connected", (0,255,100)),
+                'disconnected': ("Disconnected", (255,80,80)),
+                'connecting':   ("Connecting...", (255,200,0)),
+                'connected':    ("Connected", (0,255,100)),
             }
-            conn_label, conn_color = conn_labels.get(conn_state, ("● Unknown", (180,180,180)))
+            conn_label, conn_color = conn_labels.get(conn_state, ("Unknown", (180,180,180)))
             if dpg.does_item_exist("go1_dash_conn_state"):
                 dpg.set_value("go1_dash_conn_state", conn_label)
                 dpg.configure_item("go1_dash_conn_state", color=conn_color)
