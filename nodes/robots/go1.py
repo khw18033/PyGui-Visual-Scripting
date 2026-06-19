@@ -194,8 +194,11 @@ CAM_UPLOAD_WARMUP_SEC = float(_CAM_TIMING_CONFIG.get('upload_warmup_sec', 2.0))
 CAM_SENDER_WAIT_SEC = float(_CAM_TIMING_CONFIG.get('sender_camera_wait_sec', 10.0))
 CAM_PROC_KILL_TIMEOUT = int(_CAM_TIMING_CONFIG.get('proc_kill_timeout_sec', 2))
 
-_GO1_IP_INITIALIZED = False
-_GO1_IP_INITIALIZED = False
+# Connection state machine driven by the GUI Connect/Disconnect buttons
+# (see start_go1_connection / stop_go1_connection below).
+_GO1_CONN_STATE = 'disconnected'  # 'disconnected' | 'connecting' | 'connected'
+_keepalive_stop_event = None
+_keepalive_thread_ref = None
 
 go1_target_vel = {
     'vx': 0.0,
@@ -955,53 +958,26 @@ def go1_estop_callback():
     write_log(f"Go1 EMERGENCY STOP Activated (hold {ESTOP_HOLD_SEC:.1f}s)")
 
 
-def _prompt_go1_ip(default_ip):
-    print("\n" + "=" * 56)
-    print("[System] Go1 IP 확인 (엔터 입력 시 기본값 사용)")
-    print("=" * 56)
-    current = default_ip
-    while True:
-        try:
-            entered = input(f"Go1 IP 입력 [{current}]: ").strip()
-        except EOFError:
-            return current
-        candidate = entered if entered else current
-        try:
-            socket.inet_aton(candidate)
-        except OSError:
-            print("[System] 잘못된 IP 형식입니다. 예: 192.168.50.42")
-            continue
-        try:
-            confirm = input(f"현재 Go1 IP가 {candidate} 맞습니까? (y/n): ").strip().lower()
-        except EOFError:
-            return candidate
-        if confirm in ["y", "yes", ""]:
-            return candidate
-        current = candidate
+def start_go1_connection(ip=None, use_ap=False):
+    """Go1 Dashboard의 Connect 버튼에서 호출. 논블로킹.
 
+    ip: 직접 입력 모드에서 사용할 IP. use_ap=True면 무시되고 GO1_AP_IP가 사용된다.
+    """
+    global GO1_IP, _GO1_CONN_STATE, _keepalive_stop_event, _keepalive_thread_ref
+    global _CAMERA_WORKER_STARTED, _SENDER_MANAGER_STARTED
 
-def init_go1_connection():
-    global GO1_IP, _GO1_IP_INITIALIZED, _CAMERA_WORKER_STARTED, _SENDER_MANAGER_STARTED
-    if _GO1_IP_INITIALIZED:
+    if _GO1_CONN_STATE in ('connecting', 'connected'):
         return
-    _GO1_IP_INITIALIZED = True
 
-    try:
-        use_ap_mode = input("Go1 AP 모드로 접속합니까? (y/n): ").strip().lower()
-    except EOFError:
-        use_ap_mode = "n"
-
-    if use_ap_mode in ["y", "yes"]:
-        GO1_IP = GO1_AP_IP
-    else:
-        GO1_IP = _prompt_go1_ip(GO1_IP)
+    _GO1_CONN_STATE = 'connecting'
+    ip = (ip or '').strip()
+    GO1_IP = GO1_AP_IP if use_ap else (ip or GO1_IP)
 
     write_log(f"Go1 Target IP: {GO1_IP}")
     if HAS_UNITREE_SDK:
         write_log(f"Go1 SDK Ready: {sdk_path}")
     else:
         write_log(f"Go1 SDK Missing: {sdk_path} ({SDK_IMPORT_ERROR})")
-    GO1_SPECIAL_ACTIONS = dict(SPECIAL_ACTIONS_CONFIG.get('special_actions', {}))
 
     if not _CAMERA_WORKER_STARTED:
         _CAMERA_WORKER_STARTED = True
@@ -1010,6 +986,20 @@ def init_go1_connection():
     if not _SENDER_MANAGER_STARTED and HAS_AIOHTTP:
         _SENDER_MANAGER_STARTED = True
         threading.Thread(target=sender_manager_thread, daemon=True).start()
+
+    _keepalive_stop_event = threading.Event()
+    _keepalive_thread_ref = threading.Thread(target=go1_keepalive_thread, daemon=True)
+    _keepalive_thread_ref.start()
+    _GO1_CONN_STATE = 'connected'
+
+
+def stop_go1_connection():
+    """Go1 Dashboard의 Disconnect 버튼에서 호출. keepalive 스레드에 종료를 요청한다."""
+    global _GO1_CONN_STATE, _keepalive_stop_event
+    if _keepalive_stop_event is not None:
+        _keepalive_stop_event.set()
+    _GO1_CONN_STATE = 'disconnected'
+    go1_dashboard['hw_link'] = 'Offline'
 
 
 
@@ -1424,6 +1414,10 @@ def sender_manager_thread():
 def go1_keepalive_thread():
     global GO1_UNITY_IP, go1_estop_hold_until
 
+    # Captured once at thread start so a later reconnect (new stop event) cannot
+    # affect this thread's exit condition, nor vice versa.
+    stop_ev = _keepalive_stop_event
+
     if HAS_UNITREE_SDK:
         try:
             udp = sdk.UDP(HIGHLEVEL, LOCAL_PORT, GO1_IP, GO1_PORT)
@@ -1503,7 +1497,7 @@ def go1_keepalive_thread():
 
     next_t = time.monotonic()
 
-    while True:
+    while not stop_ev.is_set():
         tnow = time.monotonic()
         if tnow < next_t:
             time.sleep(max(0.0, next_t - tnow))
@@ -1943,6 +1937,14 @@ def go1_keepalive_thread():
         try:
             sock_tx_state.sendto(msg_state.encode("utf-8"), (GO1_UNITY_IP, UNITY_STATE_PORT))
             sock_tx_cmd.sendto(msg_cmd.encode("utf-8"), (GO1_UNITY_IP, UNITY_CMD_PORT))
+        except Exception:
+            pass
+
+    # Disconnect requested: release sockets and reflect status on the dashboard.
+    go1_dashboard["hw_link"] = "Offline"
+    for s in (sock_tx_state, sock_tx_cmd, sock_rx_unity):
+        try:
+            s.close()
         except Exception:
             pass
 

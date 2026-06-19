@@ -1,7 +1,5 @@
-import threading
 import sys
 import os
-import importlib
 import glob
 
 # Append current dir to sys path for submodules
@@ -59,34 +57,16 @@ def select_go1_module():
         print("Invalid input")
         return False
 
-def import_go1_modules():
-    """Dynamically import go1 modules based on config"""
-    try:
-        go1_module = importlib.import_module(f'nodes.robots.{config.GO1_MODULE_NAME}')
-        go1_keepalive_thread = getattr(go1_module, 'go1_keepalive_thread', None)
-        init_go1_connection = getattr(go1_module, 'init_go1_connection', None)
-        return go1_keepalive_thread, init_go1_connection
-    except ImportError as e:
-        print(f"Failed to import go1 module: {e}")
-        return None, None
-
 def main():
     # Select go1 module variant
     if not select_go1_module():
         print("Continuing without go1 module...")
-        go1_keepalive_thread_fn = None
-        init_go1_connection_fn = None
-    else:
-        go1_keepalive_thread_fn, init_go1_connection_fn = import_go1_modules()
-    
+
     # MT4 serial initialization is now controlled from the GUI.
     # Use the GUI buttons to connect via USB or Raspi bridge.
     # If needed for headless runs, call nodes.robots.mt4.connect_mt4_local() manually.
 
-    if init_go1_connection_fn:
-        init_go1_connection_fn()
-        if go1_keepalive_thread_fn:
-            threading.Thread(target=go1_keepalive_thread_fn, daemon=True).start()
+    # Go1 connection is now controlled from the GUI (Go1 Dashboard -> Connect button).
 
     # Do not initialize EP SDK in the main process. Use the GUI's EP Manager
     # controls to start worker processes which will perform SDK initialization.

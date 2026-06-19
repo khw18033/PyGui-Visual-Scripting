@@ -1576,3 +1576,29 @@ odes/robots/go1.py (함수/클래스 추가)
 
 ---
 
+### [2026-06-15] Video Source FPS 중복 카운트 방지 (`nodes/robots/go1.py`)
+
+#### 1. 현상
+
+- Performance 탭의 "Video Source FPS"가 `ref_code/fps_monitoring_ubuntu_guide.md`의 `inotifywait` 기반 측정값(약 30fps)과 다르게 약 15fps로 표시됨.
+
+#### 2. 원인
+
+- `VideoSourceNode.execute()`는 매 엔진 틱마다 수신 폴더(`Captured_Images/go1_front`)를 다시 스캔하여 "가장 최근의 안정된 파일"을 읽는데, 이전 틱에서 이미 읽은 파일과 동일해도 구분 없이 매번 `record_perf_event('video_source')`를 호출함.
+- `_is_file_stable()`의 `time.sleep(0.02)`가 메인 GUI 루프를 매 틱마다 지연시켜 엔진 틱 속도가 카메라의 실제 파일 생성 속도(약 30fps)보다 느린 약 15Hz로 제한되어 있음. 이 때문에 "엔진이 execute()를 실행한 횟수"(≈15Hz)와 "카메라가 파일을 생성한 횟수"(≈30Hz)가 서로 다른 값을 가리키게 되어 두 측정값이 차이를 보임.
+- `inotifywait`는 파일시스템 이벤트를 직접 카운트하므로 엔진 틱 속도와 무관하게 카메라의 실제 생성 속도를 그대로 보여줌.
+
+#### 3. 수정
+
+- `VideoSourceNode`에 `self._last_perf_file` 필드를 추가하여 마지막으로 perf 이벤트를 기록한 파일명을 추적함.
+- 새로 읽은 `target_file`이 `self._last_perf_file`과 다를 때만 `record_perf_event('video_source')`를 호출하도록 변경 — 동일 파일을 여러 틱에서 반복 소비해도 한 번만 카운트되어, "실제로 새로 처리한 프레임 수" 기준의 처리율(throughput)을 의미하게 됨.
+- `_is_file_stable()`의 블로킹 sleep으로 인한 엔진 틱 속도 자체의 병목은 이번 수정 범위에 포함하지 않음(별도 개선 과제).
+
+#### 4. 수정 파일 요약
+
+| 파일 | 변경 내용 |
+|---|---|
+| `nodes/robots/go1.py` | `VideoSourceNode.__init__`에 `_last_perf_file` 추가, `execute()`에서 동일 파일 재소비 시 `record_perf_event('video_source')` 중복 호출 방지 |
+
+---
+

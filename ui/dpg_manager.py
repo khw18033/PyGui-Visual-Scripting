@@ -426,6 +426,20 @@ def go1_move_to_coord_callback(sender, app_data, user_data):
     go1_target_vel['vyaw'] = float(dpg.get_value("go1_input_vyaw"))
 
 
+def _go1_connect_callback(sender=None, app_data=None, user_data=None):
+    if not HAS_GO1:
+        return
+    use_ap = dpg.get_value("go1_conn_mode") == "AP 모드"
+    ip = dpg.get_value("go1_conn_ip_input").strip()
+    go1_module.start_go1_connection(ip, use_ap=use_ap)
+
+
+def _go1_disconnect_callback(sender=None, app_data=None, user_data=None):
+    if not HAS_GO1:
+        return
+    go1_module.stop_go1_connection()
+
+
 def go1_action_callback(sender, app_data, user_data):
     if not HAS_GO1:
         return
@@ -1681,9 +1695,10 @@ def toggle_exec(s, a):
             go1_module.camera_save_state['frame_count'] = 0
     if HAS_GO1 and not engine_module.is_running:
         go1_dashboard['status'] = 'Idle'
-        go1_dashboard['hw_link'] = 'Offline'
         go1_dashboard['unity_link'] = 'Waiting'
         go1_dashboard['special'] = 'Idle'
+        # hw_link is left untouched here: the keepalive thread (or its absence)
+        # now reflects the real connection state set via the Connection panel.
         if hasattr(go1_module, 'go1_special_queue'):
             go1_module.go1_special_queue.clear()
         go1_target_vel.update({'vx': 0.0, 'vy': 0.0, 'vyaw': 0.0, 'body_height': 0.0})
@@ -1880,6 +1895,25 @@ def __init_ui__():
             # ================= [Go1 Dashboard Tab] =================
             with dpg.tab(label="Go1 Dashboard"):
                 with dpg.group(horizontal=True):
+                    with dpg.child_window(width=220, height=190, border=True):
+                        dpg.add_text("Go1 Connection", color=(120,200,255))
+                        dpg.add_radio_button(
+                            items=["직접 입력", "AP 모드"],
+                            tag="go1_conn_mode",
+                            default_value="직접 입력",
+                            horizontal=True,
+                        )
+                        dpg.add_input_text(
+                            label="IP",
+                            tag="go1_conn_ip_input",
+                            default_value=getattr(go1_module, 'GO1_IP', '192.168.50.41') if HAS_GO1 else '192.168.50.41',
+                            width=150,
+                        )
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="Connect", width=90, callback=_go1_connect_callback)
+                            dpg.add_button(label="Disconnect", width=90, callback=_go1_disconnect_callback)
+                        dpg.add_text("● Disconnected", tag="go1_dash_conn_state", color=(255,80,80))
+
                     with dpg.child_window(width=220, height=190, border=True):
                         dpg.add_text("Go1 Status", color=(150,150,150))
                         dpg.add_text("Status: Idle", tag="go1_dash_status", color=(0,255,0))
@@ -2160,6 +2194,17 @@ def start_gui():
                 dpg.configure_item("go1_dash_link", color=(255,200,0))
             else:
                 dpg.configure_item("go1_dash_link", color=(255,0,0))
+
+            conn_state = getattr(go1_module, '_GO1_CONN_STATE', 'disconnected')
+            conn_labels = {
+                'disconnected': ("● Disconnected", (255,80,80)),
+                'connecting':   ("● Connecting...", (255,200,0)),
+                'connected':    ("● Connected", (0,255,100)),
+            }
+            conn_label, conn_color = conn_labels.get(conn_state, ("● Unknown", (180,180,180)))
+            if dpg.does_item_exist("go1_dash_conn_state"):
+                dpg.set_value("go1_dash_conn_state", conn_label)
+                dpg.configure_item("go1_dash_conn_state", color=conn_color)
 
             dpg.set_value("go1_dash_unity", f"Unity: {go1_dashboard.get('unity_link', 'Waiting')}")
             dpg.set_value("go1_dash_special", f"Special: {go1_dashboard.get('special', 'Idle')}")
