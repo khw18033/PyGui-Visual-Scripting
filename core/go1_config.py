@@ -272,3 +272,25 @@ MODEL_CONFIG = _load_json_compatible_config('model_config.yaml', MODEL_CONFIG_DE
 
 STATE_CHANGE_URL_DEFAULT = str(NETWORK_CONFIG.get('state_change_url', NETWORK_CONFIG_DEFAULT['state_change_url']))
 STATE_CHANGE_INTERVAL_SEC_DEFAULT = float(NETWORK_CONFIG.get('state_change_interval_sec', NETWORK_CONFIG_DEFAULT['state_change_interval_sec']))
+
+
+def save_go1_ip(ip):
+    """Persist the given Go1 IP into network_config.yaml so the GUI remembers it across restarts."""
+    path = os.path.join(CONFIG_DIR, 'network_config.yaml')
+    cfg = {}
+    if os.path.isfile(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                cfg = loaded
+        except Exception:
+            cfg = {}
+    cfg['go1_ip'] = ip
+
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.write('\n')
+
+    NETWORK_CONFIG['go1_ip'] = ip

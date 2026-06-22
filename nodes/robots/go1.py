@@ -33,6 +33,7 @@ from core.go1_config import (
     MODEL_CONFIG,
     STATE_CHANGE_INTERVAL_SEC_DEFAULT,
     STATE_CHANGE_URL_DEFAULT,
+    save_go1_ip,
 )
 import core.engine as engine_module
 from core.mission_utils import (
@@ -971,7 +972,11 @@ def start_go1_connection(ip=None, use_ap=False):
 
     _GO1_CONN_STATE = 'connecting'
     ip = (ip or '').strip()
-    GO1_IP = GO1_AP_IP if use_ap else (ip or GO1_IP)
+    if use_ap:
+        GO1_IP = GO1_AP_IP
+    else:
+        GO1_IP = ip or GO1_IP
+        save_go1_ip(GO1_IP)  # remember manually-entered IP across restarts
 
     write_log(f"Go1 Target IP: {GO1_IP}")
     if HAS_UNITREE_SDK:
