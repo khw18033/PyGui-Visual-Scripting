@@ -4,7 +4,8 @@
       "Bash(.venv/Scripts/pip show *)",
       "Bash(.venv/Scripts/python -c \"import robomaster; print\\(robomaster.__file__\\)\")",
       "Bash(awk -F: '$1 >= 1424 && $1 <= 2130')",
-      "Bash(python -m py_compile main.py nodes/robots/go1.py ui/dpg_manager.py)"
+      "Bash(python -m py_compile main.py nodes/robots/go1.py ui/dpg_manager.py)",
+      "Bash(python -m py_compile core/go1_config.py nodes/robots/go1.py)"
     ]
   }
 }

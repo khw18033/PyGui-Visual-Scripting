@@ -18,6 +18,7 @@ NETWORK_CONFIG_DEFAULT = {
     'unity_waypoint_tx_port': 15104,
     'unity_path_port': 15110,
     'go1_ap_ip': '192.168.123.161',
+    'go1_mdns_hostname': 'raspberrypi.local',
     'aruco_udp_port': 5008,
     'server_upload_url': 'http://192.168.1.100:5001/upload',
     'state_change_url': 'http://192.168.1.100:5001/state_change',

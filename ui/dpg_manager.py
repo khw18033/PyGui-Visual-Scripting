@@ -440,6 +440,22 @@ def _go1_disconnect_callback(sender=None, app_data=None, user_data=None):
     go1_module.stop_go1_connection()
 
 
+def _go1_discover_ip_callback(sender=None, app_data=None, user_data=None):
+    if not HAS_GO1:
+        return
+
+    def _worker():
+        write_log("[Go1] Discovering IP via mDNS...")
+        ip = go1_module.resolve_go1_ip()
+        if ip:
+            dpg.set_value("go1_conn_ip_input", ip)
+            write_log(f"[Go1] Discovered IP: {ip}")
+        else:
+            write_log("[Go1] mDNS discovery failed - enter IP manually")
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 def go1_action_callback(sender, app_data, user_data):
     if not HAS_GO1:
         return
@@ -1909,6 +1925,7 @@ def __init_ui__():
                             default_value=getattr(go1_module, 'GO1_IP', '192.168.50.41') if HAS_GO1 else '192.168.50.41',
                             width=150,
                         )
+                        dpg.add_button(label="Discover IP", width=190, callback=_go1_discover_ip_callback)
                         with dpg.group(horizontal=True):
                             dpg.add_button(label="Connect", width=90, callback=_go1_connect_callback)
                             dpg.add_button(label="Disconnect", width=90, callback=_go1_disconnect_callback)

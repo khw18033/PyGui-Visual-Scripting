@@ -181,6 +181,7 @@ SPECIAL_RECOVER1_SEC = float(_PHASE_TIMING_CONFIG.get('recover1_sec', 1.5))
 SPECIAL_RECOVER0_SEC = float(_PHASE_TIMING_CONFIG.get('recover0_sec', 0.5))
 
 GO1_AP_IP = str(NETWORK_CONFIG.get('go1_ap_ip', '192.168.123.161'))
+GO1_MDNS_HOSTNAME = str(NETWORK_CONFIG.get('go1_mdns_hostname', 'raspberrypi.local'))
 ARUCO_UDP_PORT = int(NETWORK_CONFIG.get('aruco_udp_port', 5008))
 SERVER_UPLOAD_URL_DEFAULT = str(NETWORK_CONFIG.get('server_upload_url', 'http://192.168.1.100:5001/upload'))
 JSON_CMD_URL_DEFAULT = str(NETWORK_CONFIG.get('json_cmd_url', 'http://127.0.0.1:5001/cmd'))
@@ -957,6 +958,24 @@ def go1_estop_callback():
     go1_target_vel['vy'] = 0.0
     go1_target_vel['vyaw'] = 0.0
     write_log(f"Go1 EMERGENCY STOP Activated (hold {ESTOP_HOLD_SEC:.1f}s)")
+
+
+def resolve_go1_ip(hostname=None, timeout=3.0):
+    """mDNS 호스트명(예: raspberrypi.local)으로 Go1 IP를 탐색. 실패 시 None 반환.
+
+    블로킹 호출이므로 GUI에서는 백그라운드 스레드에서 실행해야 한다.
+    """
+    hostname = (hostname or GO1_MDNS_HOSTNAME).strip()
+    if not hostname:
+        return None
+    prev_timeout = socket.getdefaulttimeout()
+    try:
+        socket.setdefaulttimeout(timeout)
+        return socket.gethostbyname(hostname)
+    except socket.gaierror:
+        return None
+    finally:
+        socket.setdefaulttimeout(prev_timeout)
 
 
 def start_go1_connection(ip=None, use_ap=False):
