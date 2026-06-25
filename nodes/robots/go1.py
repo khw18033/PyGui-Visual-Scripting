@@ -1784,9 +1784,7 @@ def go1_keepalive_thread():
             if cmd:
                 cmd.gaitType = 1
             out_vx = _clamp(go1_unity_data['vx'], -V_MAX, V_MAX)
-            # Unity teleop sends +vy for "left", but the real Go1 strafes right on +vy.
-            # Flip sign here so the robot actually moves the way Unity commands.
-            out_vy = _clamp(-go1_unity_data['vy'], -S_MAX, S_MAX)
+            out_vy = _clamp(go1_unity_data['vy'], -S_MAX, S_MAX)
             out_wz = _clamp(go1_unity_data['wz'], -W_MAX, W_MAX)
             go1_state['reason'] = "UNITY"
         elif active_walk:
