@@ -2371,6 +2371,7 @@ class Go1UnityAutonomyNode(BaseNode):
         self.state['waypoint_tx_port'] = UNITY_WAYPOINT_TX_PORT
         self.state['send_waypoints'] = True
         self.state['invert_waypoint_x'] = False
+        self.state['invert_waypoint_z'] = False
         self.state['wp_reach_radius'] = 0.12
         self.state['path_kp_dist'] = 0.5
         self.state['path_kp_yaw'] = 1.5
@@ -2628,11 +2629,13 @@ class Go1UnityAutonomyNode(BaseNode):
         waypoint_port = int(self.state.get('waypoint_tx_port', UNITY_WAYPOINT_TX_PORT))
         unity_ip = str(self.state.get('unity_ip', GO1_UNITY_IP)).strip() or GO1_UNITY_IP
         invert_x = _coerce_bool(self.state.get('invert_waypoint_x', False), False)
+        invert_z = _coerce_bool(self.state.get('invert_waypoint_z', False), False)
         msg = ["WAYPOINTS", str(len(self._active_waypoints))]
         for wp in self._active_waypoints:
             x_send = -wp['x_world'] if invert_x else wp['x_world']
+            z_send = -wp['z_world'] if invert_z else wp['z_world']
             msg.append(f"{x_send:.6f}")
-            msg.append(f"{wp['z_world']:.6f}")
+            msg.append(f"{z_send:.6f}")
         try:
             payload = ' '.join(msg).encode('utf-8')
             self._tx_sock.sendto(payload, (unity_ip, waypoint_port))
