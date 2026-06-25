@@ -44,7 +44,7 @@ from core.mission_utils import (
     _extract_mission_type as _mu_extract_mission_type,
     _extract_mission_post_action as _mu_extract_mission_post_action,
 )
-
+ 
 try:
     import cv2
     import numpy as np
@@ -1505,6 +1505,7 @@ def go1_keepalive_thread():
         'wait_mode_seen': False,
     }
     estop_hold_logged = False
+    _last_logged_unity_cmd = None
 
     def reset_cmd_base():
         if not cmd:
@@ -1686,6 +1687,13 @@ def go1_keepalive_thread():
             go1_dashboard['unity_link'] = "Active"
             go1_unity_data['vx'], go1_unity_data['vy'], go1_unity_data['wz'], go1_unity_data['estop'] = got
             go1_unity_data['_recv_mono'] = tnow
+
+            _rounded_cmd = (round(got[0], 3), round(got[1], 3), round(got[2], 3), got[3])
+            if _rounded_cmd != _last_logged_unity_cmd:
+                _last_logged_unity_cmd = _rounded_cmd
+                write_log(
+                    f"[UNITY CMD] teleop vx={got[0]:.3f} vy={got[1]:.3f} wz={got[2]:.3f} estop={got[3]}"
+                )
 
         # Unity teleop is only considered when GO1_UNITY node is present and enabled.
         unity_teleop_enabled = _has_go1_unity_node() and bool(go1_node_intent.get('use_unity_cmd', False))
@@ -2315,6 +2323,10 @@ class Go1UnityNode(BaseNode):
                 go1_unity_data['vy'] = float(payload.get('vy', go1_unity_data['vy']))
                 go1_unity_data['wz'] = float(payload.get('wz', go1_unity_data['wz']))
                 go1_unity_data['estop'] = int(payload.get('estop', go1_unity_data['estop']))
+                write_log(
+                    f"[UNITY CMD] json vx={go1_unity_data['vx']:.3f} vy={go1_unity_data['vy']:.3f} "
+                    f"wz={go1_unity_data['wz']:.3f} estop={go1_unity_data['estop']}"
+                )
             except Exception as e:
                 write_log(f"Go1 Unity JSON Error: {e}")
 
